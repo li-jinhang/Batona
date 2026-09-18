@@ -85,6 +85,13 @@ info_get() {
   fi
 }
 
+# 列出某端口上"非回环"的监听地址（输出为空 = 未对公网开放）。
+# 必须覆盖 frps 的通配绑定：它绑的是 `*:3080` 而非 `0.0.0.0:3080`，
+# 早先只匹配 0.0.0.0/:: 的写法对这种绑定会漏报成 [OK]。
+public_bind_on() {
+  ss -ltn 2>/dev/null | awk '{print $4}' | grep -E ":$1\$" | grep -vE '^127\.' || true
+}
+
 ensure_node() {
   if command -v node >/dev/null 2>&1 && node -e 'process.exit(Number(process.versions.node.split(".")[0])>=18?0:1)' 2>/dev/null; then
     log "Node $(node --version) OK"
@@ -421,10 +428,15 @@ EOF
     done
     echo "── 网关健康 ──"
     curl -fsS http://127.0.0.1:3090/healthz && echo "" || echo "  网关未响应"
-    echo "── 安全核查（3080 严禁对公网开放）──"
-    ss -ltn | grep ':3080 ' | grep -q '0.0.0.0\|::' \
-      && echo "  [严重] 3080 绑定 0.0.0.0，请立即用防火墙封禁公网访问！" \
-      || echo "  [OK] 3080 无公网绑定"
+    echo "── 安全核查（3080/3081 严禁对公网开放）──"
+    for port in 3080 3081; do
+      bad="$(public_bind_on "$port")"
+      if [ -n "$bad" ]; then
+        echo "  [严重] $port 绑定公网（$bad），请立即封禁公网访问！"
+      else
+        echo "  [OK] $port 无公网绑定"
+      fi
+    done
     ;;
 
   selfsigned)

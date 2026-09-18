@@ -143,6 +143,13 @@ EOF
 
 short() { echo "${1:0:7}"; }
 
+# 列出某端口上"非回环"的监听地址（输出为空 = 未对公网开放）。
+# 必须覆盖 frps 的通配绑定：它绑的是 `*:3080` 而非 `0.0.0.0:3080`，
+# 早先只匹配 0.0.0.0/:: 的写法对这种绑定会漏报成 [OK]。
+public_bind_on() {
+  ss -ltn 2>/dev/null | awk '{print $4}' | grep -E ":$1\$" | grep -vE '^127\.' || true
+}
+
 # ── 前置检查 ───────────────────────────────────────────────────────────
 if [ "$(id -u)" -ne 0 ]; then
   die "请用 root 运行（install.sh 需要 root）"
@@ -214,12 +221,15 @@ if [ "$ACTION" = "status" ]; then
   fi
 
   echo ""
-  echo "── 安全核查（3080 严禁对公网开放）──"
-  if ss -ltn 2>/dev/null | grep ':3080 ' | grep -q '0.0.0.0\|::'; then
-    echo "  [严重] 3080 绑定 0.0.0.0，请立即用防火墙封禁公网访问！"
-  else
-    echo "  [OK] 3080 无公网绑定"
-  fi
+  echo "── 安全核查（3080/3081 严禁对公网开放）──"
+  for port in 3080 3081; do
+    bad="$(public_bind_on "$port")"
+    if [ -n "$bad" ]; then
+      echo "  [严重] $port 绑定公网（$bad），请立即封禁公网访问！"
+    else
+      echo "  [OK] $port 无公网绑定"
+    fi
+  done
   exit 0
 fi
 
