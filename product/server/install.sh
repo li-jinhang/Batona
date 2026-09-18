@@ -1,0 +1,394 @@
+#!/usr/bin/env bash
+# ============================================================================
+# DSH Link — 服务器端一键安装 / 升级脚本（Ubuntu/Debian，宝塔环境）
+#
+# 用法：
+#   bash install.sh --install [--ip 公网IP] [--admin 用户名] [--password 密码]
+#   bash install.sh --update  [--source 网关包路径或URL]
+#   bash install.sh --status
+#   bash install.sh --selfsigned <公网IP>   # 无域名时生成自签证书（含 IP SAN）
+#   bash install.sh --uninstall
+#
+# 注意：日常更新不要直接调 --update，请用同目录的 deploy.sh —— 它负责从 git 取
+#   指定版本、校验部署结果并在失败时自动回滚。--update 是它的底层执行体。
+#   直接调 --update 只会用当前工作区的代码，没有版本校验与回滚保护。
+#
+# 设计目标（用户硬性要求）：
+#   - 宝塔终端一条命令安装；之后全部 GUI 操作
+#   - 支持频繁更新：--update 幂等重部署，保留数据(/var/lib/dsh-gateway)与配置(/etc/dsh-gateway)
+#   - 输出"连接串"，供 PC 软件 / 手机 App 扫码或粘贴绑定
+#
+# 目录布局：
+#   /opt/dsh-gateway/app     网关代码（每次更新整体替换）
+#   /etc/dsh-gateway/        config.json + server-info.json（保留）
+#   /var/lib/dsh-gateway     数据（auth.json 等，保留）
+#   /usr/local/frp           frps（极少更新）
+# ============================================================================
+set -euo pipefail
+
+APP_DIR="/opt/dsh-gateway/app"
+CONF_DIR="/etc/dsh-gateway"
+DATA_DIR="/var/lib/dsh-gateway"
+FRP_DIR="/usr/local/frp"
+FRP_VERSION="${FRP_VERSION:-0.68.0}"
+GATEWAY_DEFAULT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gateway"
+
+INFO_FILE="$CONF_DIR/server-info.json"
+CONFIG_FILE="$CONF_DIR/config.json"
+
+# ── 参数解析 ───────────────────────────────────────────────────────────
+ACTION=""
+IP=""
+ADMIN="admin"
+PASSWORD=""
+SOURCE=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --install) ACTION="install" ;;
+    --update)  ACTION="update" ;;
+    --status)  ACTION="status" ;;
+    --selfsigned)
+      ACTION="selfsigned"
+      IP="${2:-}"
+      shift
+      ;;
+    --uninstall) ACTION="uninstall" ;;
+    --ip)      IP="$2"; shift ;;
+    --admin)   ADMIN="$2"; shift ;;
+    --password) PASSWORD="$2"; shift ;;
+    --source)  SOURCE="$2"; shift ;;
+    *) echo "未知参数: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+[ -z "$ACTION" ] && { echo "用法: bash install.sh --install | --update | --status | --uninstall" >&2; exit 1; }
+[ "$(id -u)" -ne 0 ] && { echo "请用 root 运行" >&2; exit 1; }
+
+log() { echo ">>> $*"; }
+err() { echo "!!! $*" >&2; }
+
+# ── 工具函数 ───────────────────────────────────────────────────────────
+detect_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo "amd64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    *) echo "unknown" ;;
+  esac
+}
+
+info_get() {
+  # 从 server-info.json 读字段；文件不存在返回空（不触发 set -e）
+  if [ -f "$INFO_FILE" ]; then
+    node -e "const s=require('$INFO_FILE');process.stdout.write(String(s['$1']??''))" 2>/dev/null || true
+  fi
+}
+
+ensure_node() {
+  if command -v node >/dev/null 2>&1 && node -e 'process.exit(Number(process.versions.node.split(".")[0])>=18?0:1)' 2>/dev/null; then
+    log "Node $(node --version) OK"
+    return
+  fi
+  log "安装 Node.js 24（NodeSource）"
+  if command -v apt-get >/dev/null 2>&1; then
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+    apt-get install -y nodejs
+  else
+    err "需要 Node ≥18，请手动安装"; exit 1
+  fi
+}
+
+ensure_frps() {
+  # 二进制缺失时才下载；已存在则跳过下载（支持手动放置后重跑）
+  if [ ! -x "$FRP_DIR/frps" ]; then
+    local arch; arch="$(detect_arch)"
+    [ "$arch" = "unknown" ] && { err "不支持的架构"; exit 1; }
+    log "下载 frps v${FRP_VERSION} (${arch})"
+    mkdir -p "$FRP_DIR" /etc/frp
+    local url="https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${arch}.tar.gz"
+    # 镜像支持：FRP_MIRROR=https://mirror.ghproxy.com/ （前缀 + 原完整 URL）
+    if [ -n "${FRP_MIRROR:-}" ]; then
+      url="${FRP_MIRROR%/}/${url#https://}"
+    fi
+    if ! curl -fL --retry 5 --retry-all-errors --connect-timeout 20 -o /tmp/frp.tar.gz "$url"; then
+      err "frp 下载失败（网络原因）。两种处理："
+      err "  1) 用镜像重跑：FRP_MIRROR=https://mirror.ghproxy.com/ bash install.sh --install ..."
+      err "  2) 手动下载后重跑（脚本会自动跳过下载）："
+      err "     cd /tmp && curl -fL -o frp.tar.gz https://mirror.ghproxy.com/https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${arch}.tar.gz"
+      err "     tar xzf frp.tar.gz && mkdir -p ${FRP_DIR} && cp frp_${FRP_VERSION}_linux_${arch}/frps ${FRP_DIR}/frps && chmod +x ${FRP_DIR}/frps"
+      exit 1
+    fi
+    tar xzf /tmp/frp.tar.gz -C /tmp
+    cp "/tmp/frp_${FRP_VERSION}_linux_${arch}/frps" "$FRP_DIR/frps"
+    chmod +x "$FRP_DIR/frps"
+    rm -rf /tmp/frp.tar.gz "/tmp/frp_${FRP_VERSION}_linux_${arch}"
+  else
+    log "frps 二进制已存在：$FRP_DIR/frps（跳过下载）"
+  fi
+
+  # 服务已运行则跳过配置
+  if systemctl is-active --quiet frps 2>/dev/null; then
+    log "frps 服务已运行，跳过"
+    return
+  fi
+
+  # token 必须已存在于 server-info（install 流程先写入）；兜底再生成并写回
+  local token; token="$(info_get frpToken)"
+  if [ -z "$token" ]; then
+    token="$(openssl rand -hex 16)"
+    node -e "const f='$INFO_FILE';const fs=require('fs');const s=JSON.parse(fs.readFileSync(f,'utf8'));s.frpToken='$token';fs.writeFileSync(f,JSON.stringify(s,null,2))"
+  fi
+  cat > /etc/frp/frps.toml <<EOF
+bindPort = 7000
+auth.method = "token"
+auth.token = "${token}"
+transport.tls.enable = true
+webServer.addr = "127.0.0.1"
+webServer.port = 7500
+webServer.user = "admin"
+webServer.password = "$(openssl rand -hex 8)"
+EOF
+  chmod 600 /etc/frp/frps.toml
+
+  cat > /etc/systemd/system/frps.service <<'EOF'
+[Unit]
+Description=frp server (DSH Link)
+After=network.target
+[Service]
+Type=simple
+ExecStart=/usr/local/frp/frps -c /etc/frp/frps.toml
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now frps
+  log "frps 已启动"
+}
+
+deploy_gateway() {
+  local src="$1"
+  if [ -z "$src" ] || [ ! -d "$src/src" ]; then
+    err "网关源码目录无效: ${src:-（空）}（应包含 src/ 与 package.json）"
+    exit 1
+  fi
+  log "部署网关代码 → $APP_DIR"
+  rm -rf "$APP_DIR"
+  mkdir -p "$APP_DIR" "$DATA_DIR" "$CONF_DIR"
+  cp -r "$src/." "$APP_DIR/"
+  rm -rf "$APP_DIR/node_modules"
+
+  # 完整安装（含 esbuild 等 devDependency，构建需要）
+  #
+  # npm ci 而非 npm install：严格按 package-lock.json 安装，结果可复现；
+  # package.json 与 lock 不一致时快速失败，而不是静默装出与本地不同的依赖树。
+  # 国内机器默认走 npmmirror，避免每次部署都在 npm 官方源上耗时（可用 NPM_REGISTRY 覆盖）。
+  local registry="${NPM_REGISTRY:-https://registry.npmmirror.com}"
+  local install_cmd="npm ci"
+  if [ "${NPM_CI:-1}" = "0" ]; then
+    # 应急退路：lock 与 package.json 不同步而线上急需修复时
+    #   NPM_CI=0 bash install.sh --update
+    install_cmd="npm install"
+  fi
+
+  if ! (cd "$APP_DIR" && $install_cmd --registry="$registry" && npm run build); then
+    err "网关依赖安装或构建失败。"
+    err "  若为 npm ci 报 package.json 与 package-lock.json 不同步："
+    err "    在本机 product/server/gateway 下执行 npm install 更新 lock 并提交后重试；"
+    err "    或在服务器上临时退化为 npm install：NPM_CI=0 bash install.sh --update"
+    exit 1
+  fi
+  log "网关构建完成"
+}
+
+write_gateway_config() {
+  local admin="$1" pass="$2"
+  # DSH 0.1.2+ 的 /api 需浏览器会话认证：网关用 DSH 进程的 launch token 模拟 cookie 交换。
+  # token 由 PC 端自动上报（POST /api/dsh/launch-token）；这里只留一个静态回退，
+  # 需要时用 DSH_AUTH_TOKEN 指定（如 DSH 跑在别的机器、无法自动上报）。
+  local auth_token="${DSH_AUTH_TOKEN:-}"
+  # 上报通道的共享密钥：直接复用 frpToken（PC 绑定串里已有），免额外配置
+  local agent_key; agent_key="$(info_get frpToken)"
+  cat > "$CONFIG_FILE" <<EOF
+{
+  "host": "127.0.0.1",
+  "port": 3090,
+  "dataDir": "$DATA_DIR",
+  "webDir": "$APP_DIR/web",
+  "agentKey": "$agent_key",
+  "auth": { "initialUser": { "username": "$admin", "password": "$pass" } },
+  "adapters": {
+    "mock": { "enabled": false },
+    "dsh": { "enabled": true, "cfg": { "baseUrl": "http://127.0.0.1:3080"${auth_token:+, "authToken": "$auth_token"} } }
+  }
+}
+EOF
+  chmod 600 "$CONFIG_FILE"
+}
+
+ensure_gateway_service() {
+  cat > /etc/systemd/system/dsh-gateway.service <<'EOF'
+[Unit]
+Description=DSH Link Gateway
+After=network.target
+[Service]
+Type=simple
+WorkingDirectory=/opt/dsh-gateway/app
+# 2GB 机器：限制 Node 堆，避免 DSH 大 history 回放时 OOM（默认堆约 1GB 会超）
+Environment=NODE_OPTIONS=--max-old-space-size=512
+ExecStart=/usr/bin/node --max-old-space-size=512 dist/app.mjs
+Environment=GATEWAY_CONFIG=/etc/dsh-gateway/config.json
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable dsh-gateway
+  systemctl restart dsh-gateway
+  sleep 2
+  if curl -fsS http://127.0.0.1:3090/healthz >/dev/null 2>&1; then
+    local gw_ver
+    gw_ver="$(node -p "try{require('/opt/dsh-gateway/app/package.json').version}catch(e){'unknown'}" 2>/dev/null || echo unknown)"
+    log "网关健康检查 OK（网关版本 v${gw_ver}）"
+  else
+    err "网关未通过健康检查：journalctl -u dsh-gateway -n 30"
+    exit 1
+  fi
+}
+
+print_binding() {
+  local ip="$1"
+  local token; token="$(info_get frpToken)"
+  local admin; admin="$(info_get gwUser)"
+  local pass; pass="$(info_get gwPass)"
+  local pair; pair="$(info_get pair)"
+  # 网关 HTTPS 端口（宝塔反代端口；默认 443，非标准的如 8443 用 GW_PORT 或 server-info.gwPort）
+  local gwPort; gwPort="${GW_PORT:-$(info_get gwPort)}"; [ -z "$gwPort" ] && gwPort="443"
+
+  local conn="dsh-gw://${ip}?frpPort=7000&gwPort=${gwPort}&frpToken=${token}&gwUser=${admin}&gwPass=${pass}&pair=${pair}"
+
+  # 生成 web/pair.html（供 PC 摄像头扫码/浏览器查看连接串）
+  if [ -d "$APP_DIR/web" ]; then
+    cat > "$APP_DIR/web/pair.html" <<EOF
+<!doctype html><html><head><meta charset="utf-8"><title>DSH Link 绑定</title></head>
+<body style="background:#0f1115;color:#e6e8ee;font-family:system-ui,sans-serif;padding:32px;text-align:center">
+<h1>DSH Link 绑定连接串</h1>
+<p>用 PC 软件「添加服务器」扫描此页（摄像头）或复制下方内容粘贴：</p>
+<p style="word-break:break-all;background:#171a21;padding:16px;border-radius:8px;font-family:monospace">${conn}</p>
+</body></html>
+EOF
+    chmod 644 "$APP_DIR/web/pair.html"
+    log "绑定页已生成：http://${ip}:3090/pair.html（仅建议安装后短期内使用）"
+  fi
+
+  echo ""
+  echo "════════════════════════════════════════════════════════════"
+  echo "  DSH Link 绑定连接串（PC 软件 / 手机 App 扫码或粘贴）"
+  echo "════════════════════════════════════════════════════════════"
+  echo "  ${conn}"
+  echo ""
+  echo "  浏览器访问 http://${ip}:3090/pair.html 可查看"
+  echo "  （配对码有效期 24 小时）"
+  echo "════════════════════════════════════════════════════════════"
+  echo ""
+}
+
+# ── 动作 ───────────────────────────────────────────────────────────────
+case "$ACTION" in
+  install)
+    [ -z "$IP" ] && IP="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || echo '你的公网IP')"
+    log "安装开始（IP=${IP} admin=${ADMIN}）"
+
+    # 1) 确定/生成 server-info（保留旧 frpToken，避免重装后 PC 需重新绑定）
+    tok="$(info_get frpToken)"; [ -z "$tok" ] && tok="$(openssl rand -hex 16)"
+    pair="$(info_get pair)"; [ -z "$pair" ] && pair="$(openssl rand -hex 4)"
+    gwPass="$PASSWORD"; [ -z "$gwPass" ] && gwPass="$(info_get gwPass)"; [ -z "$gwPass" ] && gwPass="$(openssl rand -hex 8)"
+    mkdir -p "$CONF_DIR"
+    cat > "$INFO_FILE" <<EOF
+{
+  "serverIp": "$IP",
+  "frpPort": 7000,
+  "frpToken": "$tok",
+  "gwUser": "$ADMIN",
+  "gwPass": "$gwPass",
+  "pair": "$pair",
+  "pairExpiresAt": "$(($(date +%s) + 86400))",
+  "installedAt": "$(date -Iseconds)"
+}
+EOF
+    chmod 600 "$INFO_FILE"
+
+    # 2) 组件安装
+    ensure_node
+    ensure_frps
+    deploy_gateway "${SOURCE:-$GATEWAY_DEFAULT_SRC}"
+    write_gateway_config "$ADMIN" "$gwPass"
+    ensure_gateway_service
+    print_binding "$IP"
+    ;;
+
+  update)
+    log "升级网关（数据与配置保留）"
+    ensure_node
+    src="$SOURCE"
+    if [ -z "$src" ]; then
+      src="$GATEWAY_DEFAULT_SRC"
+    elif [[ "$src" == http* ]]; then
+      log "从 URL 拉取网关包: $src"
+      curl -fL --retry 3 -o /tmp/gw.tar.gz "$src"
+      rm -rf /tmp/gw-src && mkdir -p /tmp/gw-src
+      tar xzf /tmp/gw.tar.gz -C /tmp/gw-src
+      src="/tmp/gw-src/$(ls /tmp/gw-src | head -1)"
+    fi
+    deploy_gateway "$src"
+    if [ ! -f "$CONFIG_FILE" ]; then
+      write_gateway_config "$(info_get gwUser || echo admin)" "$(info_get gwPass || echo change-me)"
+    fi
+    ensure_gateway_service
+    log "升级完成"
+    print_binding "$(info_get serverIp)"
+    ;;
+
+  status)
+    echo "── 服务状态 ──"
+    for svc in dsh-gateway frps; do
+      systemctl is-active --quiet "$svc" && echo "  [OK] $svc" || echo "  [FAIL] $svc"
+    done
+    echo "── 网关健康 ──"
+    curl -fsS http://127.0.0.1:3090/healthz && echo "" || echo "  网关未响应"
+    echo "── 安全核查（3080 严禁对公网开放）──"
+    ss -ltn | grep ':3080 ' | grep -q '0.0.0.0\|::' \
+      && echo "  [严重] 3080 绑定 0.0.0.0，请立即用防火墙封禁公网访问！" \
+      || echo "  [OK] 3080 无公网绑定"
+    ;;
+
+  selfsigned)
+    ssl_ip="${IP:-}"
+    [ -z "$ssl_ip" ] && ssl_ip="$(info_get serverIp)"
+    [ -z "$ssl_ip" ] && { echo "用法: bash install.sh --selfsigned <公网IP>" >&2; exit 1; }
+    mkdir -p /etc/nginx/ssl
+    openssl req -x509 -newkey rsa:2048 -nodes -days 825 -sha256 \
+      -keyout /etc/nginx/ssl/dsh-gateway.key \
+      -out /etc/nginx/ssl/dsh-gateway.crt \
+      -subj "/CN=$ssl_ip" \
+      -addext "subjectAltName=IP:$ssl_ip"
+    chmod 600 /etc/nginx/ssl/dsh-gateway.key
+    chmod 644 /etc/nginx/ssl/dsh-gateway.crt
+    log "自签证书已生成（SAN=IP:$ssl_ip）"
+    log "  cert: /etc/nginx/ssl/dsh-gateway.crt"
+    log "  key : /etc/nginx/ssl/dsh-gateway.key"
+    log "在宝塔 SSL → 其他证书 中粘贴两者内容；手机需安装信任该证书"
+    ;;
+
+  uninstall)
+    log "卸载（保留 $DATA_DIR 与 $CONF_DIR）"
+    systemctl disable --now dsh-gateway frps 2>/dev/null || true
+    rm -f /etc/systemd/system/dsh-gateway.service /etc/systemd/system/frps.service
+    systemctl daemon-reload
+    log "已停止并移除服务"
+    ;;
+esac

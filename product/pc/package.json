@@ -1,0 +1,43 @@
+{
+  "name": "dsh-link-pc",
+  "productName": "DSH Link",
+  "version": "0.1.0",
+  "description": "DSH Link PC 端 — 一键启动 DeepSeek Harness 并接入服务器，手机随时远程操控",
+  "main": "main.js",
+  "author": "DSH Link",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "set DSHLINK_SMOKE=1&& electron .",
+    "dist": "electron-builder",
+    "fetch-frpc": "powershell -ExecutionPolicy Bypass -File scripts/fetch-frpc.ps1"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "jsqr": "^1.4.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.dshlink.pc",
+    "productName": "DSH Link",
+    "directories": { "output": "dist" },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "frpc-bin/frpc.exe"
+    ],
+    "win": {
+      "target": ["nsis", "portable"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "DSH Link"
+    }
+  }
+}

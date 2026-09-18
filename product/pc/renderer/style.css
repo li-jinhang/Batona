@@ -1,0 +1,57 @@
+/* DSH Link — renderer 样式 */
+:root {
+  --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+  --text: #e6e8ee; --muted: #8b93a3; --accent: #4f8cff; --ok: #2ecc71; --bad: #e74c3c; --warn: #e67e22;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 14px/1.6 system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  padding: 20px; max-width: 720px; margin: 0 auto;
+}
+.hidden { display: none !important; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+.hero { text-align: center; }
+.hero-row { display: flex; align-items: center; justify-content: center; gap: 14px; }
+.hero h1 { font-size: 22px; margin: 0; }
+.sub { color: var(--muted); font-size: 13px; }
+h2 { font-size: 15px; margin-bottom: 10px; }
+.hint { color: var(--muted); font-size: 12px; margin: 6px 0; }
+.msg { color: var(--muted); font-size: 13px; min-height: 18px; margin-top: 8px; }
+
+/* 模块标题行：标题居左，指示灯推到右侧（纵向对齐） */
+.mod-head { display: flex; align-items: center; margin-bottom: 10px; }
+.mod-head h2 { margin: 0; }
+.mod-head .dot { margin-left: auto; }
+.mod-head + button { margin-top: 4px; }   /* 模块内按钮：正常长度，居左 */
+
+textarea, input[type=text] {
+  width: 100%; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--panel2); color: var(--text);
+  font: 14px/1.5 ui-monospace, Consolas, monospace; resize: vertical;
+}
+.row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+button {
+  padding: 9px 16px; border-radius: 10px; border: none;
+  background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; font-size: 14px;
+}
+button.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+button.danger { background: rgba(231,76,60,.85); }
+
+/* 指示灯 */
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #444; flex: none; }
+.dot.on { background: var(--ok); }
+.dot.off { background: var(--bad); }
+
+#qr-box { text-align: center; }
+#qr-img { width: 240px; height: 240px; border-radius: 8px; background: #fff; padding: 8px; }
+
+#qr-box + .row { justify-content: center; }
+.conn {
+  margin-top: 8px; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 8px; font: 12px/1.5 ui-monospace, Consolas, monospace;
+  color: var(--muted); word-break: break-all; text-align: center;
+}
+
+#scan-panel video { width: 100%; border-radius: 10px; background: #000; }
+.toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }

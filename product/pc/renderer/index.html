@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSH Link</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 引导页：未绑定 -->
+<section id="view-bind" class="view hidden">
+  <div class="card hero">
+    <h1>DSH Link</h1>
+    <p class="sub">手机远程操控 DeepSeek Harness</p>
+  </div>
+  <div class="card">
+    <h2>添加服务器</h2>
+    <p class="hint">粘贴服务器安装时生成的连接串（dsh-gw://...），或用摄像头扫描。</p>
+    <textarea id="conn-input" rows="3" placeholder="dsh-gw://服务器IP?frpPort=7000&frpToken=...&pair=..."></textarea>
+    <div class="row">
+      <button id="btn-parse">解析并保存</button>
+      <button id="btn-scan" class="secondary">摄像头扫码</button>
+    </div>
+    <p id="bind-msg" class="msg"></p>
+  </div>
+  <div class="card" id="scan-panel" hidden>
+    <video id="scan-video" autoplay playsinline muted></video>
+    <button id="btn-scan-stop" class="secondary">关闭扫码</button>
+  </div>
+</section>
+
+<!-- 主界面：已绑定 -->
+<section id="view-main" class="view hidden">
+  <div class="card hero">
+    <div class="hero-row">
+      <h1>DSH Link PC</h1>
+      <button id="btn-unbind" class="danger">解绑</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="mod-head">
+      <h2>服务状态</h2>
+      <span class="dot" id="dot-all"></span>
+    </div>
+    <div class="row">
+      <button id="btn-start">一键启动</button>
+      <button id="btn-stop" class="secondary">停止</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="mod-head">
+      <h2>DSH（笔记本）</h2>
+      <span class="dot" id="dot-dsh"></span>
+    </div>
+    <button id="btn-pc-settings" class="primary">电脑设置</button>
+    <p id="dsh-hint" class="hint"></p>
+  </div>
+
+  <div class="card">
+    <div class="mod-head">
+      <h2>隧道（frpc）</h2>
+      <span class="dot" id="dot-frpc"></span>
+    </div>
+    <button id="btn-frpc" class="primary">启动隧道</button>
+  </div>
+
+  <div class="card">
+    <div class="mod-head">
+      <h2>服务器（网关）</h2>
+      <span class="dot" id="dot-gw"></span>
+    </div>
+    <button id="btn-cloud-info" class="primary">云端信息</button>
+  </div>
+
+  <div class="card">
+    <h2>手机配对</h2>
+    <p class="hint">手机 App「添加服务器」扫此码，自动完成服务器与 PC 绑定。</p>
+    <div id="qr-box"><img id="qr-img" alt="配对二维码"></div>
+    <div class="row">
+      <button id="btn-copy-conn" class="secondary">复制验证链接</button>
+    </div>
+    <p id="conn-text" class="conn"></p>
+  </div>
+
+  <div class="card">
+    <h2>设置</h2>
+    <label class="toggle"><input type="checkbox" id="autostart"> 开机自启（保持隧道在线）</label>
+    <p class="hint">frpc 自动下载自 GitHub；下载慢可在启动前设置环境变量 DSHLINK_FRP_MIRROR。</p>
+  </div>
+</section>
+
+<script src="vendor/jsqr.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

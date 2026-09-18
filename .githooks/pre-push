@@ -1,0 +1,39 @@
+#!/bin/sh
+# ============================================================================
+# DSH Link — pre-push 钩子
+#
+# 目的：在代码离开本机之前拦住编译错误。
+#   服务器采用「拉取后在服务器构建」的部署方式，若推送了编译不过的网关代码，
+#   服务器上的 deploy.sh 会在构建阶段失败并触发自动回滚 —— 白跑一趟。
+#   在本地先跑一遍 typecheck + build，成本几秒，能省掉整轮往返。
+#
+# 一次性启用（新克隆的仓库不会自动带上钩子）：
+#   git config core.hooksPath .githooks
+#
+# 临时跳过：git push --no-verify
+# ============================================================================
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+GATEWAY_DIR="$REPO_ROOT/product/server/gateway"
+
+if [ ! -d "$GATEWAY_DIR" ]; then
+  echo "[pre-push] 未找到 $GATEWAY_DIR，跳过校验"
+  exit 0
+fi
+
+cd "$GATEWAY_DIR"
+
+if [ ! -d node_modules ]; then
+  echo "[pre-push] 跳过校验：依赖未安装"
+  echo "[pre-push]   如需启用推送前校验，请先执行：cd product/server/gateway && npm install"
+  exit 0
+fi
+
+echo "[pre-push] 校验网关：typecheck…"
+npm run --silent typecheck
+
+echo "[pre-push] 校验网关：build…"
+npm run --silent build
+
+echo "[pre-push] 校验通过，允许推送"

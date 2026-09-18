@@ -1,0 +1,45 @@
+# ============================================================================
+# DSH Link — 换行符与二进制属性
+#
+# 为什么需要这个文件：
+#   本机是 Windows、服务器是 Linux，且仓库里有 .sh 脚本（install.sh / deploy.sh / gradlew）。
+#   若不做约束，一次 core.autocrlf 配置不当就会让服务器上的脚本以 CRLF 落盘，
+#   执行时报 `\r: command not found`（表现为"脚本跑了但什么都没发生"）。
+#   这里把规则写进仓库，任何机器 clone 后行为一致，不依赖各人本地 git 配置。
+#
+# 注意：.gitattributes 不支持行尾注释，注释必须独占一行。
+# ============================================================================
+
+# 默认：文本文件一律以 LF 存取。
+# 显式写 eol=lf 是为了覆盖 Windows 上常见的 core.autocrlf=true —— 否则仓库里存 LF、
+# 本地工作区却是 CRLF，不同机器 clone 出来的工作区不一致，容易产生莫名其妙的差异。
+* text=auto eol=lf
+
+# ── 必须在 Linux 上以 LF 执行 ───────────────────────────────────────────
+*.sh     text eol=lf
+gradlew  text eol=lf
+# git 钩子在 Git Bash（sh）下执行，同样不能被转成 CRLF
+.githooks/*  text eol=lf
+
+# ── Windows 专用脚本保持 CRLF ──────────────────────────────────────────
+*.ps1    text eol=crlf
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
+
+# ── 二进制：禁止任何换行符转换，否则文件损坏 ────────────────────────────
+*.jar    binary
+*.exe    binary
+*.apk    binary
+*.aab    binary
+*.dll    binary
+*.so     binary
+*.png    binary
+*.jpg    binary
+*.ico    binary
+*.ttf    binary
+*.woff   binary
+*.woff2  binary
+
+# ── 语言统计：让 GitHub/Gitee 的语言识别更准确 ──────────────────────────
+package-lock.json  linguist-generated
+*.md               linguist-documentation

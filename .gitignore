@@ -1,0 +1,63 @@
+# ============================================================================
+# DSH Link — Git 忽略规则
+#
+# 原则：只提交源码与文档。
+#   1) 依赖与构建产物不入库（本机 node_modules/dist/build 合计约 1.8GB）；
+#   2) 含密钥的运行时文件绝不入库（见下"敏感"段）；
+#   3) 发布用二进制（exe/apk 约 83MB/20MB）不入库 —— 由服务器静态托管分发。
+#
+# 注意：.gitignore 不支持行尾注释，注释必须独占一行。
+# ============================================================================
+
+# ── 依赖 ────────────────────────────────────────────────────────────────
+node_modules/
+
+# ── 构建产物 ────────────────────────────────────────────────────────────
+# PC：electron-builder 产物（dist/ 约 166MB，含 83MB 安装包）
+product/pc/dist/
+# 网关：服务器侧构建，产物不入库（install.sh 部署时 npm run build 生成）
+product/server/gateway/dist/
+# Android：Gradle 构建产物与 IDE 状态
+product/android/app/build/
+product/android/build/
+product/android/.gradle/
+product/android/.kotlin/
+product/android/.idea/
+
+# ── 发布用二进制：一律不入库 ────────────────────────────────────────────
+# 这些是"要分发给用户"的产物，由服务器静态目录托管（见 docs/服务器部署-git.md §6）。
+# 体积与数量都远超 git 的适用范围：
+#   product/android/DSHLink-v0.1.*-debug.apk   共 32 个，约 620MB
+#   product/pc/dist/*.exe                      安装包/便携版各 83MB
+#   product/pc/frpc-bin/frpc.exe               16MB，运行时自动下载
+*.apk
+*.aab
+*.exe
+*.msi
+*.dmg
+*.appimage
+*.blockmap
+
+# ── 本机相关配置（含本机绝对路径，入库会污染其他机器）────────────────────
+product/android/local.properties
+
+# ── 敏感：运行时生成的密钥文件（务必保持忽略）────────────────────────────
+# frpc.toml 内含真实 frp token 与服务器 IP —— 泄露等于把笔记本 DSH 暴露出去
+product/pc/frpc-bin/frpc.toml
+# frpc.exe 为自动下载的 16MB 二进制
+product/pc/frpc-bin/frpc.exe
+# 安装脚本运行时生成的绑定页（含连接串与密码）
+product/server/gateway/web/pair.html
+product/server/gateway/data/
+
+# ── 旧的手工打包产物（已由 git 流程取代）────────────────────────────────
+server-gateway.tar.gz
+*.tar.gz
+*.zip
+
+# ── 系统 / 编辑器 ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+.claude/

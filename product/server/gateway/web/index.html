@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>DSH Remote</title>
+<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.webmanifest">
+</head>
+<body>
+<header id="topbar">
+  <h1>DSH Remote</h1>
+  <span id="conn-state" class="pill">未连接</span>
+</header>
+
+<!-- 登录 -->
+<section id="login-view" class="view">
+  <div class="card">
+    <h2>登录网关</h2>
+    <input id="login-user" placeholder="用户名" autocomplete="username">
+    <input id="login-pass" type="password" placeholder="密码" autocomplete="current-password">
+    <input id="login-totp" inputmode="numeric" placeholder="TOTP 动态码（首次绑定/已启用时）" autocomplete="one-time-code">
+    <input id="login-device" placeholder="设备名（可选）" value="phone">
+    <button id="login-btn">登录</button>
+    <p id="login-msg" class="msg"></p>
+    <details>
+      <summary>首次使用：TOTP 绑定</summary>
+      <p>先留空动态码登录 → 用响应中的 otpauth:// 链接在 Authenticator 中录入密钥 → 再次登录输入动态码完成绑定。</p>
+    </details>
+  </div>
+</section>
+
+<!-- 主界面 -->
+<section id="main-view" class="view hidden">
+  <nav id="tabs">
+    <button data-tab="chat" class="tab active">会话</button>
+    <button data-tab="workspace" class="tab">工作区</button>
+    <button data-tab="models" class="tab">模型</button>
+    <button data-tab="devices" class="tab">设备</button>
+  </nav>
+
+  <!-- 会话 -->
+  <div id="tab-chat" class="tabpane active">
+    <div id="session-bar">
+      <select id="session-select"></select>
+      <button id="new-session-btn">＋ 新会话</button>
+      <input id="resume-id" placeholder="后端会话 id（如 mock-1）">
+      <button id="resume-btn" class="secondary">恢复</button>
+      <button id="cancel-btn" class="secondary">停止</button>
+    </div>
+    <div id="chat" class="chat"></div>
+    <div id="approval-bar" class="approval hidden"></div>
+    <div id="question-bar" class="approval hidden"></div>
+    <div id="composer">
+      <textarea id="input" rows="2" placeholder="输入消息…（含 [ask] 前缀触发提问剧本）"></textarea>
+      <button id="send-btn">发送</button>
+    </div>
+  </div>
+
+  <!-- 工作区 -->
+  <div id="tab-workspace" class="tabpane">
+    <div class="card">
+      <h3>新建工作区</h3>
+      <input id="ws-path" placeholder="笔记本上的目录路径（需已存在）">
+      <button id="ws-create-btn">创建工作区</button>
+    </div>
+    <div class="card">
+      <h3>工作区列表</h3>
+      <ul id="ws-list"></ul>
+    </div>
+  </div>
+
+  <!-- 模型 -->
+  <div id="tab-models" class="tabpane">
+    <div class="card">
+      <h3>模型目录</h3>
+      <ul id="model-list"></ul>
+      <p class="hint">选择后应用于当前会话（model.select）。</p>
+    </div>
+  </div>
+
+  <!-- 设备 -->
+  <div id="tab-devices" class="tabpane">
+    <div class="card">
+      <h3>已注册设备</h3>
+      <ul id="device-list"></ul>
+      <button id="logout-btn">退出登录</button>
+    </div>
+  </div>
+</section>
+
+<div id="toast" class="hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>
