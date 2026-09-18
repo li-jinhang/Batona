@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-gateway",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "private": true,
   "type": "module",
   "description": "DeepSeek Harness 手机远程接入网关（Phase 1 MVP）",
