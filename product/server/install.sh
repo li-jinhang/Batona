@@ -249,13 +249,27 @@ EOF
   systemctl daemon-reload
   systemctl enable dsh-gateway
   systemctl restart dsh-gateway
-  sleep 2
-  if curl -fsS http://127.0.0.1:3090/healthz >/dev/null 2>&1; then
+
+  # 等待网关就绪后再判定。
+  # 不能只 sleep 2 探一次：网关在绑定 HTTP 端口之前会先建立 DSH 事件流连接
+  # （remote.mux / remote.host），若 DSH 侧不可达（例如 PC 端 frpc 隧道未连），
+  # 重连循环会让端口绑定推迟到约 8~10 秒 —— 单次探测会把它误判为部署失败。
+  # 这里最多等 30 秒，每 2 秒探一次，成功即返回。
+  local ready=0 i
+  for i in $(seq 1 15); do
+    if curl -fsS --max-time 3 http://127.0.0.1:3090/healthz >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 2
+  done
+
+  if [ "$ready" = "1" ]; then
     local gw_ver
     gw_ver="$(node -p "try{require('/opt/dsh-gateway/app/package.json').version}catch(e){'unknown'}" 2>/dev/null || echo unknown)"
     log "网关健康检查 OK（网关版本 v${gw_ver}）"
   else
-    err "网关未通过健康检查：journalctl -u dsh-gateway -n 30"
+    err "网关未通过健康检查（已等待 30 秒）：journalctl -u dsh-gateway -n 30"
     exit 1
   fi
 }
