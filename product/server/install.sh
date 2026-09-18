@@ -228,6 +228,50 @@ EOF
   chmod 600 "$CONFIG_FILE"
 }
 
+ensure_gateway_config_keys() {
+  # 升级场景专用：config.json 已存在时不会整体重写（要保留密码等），
+  # 但**新增的配置项必须补上**，否则新功能在已安装的服务器上是静默关闭的。
+  #
+  # 具体案例：agentKey 是 DSH launch token 上报通道的共享密钥。缺省时网关日志会打印
+  #   [gateway] DSH launch token 上报通道：未配置 agentKey，已关闭
+  # 而 PC 端仍在往 /api/dsh/launch-token 上报 → 被 404 拒绝 → DSH 0.1.2+ 的
+  # 会话认证链断裂，表现为手机端拿到 401/历史为空。
+  # 老版本 install.sh 没有这个配置项，所以从旧版本升级上来的机器必然缺它。
+  [ -f "$CONFIG_FILE" ] || return 0
+
+  local key; key="$(info_get frpToken)"
+  if [ -z "$key" ]; then
+    err "server-info.json 缺少 frpToken，跳过 agentKey 补写"
+    return 0
+  fi
+
+  # 已存在且非空则不动（可能被有意改过），仅提示差异
+  if node -e '
+      const fs=require("fs");
+      let c; try { c=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); } catch(e){ process.exit(2); }
+      if (c.agentKey) { process.exit(0); } else { process.exit(1); }
+    ' "$CONFIG_FILE" 2>/dev/null; then
+    local cur; cur="$(node -p 'require(process.argv[1]).agentKey||""' "$CONFIG_FILE" 2>/dev/null || echo '')"
+    if [ "$cur" != "$key" ]; then
+      log "agentKey 已存在且与 frpToken 不同（保留现值，若 PC 端上报被拒请手工对齐）"
+    fi
+    return 0
+  fi
+
+  if node -e '
+      const fs=require("fs");
+      const f=process.argv[1], key=process.argv[2];
+      const c=JSON.parse(fs.readFileSync(f,"utf8"));
+      c.agentKey=key;
+      fs.writeFileSync(f, JSON.stringify(c,null,2)+"\n");
+    ' "$CONFIG_FILE" "$key" 2>/dev/null; then
+    chmod 600 "$CONFIG_FILE"
+    log "已补写 agentKey（DSH launch token 上报通道开启）"
+  else
+    err "agentKey 补写失败，请手工在 $CONFIG_FILE 加入 \"agentKey\": \"<frpToken>\""
+  fi
+}
+
 ensure_gateway_service() {
   cat > /etc/systemd/system/dsh-gateway.service <<'EOF'
 [Unit]
@@ -361,6 +405,9 @@ EOF
     deploy_gateway "$src"
     if [ ! -f "$CONFIG_FILE" ]; then
       write_gateway_config "$(info_get gwUser || echo admin)" "$(info_get gwPass || echo change-me)"
+    else
+      # 已安装的机器：整体保留配置，但补上新增配置项（如 agentKey）
+      ensure_gateway_config_keys
     fi
     ensure_gateway_service
     log "升级完成"
