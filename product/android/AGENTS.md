@@ -28,7 +28,14 @@
 .\gradlew.bat :app:assembleDebug
 ```
 
-若改动了扫码、绑定、登录、WebSocket 或会话 UI，还应在真机验证：首次绑定、TOTP 登录、断网重连、流式对话和审批/提问应答。构建产生的 APK 是发布物，不要把新的 APK、`build/`、`.gradle/` 或 IDE 状态作为源码提交。
+若改动了扫码、绑定、登录、WebSocket 或会话 UI，按下方的 **Android Studio 模拟器基线** 验证：首次绑定、TOTP 登录、断网重连、流式对话和审批/提问应答。构建产生的 APK 是发布物，不要把新的 APK、`build/`、`.gradle/` 或 IDE 状态作为源码提交。
+
+## Android Studio 模拟器基线
+
+- 当前完整功能验收固定在 Android Studio Emulator 上进行；不要将真机开发者模式、USB 调试或物理相机作为验收前提。
+- 用 Android Studio 打开 `product/android/`，选择模拟器并运行 Debug 变体。模拟器联网后应通过服务器的 HTTPS/WSS 公网入口联调，不应访问 PC 或服务器的回环地址。
+- 绑定页使用“粘贴连接串 → 解析并绑定”路径；扫码是独立的相机 UI 验收，不阻塞模拟器端到端测试。连接串只通过受控渠道输入模拟器，绝不硬编码、提交、输出到日志或发送到聊天。
+- 模拟器验收覆盖：首次绑定和 TOTP、会话/工作区读取、新建会话、流式回复、审批与提问应答，以及关闭/恢复模拟器网络后的重连。完成条件是恢复网络后仍可继续发送消息。
 
 ## 产品 UI 与历史决策
 
@@ -50,12 +57,12 @@ DSH 的权威关联是 `workspace.list` 返回的 `WorkspaceView.sessionIds`；`
 
 会话标题由 DSH `session/title` 事件产生，`session.list` 未必带标题；UI 必须保留 `title ?: sessionId` 的兜底。标题缺失时由网关缓存/历史提取修复，不能在客户端编造标题。
 
-## 手机端验收：DSH 提问
+## 模拟器验收：DSH 提问
 
-每次改动 WebSocket、会话状态或提问 UI，至少真机验证一次：在会话中要求 agent 使用 `ask_user_question` 给出“方案 A / 方案 B”选择题，手机应显示提问卡片和选项，会话状态显示 `waiting-question` 黄点；选择后以 `respond` 回答，agent 继续执行，状态恢复为 done/idle。也应验证无选项的文本问题。
+每次改动 WebSocket、会话状态或提问 UI，至少在模拟器验证一次：在会话中要求 agent 使用 `ask_user_question` 给出“方案 A / 方案 B”选择题，模拟器应显示提问卡片和选项，会话状态显示 `waiting-question` 黄点；选择后以 `respond` 回答，agent 继续执行，状态恢复为 done/idle。也应验证无选项的文本问题。
 
 提问卡片不出现时按顺序检查：网关是否归一化 `question/requested`、App 是否收到推送并反序列化、响应是否携带原始请求 RPC id；查看服务器 `journalctl -u dsh-gateway` 与 Android `logcat`，不要通过本地伪造状态点解决。
 
 ## 构建、安装与更新
 
-用 Android Studio 打开 `product/android/`，完成 Gradle Sync 后构建 APK；命令行构建使用本文件的 `assembleDebug`。版本号仅在 `app/build.gradle.kts` 的 `versionCode` / `versionName` 递增。安装新 APK 会保留应用可保留的数据，但首次绑定、Camera 权限拒绝、TOTP、断网重连和真实会话流仍须回归验证。
+用 Android Studio 打开 `product/android/`，完成 Gradle Sync 后在模拟器运行 Debug 变体；命令行构建使用本文件的 `assembleDebug`。版本号仅在 `app/build.gradle.kts` 的 `versionCode` / `versionName` 递增。模拟器重装后仍须回归首次绑定、TOTP、断网重连和真实会话流；Camera 权限拒绝仅在单独验证扫码 UI 时检查。
