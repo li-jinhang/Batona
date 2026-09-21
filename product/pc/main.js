@@ -20,6 +20,12 @@ const https = require('node:https');
 const http = require('node:http');
 const QRCode = require('qrcode');
 const AdmZip = require('adm-zip');
+const { DirectoryService } = require('./dir-service.js');
+
+// 本机服务固定监听 3080/3081，因此桌面端不能并行运行多个主实例。
+// 第二次启动应将焦点交给第一个实例，而不是抢占端口后令主进程崩溃。
+const ownsSingleInstanceLock = app.requestSingleInstanceLock();
+if (!ownsSingleInstanceLock) app.quit();
 
 // 内置隧道客户端（依赖 ws；缺失时静默降级到 frpc，不阻断启动）
 let TunnelClient = null;
@@ -228,6 +234,8 @@ let tunnelClient = null;
 /** auto 模式黏滞位：本会话内已判内置隧道不可用，不再反复探测（frpc 连续崩溃时解禁一次） */
 let builtinBlocked = false;
 let frpcCrashTimes = [];
+/** 同一时刻只允许一次隧道启动：主进程自动启动、渲染 IPC 与重连回调会并发到达。 */
+let tunnelStartPromise = null;
 
 /** 隧道是否已连通（内置或 frpc 任一） */
 function tunnelUp() {
@@ -311,10 +319,17 @@ function attemptBuiltin(timeoutMs = 12000) {
  * 模式：DSHLINK_TUNNEL=auto（默认）| builtin | frp。
  *   auto：先试内置，不可用则回退 frpc 并在本会话黏滞（例外：frpc 连续崩溃 ≥3 次时再试一次内置）
  */
-async function startFrpc() {
+function startFrpc() {
+  if (tunnelStartPromise) return tunnelStartPromise;
+  tunnelStartPromise = startFrpcOnce().finally(() => { tunnelStartPromise = null; });
+  return tunnelStartPromise;
+}
+
+async function startFrpcOnce() {
   if (tunnelUp()) return true;
   if (!state.binding) return false;
-  startDirService();   // 目录服务须先起：两条路径都要暴露 3081
+  // 目录服务必须先起；端口冲突时不能继续把错误服务暴露给手机端。
+  if (!(await startDirService())) return false;
 
   const mode = process.env.DSHLINK_TUNNEL || 'auto';
   if (mode !== 'frp') {
@@ -614,7 +629,7 @@ function startTokenReportTimer() {
 }
 
 // ── 目录浏览服务（读笔记本本地目录，供手机端浏览/选择工作区路径）──────
-let dirServer = null;
+let dirService = null;
 
 /** 列出某目录的磁盘挂载根（Windows 盘符）或子目录 */
 function listDir(p) {
@@ -631,35 +646,21 @@ function listDir(p) {
 }
 
 function startDirService() {
-  if (dirServer) return true;
-  try {
-    dirServer = http.createServer((req, res) => {
-      try {
-        const u = new URL(req.url, 'http://127.0.0.1');
-        if (u.pathname === '/list') {
-          const p = u.searchParams.get('p') || '';
-          const data = listDir(p);
-          res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
-          res.end(JSON.stringify({ ok: true, ...data }));
-          return;
-        }
-        res.writeHead(404, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'not found' }));
-      } catch (e) {
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: e.message }));
-      }
+  if (!dirService) {
+    dirService = new DirectoryService({
+      host: '127.0.0.1',
+      port: DIR_SERVICE_PORT,
+      listDir,
+      log,
     });
-    dirServer.listen(DIR_SERVICE_PORT, '127.0.0.1', () => log(`目录服务就绪 http://127.0.0.1:${DIR_SERVICE_PORT}`));
-    return true;
-  } catch (e) {
-    log(`目录服务启动失败: ${e.message}`);
-    return false;
   }
+  return dirService.start();
 }
 
 function stopDirService() {
-  if (dirServer) { try { dirServer.close(); } catch {} dirServer = null; }
+  const service = dirService;
+  dirService = null;
+  if (service) void service.stop();
 }
 
 // ── 状态汇总 ──────────────────────────────────────────────────────────
@@ -777,7 +778,7 @@ function registerIpc() {
 }
 
 // ── 生命周期 ──────────────────────────────────────────────────────────
-app.whenReady().then(async () => {
+if (ownsSingleInstanceLock) app.whenReady().then(async () => {
   // 自签证书场景（无域名服务器）：忽略证书校验（仅主进程健康探测与后续请求使用）
   session.defaultSession.on('certificate-error', (event, _wc, _url, _error, _cert, callback) => {
     event.preventDefault();
@@ -820,11 +821,18 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on('window-all-closed', (e) => {
+if (ownsSingleInstanceLock) app.on('second-instance', () => {
+  if (!win) { createWindow(); return; }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+});
+
+if (ownsSingleInstanceLock) app.on('window-all-closed', (e) => {
   // 常驻托盘：关闭窗口不退出（保持隧道）
   if (process.platform !== 'darwin') { /* 不退出 */ }
 });
 
-app.on('before-quit', () => { stopFrpc(); stopDirService(); stopDsh(); });
+if (ownsSingleInstanceLock) app.on('before-quit', () => { stopFrpc(); stopDirService(); stopDsh(); });
 
-app.on('activate', () => { if (!win) createWindow(); });
+if (ownsSingleInstanceLock) app.on('activate', () => { if (!win) createWindow(); });

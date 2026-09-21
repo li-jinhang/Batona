@@ -151,7 +151,8 @@ async function init() {
   $('autostart').onchange = async (e) => { await api.autostartSet(e.target.checked); };
 
   const b = await api.bindingGet();
-  if (b) { await api.serviceStart(); showMain(); }
+  // 服务生命周期由主进程统一自动启动；渲染进程重复调用会并发建立两条隧道。
+  if (b) { showMain(); }
   else { showBind(); }
   setInterval(refreshStatus, 4000);
 }

@@ -1,7 +1,7 @@
 {
   "name": "dsh-link-pc",
   "productName": "DSH Link",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DSH Link PC 端 — 一键启动 DeepSeek Harness 并接入服务器，手机随时远程操控",
   "main": "main.js",
   "author": "DSH Link",
@@ -10,6 +10,7 @@
     "start": "electron .",
     "smoke": "set DSHLINK_SMOKE=1&& electron .",
     "test:tunnel-client": "node test/tunnel-client.test.js",
+    "test:dir-service": "node test/dir-service.test.js",
     "dist": "electron-builder",
     "fetch-frpc": "powershell -ExecutionPolicy Bypass -File scripts/fetch-frpc.ps1"
   },
