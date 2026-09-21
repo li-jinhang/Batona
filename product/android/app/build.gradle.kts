@@ -13,8 +13,8 @@ android {
         applicationId = "com.dshlink.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 26
-        versionName = "0.1.26"
+        versionCode = 27
+        versionName = "0.1.27"
     }
 
     buildTypes {
