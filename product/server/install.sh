@@ -157,7 +157,8 @@ ensure_frps() {
 bindPort = 7000
 auth.method = "token"
 auth.token = "${token}"
-transport.tls.enable = true
+# frp v0.68+ 默认支持 TLS；force 才是服务端只接受 TLS 的有效配置键。
+transport.tls.force = true
 webServer.addr = "127.0.0.1"
 webServer.port = 7500
 webServer.user = "admin"
