@@ -21,6 +21,7 @@ const http = require('node:http');
 const QRCode = require('qrcode');
 const AdmZip = require('adm-zip');
 const { DirectoryService } = require('./dir-service.js');
+const { resolveDshLauncher } = require('./dsh-launcher.js');
 
 // 本机服务固定监听 3080/3081，因此桌面端不能并行运行多个主实例。
 // 第二次启动应将焦点交给第一个实例，而不是抢占端口后令主进程崩溃。
@@ -533,16 +534,20 @@ let dshProc = null;
 
 async function startDsh() {
   if (await detectDsh()) { state.dshRunning = true; return true; }
-  const cmd = process.env.DSHLINK_DSH_CMD || 'dsh';
+  const launcher = resolveDshLauncher();
+  if (!launcher) {
+    log('DSH 启动失败：未找到 dsh 或 npx；请安装 DSH，或设置 DSHLINK_DSH_CMD');
+    return false;
+  }
   // DSH 0.1.2+ 的 /api 有 browser-trust fence：默认只信任 loopback/LAN。
   // 网关经 frp 隧道从服务器访问（Host 为 127.0.0.1:3080），需显式声明 trusted-host 才放行。
   const defaultArgs = '--profile web --no-open --trusted-host 127.0.0.1:3080';
-  const args = (process.env.DSHLINK_DSH_ARGS || defaultArgs).split(/\s+/);
-  log(`starting DSH: ${cmd} ${args.join(' ')}`);
+  const args = [...launcher.prefixArgs, ...(process.env.DSHLINK_DSH_ARGS || defaultArgs).split(/\s+/)];
+  log(`starting DSH (${launcher.source}): ${launcher.command} ${args.join(' ')}`);
   try {
     // dsh 是 .cmd（npm 全局 bin），经 cmd 启动；Windows cmd 默认代码页 GBK，
     // 会导致 DSH 输出的 UTF-8 中文被以 GBK 渲染成乱码（锟斤拷）。先 chcp 65001 强制 UTF-8。
-    const cmdLine = `${cmd} ${args.join(' ')}`;
+    const cmdLine = `${launcher.command} ${args.join(' ')}`;
     dshProc = spawn('cmd.exe', ['/c', `chcp 65001 >nul && ${cmdLine}`], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     dshProc.stdout?.on('data', (d) => {
       const s = String(d);
