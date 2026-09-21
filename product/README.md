@@ -1,103 +1,103 @@
-# DSH Link — 产品化三端
+# DSH Link — 三端工程导航与共享契约
 
-> 手机 App 随时随地操控笔记本上的 DeepSeek Harness；配置全部收敛到软件内。
-> 绑定协议见 [docs/绑定协议.md](docs/绑定协议.md)。
+DSH Link 让 Android 手机通过公网网关远程操控笔记本上的 DeepSeek Harness（DSH）。
+Agent、LLM 与工具执行始终留在 PC；服务器只提供认证、会话路由和 PC 的出站隧道。
 
-## 拓扑
+## 文档边界
 
-```
-手机 App ──HTTPS──▶ 服务器（网关 + 内置隧道服务端） ◀──WSS 隧道── PC 软件（DSH web）
-```
+`docs/` 只保留项目的外部研究和需求依据：
 
-- **agent / LLM / 工具执行全部在 PC**；服务器（2核2G 足够）只跑 Node 网关（内置隧道服务端同进程）；
-  灰度期可回退 frps（见 docs/服务器部署-git.md「内置隧道切换」），稳定后再彻底移除；
-- 绑定：服务器安装输出连接串 `dsh-gw://IP?frpToken=…&gwUser=…&gwPass=…&pair=…`，
-  PC 软件粘贴/扫码 → 自动起隧道；手机扫 PC 二维码 → 自动填充登录 → 绑定完成。
+- [调查-DSH手机远程操控插件.md](docs/调查-DSH手机远程操控插件.md)
+- [需求-DSH远程接入网关.md](docs/需求-DSH远程接入网关.md)
+
+实现记忆、端内操作、发布、排错与历史决策不再放入 `docs/`：端内信息进入各目录的 `AGENTS.md`，本文件保留跨端架构、契约与联调规则。
+
+## Coding Agent：按改动路径读取记忆
+
+开始分析、修改或验证前，必须先按待改路径读取对应文件；不要把另一个端的约束当成当前端的事实。
+
+| 待改路径 | 必读记忆 |
+|---|---|
+| `android/**` | [android/AGENTS.md](android/AGENTS.md) |
+| `pc/**` | [pc/AGENTS.md](pc/AGENTS.md) |
+| `server/**` | [server/AGENTS.md](server/AGENTS.md) |
+| `docs/**` 或本文件 | 本文件及保留的调查/需求文件 |
+| 同时涉及两端或三端 | 所有受影响端的 `AGENTS.md`，再读本文件的跨端契约 |
 
 ## 目录
 
-| 端 | 位置 | 交付物 |
+| 范围 | 位置 | 工作入口 |
 |---|---|---|
-| 服务器 | [server/install.sh](server/install.sh) | 首次安装脚本；日常更新用 [server/deploy.sh](server/deploy.sh)（宝塔终端运行） |
-| PC（Win11） | [pc/](pc/) | Electron 软件（本机构建验证通过） |
-| 手机（Android） | [android/](android/) | 原生 Kotlin+Compose 工程（本地构建 APK） |
-| 协议 | [docs/绑定协议.md](docs/绑定协议.md) | dsh-gw:// 连接串 + 配对流程 + 三端契约 |
+| Android 客户端 | [android/](android/) | [android/AGENTS.md](android/AGENTS.md) |
+| Windows PC 客户端 | [pc/](pc/) | [pc/AGENTS.md](pc/AGENTS.md) |
+| 网关与服务器部署 | [server/](server/) | [server/AGENTS.md](server/AGENTS.md) |
+| 调查与需求依据 | [docs/](docs/) | [调查](docs/调查-DSH手机远程操控插件.md) · [需求](docs/需求-DSH远程接入网关.md) |
 
-## 快速开始
+## 跨端架构与职责
 
-### 1. 服务器（一次性，之后只跑更新）
-
-```bash
-# 代码从 Gitee 私有仓库 clone 到 /www/wwwroot/117.72.10.87/26-009DSHlink
-# 首次接入（部署密钥 + clone）见 docs/服务器部署-git.md
-cd /www/wwwroot/117.72.10.87/26-009DSHlink
-bash product/server/install.sh --install --ip 你的公网IP --admin admin --password 强密码
-# 输出连接串（PC/手机绑定用）；服务自启，systemd 托管
+```
+Android 手机 App ── HTTPS / WSS ──▶ 服务器网关 ◀── WSS 隧道 ── PC Electron（本地 DSH）
 ```
 
-更新（频繁迭代场景，数据/配置保留）：
+| 端 | 负责 | 不负责 |
+|---|---|---|
+| Android | 绑定、登录、会话/工作区/模型/设备 UI，消费网关 RPC | 直连 PC、保存 DSH launch token、执行 Agent |
+| PC | 启动本地 DSH、保管连接串、维持出站隧道、上报 launch token | 对公网监听 DSH、把特权能力给 renderer |
+| 服务器 | TLS 后认证、设备管理、协议适配、会话路由、隧道服务端 | 执行 Agent/LLM/工具、主动连入用户内网 PC |
 
-```bash
-git push                # 本机：提交并推送（先递增 gateway/package.json 的 version）
-dsh-deploy              # 服务器：拉取 + 构建 + 校验，失败自动回滚
-dsh-deploy --status     # 部署状态 + 服务/工作区/3080 安全核查
-dsh-deploy --rollback   # 回退到上一次成功部署的版本
+- 公网只暴露反向代理后的 TLS 入口；网关监听 `127.0.0.1:3090`，DSH 只在 PC 回环地址运行。
+- 内置隧道将服务器 3080/3081 仅绑定到回环；旧 frp 回退模式另有 7000，不能将 DSH 端口暴露公网。
+- `trustedHosts` 仅是 DSH 的防重绑栅栏，不是认证；认证由账号密码、TOTP、设备令牌和连接串内共享密钥承担。
+
+## 跨端绑定与连接契约
+
+### 连接串与二维码
+
+服务器安装输出的连接串及二维码载荷相同：
+
+```text
+dsh-gw://<serverIp>?frpPort=7000&gwPort=443&frpToken=<token>&gwUser=<admin>&gwPass=<password>&pair=<code>
 ```
 
-完整流程见 **[docs/服务器部署-git.md](docs/服务器部署-git.md)**。
+`frpToken` 是连接串的必填共享密钥；PC 和 Android 的解析器必须保留 `frpPort`（默认 7000）、`gwPort`（默认 443）、`gwUser`、`gwPass` 与 `pair`。它包含凭据，不能提交、记录、截图公开或写入诊断日志。
 
-### 2. PC 软件（Windows 11）
+绑定路径：服务器安装生成连接串 → PC 扫码/粘贴后保存连接并启动 DSH 与隧道 → PC 显示同载荷二维码 → 手机扫码/粘贴，预填网关账号并完成 TOTP 登录。`pair` 是服务器生成的绑定标识；设备授权的真实安全边界仍是网关登录与设备令牌。
 
-```powershell
-cd product/pc
-npm install
-npm start                 # 开发运行
-npm run dist              # 打包安装包（NSIS + 便携版，输出 dist/）
-```
+### 手机 ↔ 网关 RPC
 
-首次使用：粘贴服务器安装输出的连接串（或摄像头扫服务器页二维码）→ 软件自动
-启动 DSH（未运行时）与 frpc 隧道 → 生成手机配对二维码。frpc.exe 首次自动下载
-（GitHub；慢可设 `$env:DSHLINK_FRP_MIRROR` 或用 `npm run fetch-frpc` 预下载）。
+手机连接 `wss://<server>:<gwPort>/ws?token=…`，也可在首帧 `auth.hello` 完成握手。协议版本为 v1，使用四象限信封：`client-request`、`server-response`、`server-request`、`client-response`。
 
-验证：`npm run smoke`（主进程启动自检）。
+- 上行：`auth.hello`、`session.list/create/resume/prompt/cancel/history/rename`、`workspace.*`、`model.*`、`respond`、`device.*`。
+- 下行：`session/event`、`approval/requested`、`question/requested`。审批/提问必须用原始 `serverRequestRpcId` 经 `respond` 回答。
+- 任何字段、方法、事件或兼容策略变更都必须同步检查 Android、PC、服务器，并更新本文件与受影响端的 `AGENTS.md`。
 
-### 3. 手机 App（Android）
+### PC ↔ 服务器隧道与 launch token
 
-用 **Android Studio** 打开 `product/android/` → Sync（首次会下载 Gradle/依赖）→
-Build → Build APK(s)，安装到手机。
+PC 默认以 `wss://<server>:<gwPort>/tunnel` 建立出站隧道，使用 `Authorization: Bearer <frpToken>`。服务器的 `agentKey` 与连接串 `frpToken` 保持一致；PC 启动 DSH 后以同一密钥调用 `POST /api/dsh/launch-token` 上报每个进程临时的 launch token。
 
-- 首次打开：扫 PC 软件的配对二维码（或粘贴连接串）→ 自动绑定服务器与账号 →
-  输入 TOTP（首次需在 Authenticator 录入 otpauthUri）→ 进入主页；
-- 功能：会话（新建/恢复/历史/流式对话/审批/提问）、工作区、模型切换、设备管理；
-- 安全：连接串含网关账号密码，请妥善保管；吊销设备在「设备」页一键完成。
+隧道线格式在 [pc/tunnel/protocol.js](pc/tunnel/protocol.js) 与 [server/gateway/src/tunnel/protocol.ts](server/gateway/src/tunnel/protocol.ts) 有两份实现，必须同步修改，并运行两端共同消费的黄金向量测试。内置隧道不可用时，PC 在 `auto` 模式可回退 frp；切换服务器到内置隧道前必须确认 PC 已升级。
 
-## 服务器更新流程（用户高频场景）
+## 三端构建、发布与联调
 
-代码托管在 **Gitee 私有仓库**（单仓 monorepo，三端同仓）。日常发布两步：
+| 任务 | 执行位置 | 权威步骤 |
+|---|---|---|
+| 服务器首次接入、Git 更新、回滚、宝塔配置 | Linux 服务器 | [server/AGENTS.md](server/AGENTS.md) |
+| Windows 运行、打包与更新 | PC | [pc/AGENTS.md](pc/AGENTS.md) |
+| APK 构建、安装、UI/真机验证 | Android 工程 | [android/AGENTS.md](android/AGENTS.md) |
 
-1. 本机：改 `product/server/gateway/` → 递增 `gateway/package.json` 的 `version` →
-   `git add -A && git commit && git push`（pre-push 钩子自动跑 typecheck + build）；
-2. 服务器：`dsh-deploy` —— git 拉取 → 替换 `/opt/dsh-gateway/app` → `npm ci` + 构建 →
-   重启 → 比对 `/healthz` 版本号 → 不符则**自动回滚**；
-   `/etc/dsh-gateway`（配置/连接串）与 `/var/lib/dsh-gateway`（账号/设备数据）**不丢失**；
-3. 手机/PC 无需重新绑定（frpToken 保留）。
+跨端发布遵循：先改动并验证受影响端 → 服务器网关版本递增并部署 → 确认 PC 隧道/launch-token 上报 → 用手机完成登录、会话流式消息、审批和提问测试。服务器更新不会删除 `/etc/dsh-gateway` 或 `/var/lib/dsh-gateway`，因此正常更新后 PC/手机无需重新绑定。
 
-> 旧流程（本机 `tar` 打包 → 宝塔文件管理器上传 → 服务器解压后 `install.sh --update`）已废弃。
-> 它的问题是 `install.sh` 与 `gateway/` 分属两条上传路径，容易版本错位——沿用服务器上的旧
-> `install.sh` 会让 systemd 限堆配置静默丢失。现在两者同一 commit，且部署脚本会独立复核该配置。
+最小端到端验收：
 
-发布用二进制（PC 安装包 83MB / APK 20MB）**不入 git**，将由服务器静态目录托管分发（下一阶段）。
+1. PC 导入连接串，DSH 与隧道均在线；
+2. 手机完成 TOTP 登录，能读取会话与工作区；
+3. 新建/恢复会话、流式消息、审批与提问可往返；
+4. 手机断网后恢复，PC 隧道可重连；
+5. 服务器 `dsh-deploy --status` 显示健康检查、版本和端口安全检查均正常。
 
-## 安全要点
+## 设计边界与演进
 
-- 服务器防火墙：**内置隧道模式下只需放行 443**（隧道走 wss，复用网关端口）；灰度期 frp 回退模式另需 7000；
-  **3080/3081 任何模式下都严禁对公网开放**；
-- 内置隧道把 3080/3081 只绑在服务器的 **127.0.0.1**（frps 时代是 `*:3080` 通配绑定，靠防火墙兜底）；
-- 网关监听 127.0.0.1:3090，TLS 由宝塔/Nginx 反代终结；无域名用自签证书（手机需信任）；
-- 认证 = 账号密码 + TOTP；设备可远程吊销；`trustedHosts` 不是认证。
-
-## 与既有产物的关系
-
-- `server/gateway/` 是网关核心（Node）；本产品化使用其构建产物 `dist/app.mjs`；
-- 仓库为单仓 monorepo：`server` / `pc` / `android` / `docs` 同仓管理，三端共享
-  [docs/绑定协议.md](docs/绑定协议.md) 一份契约，改动可原子提交、单个 tag 锁定三端一致版本。
+- 网关以 `AgentAdapter` 为扩展点：DSH 是当前实现，mock 用于冒烟测试；未来 Codex/Claude Code 等适配器必须遵守同一会话与事件契约。
+- DSH 官方协议没有稳定版本保证。升级 DSH 后，先跑网关冒烟、协议/隧道向量测试与真实回归探针，再发布。
+- 工作区与会话的关联以 DSH `WorkspaceView.sessionIds` 为准；会话“删除”应表述为归档，因为 DSH 没有硬删除语义。
+- 历史会话回放必须限制并聚合事件，避免把大量流式 chunk 直接转发到手机或耗尽服务器内存。

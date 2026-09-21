@@ -2,7 +2,7 @@ package com.dshlink.app.data
 
 import java.net.URI
 
-/** dsh-gw:// 连接串解析（与 product/docs/绑定协议.md 一致） */
+/** dsh-gw:// 连接串解析（与 product/README.md 的跨端契约一致） */
 data class Binding(
     val serverIp: String,
     val frpPort: Int = 7000,

@@ -172,7 +172,7 @@ if ! command -v curl >/dev/null 2>&1; then
   die "未安装 curl：apt-get install -y curl"
 fi
 if [ ! -d "$REPO_ROOT/.git" ]; then
-  die "$REPO_ROOT 不是 git 工作区。首次接入请先按 product/docs/服务器部署-git.md 执行 git clone。"
+  die "$REPO_ROOT 不是 git 工作区。首次接入请按 product/server/AGENTS.md 的“服务器获取与更新代码”执行 clone。"
 fi
 if [ ! -f "$INSTALL_SH" ]; then
   die "未找到 $INSTALL_SH，仓库结构可能不完整"
