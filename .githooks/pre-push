@@ -36,4 +36,9 @@ npm run --silent typecheck
 echo "[pre-push] 校验网关：build…"
 npm run --silent build
 
+# 冒烟测试（21+ 项关键回归，含 /ws 与 /tunnel 端点共存断言）：几秒成本，能拦住"改了隧道拖垮前端协议"这类回归
+echo "[pre-push] 校验网关：smoke（冒烟测试）…"
+npm run --silent smoke
+
 echo "[pre-push] 校验通过，允许推送"
+echo "[pre-push] 提示：改动隧道相关代码后请另跑 npm run tunnel 与 node ../../pc/test/tunnel-protocol.test.js"

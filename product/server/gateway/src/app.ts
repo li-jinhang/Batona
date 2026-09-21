@@ -17,6 +17,9 @@ import { createDshAdapter } from './adapter/dsh/adapter.ts';
 import { SessionRouter } from './session/router.ts';
 import { GatewayHttpServer } from './server/http.ts';
 import { GatewayWsServer } from './server/ws.ts';
+import { createUpgradeRouter } from './server/upgrade.ts';
+import { TunnelServer } from './tunnel/server.ts';
+import { TUNNEL_PATH } from './tunnel/protocol.ts';
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -29,6 +32,22 @@ async function main(): Promise<void> {
   }
 
   const auth = new AuthService(cfg.dataDir, cfg.auth);
+
+  // 内置隧道：始终装配（disabled 时也要能对 /tunnel 回 tunnel-disabled，供 PC 回退 frp），
+  // 但只有 enabled 才真正绑端口——且必须在 AdapterRegistry.assemble 之前绑：
+  // assemble 会立刻去连 127.0.0.1:3080，端口没绑上首连必然 ECONNRESET。
+  const tunnel = new TunnelServer(
+    { enabled: cfg.tunnel.enabled, services: cfg.tunnel.services, maxStreams: cfg.tunnel.maxStreams },
+    { agentKey: cfg.agentKey },
+  );
+  if (cfg.tunnel.enabled) {
+    const r = await tunnel.start();
+    if (!r.ok) console.error(`[gateway] 隧道监听失败：${r.error}（/tunnel 将回 bind-failed，PC 应回退 frpc）`);
+    else console.log(`[gateway] 隧道监听（内置，仅回环）：${r.bound.join(', ')}`);
+  } else {
+    console.log('[gateway] 内置隧道未启用（tunnel.enabled=false）—— /tunnel 回 tunnel-disabled，PC 回退 frpc');
+  }
+
   const registry = await AdapterRegistry.assemble(
     { mock: createMockAdapter, dsh: createDshAdapter },
     cfg.adapters,
@@ -50,9 +69,16 @@ async function main(): Promise<void> {
       if (!dsh?.setAuthToken) throw new Error('dsh adapter not enabled');
       await dsh.setAuthToken(token);
     },
+    tunnelState: () => tunnel.state(),
   });
   const ws = new GatewayWsServer(auth, registry, router);
   ws.attach(http.server);
+
+  // 全服务器唯一的 upgrade 路由：/ws（手机/PC 前端协议）与 /tunnel（内置隧道）
+  createUpgradeRouter(http.server, [
+    { path: '/ws', handle: ws.handleUpgrade },
+    { path: TUNNEL_PATH, handle: tunnel.handleUpgrade },
+  ]);
 
   http.server.listen(cfg.port, cfg.host, () => {
     console.log(`[gateway] version: ${gatewayVersion()}`);
@@ -62,6 +88,15 @@ async function main(): Promise<void> {
     console.log(`[gateway] DSH launch token 上报通道：${cfg.agentKey ? '已启用（POST /api/dsh/launch-token）' : '未配置 agentKey，已关闭'}`);
     console.log('[gateway] TOTP: 首次登录后请用 Authenticator 扫码绑定（登录响应返回 otpauthUri）');
   });
+
+  const shutdown = (): void => {
+    console.log('[gateway] 收到停止信号，正在收尾…');
+    tunnel.stop();
+    http.server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3000).unref();
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
 /** 读 package.json 的 version（部署后绝对路径稳定） */

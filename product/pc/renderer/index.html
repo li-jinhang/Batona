@@ -61,7 +61,7 @@
 
   <div class="card">
     <div class="mod-head">
-      <h2>隧道（frpc）</h2>
+      <h2>隧道</h2>
       <span class="dot" id="dot-frpc"></span>
     </div>
     <button id="btn-frpc" class="primary">启动隧道</button>
@@ -88,7 +88,7 @@
   <div class="card">
     <h2>设置</h2>
     <label class="toggle"><input type="checkbox" id="autostart"> 开机自启（保持隧道在线）</label>
-    <p class="hint">frpc 自动下载自 GitHub；下载慢可在启动前设置环境变量 DSHLINK_FRP_MIRROR。</p>
+    <p class="hint">隧道默认走内置通道（无需额外程序）；若服务器尚未启用内置隧道，会自动回退 frpc 并从 GitHub 下载（慢可设环境变量 DSHLINK_FRP_MIRROR）。</p>
   </div>
 </section>
 

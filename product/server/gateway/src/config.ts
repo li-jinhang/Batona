@@ -18,6 +18,17 @@ export interface GatewayConfig {
   auth: {
     initialUser?: { username: string; password: string };
   };
+  /**
+   * 内置隧道（自研，替代 frps）：PC 经 wss://<本服务>/tunnel 出站连入，
+   * 网关把 services 里的端口绑在 **127.0.0.1** 上，流量透明转发到 PC。
+   * enabled=false 时不绑定端口（把 3080/3081 让给 frps），/tunnel 升级后回 tunnel-disabled。
+   */
+  tunnel: {
+    enabled: boolean;
+    /** 服务名 → 网关侧绑定端口（须与 adapter 的 baseUrl / dir 服务端口一致） */
+    services: Record<string, number>;
+    maxStreams: number;
+  };
   adapters: Record<string, { enabled?: boolean; cfg?: Record<string, unknown> }>;
 }
 
@@ -28,6 +39,11 @@ const DEFAULTS: GatewayConfig = {
   webDir: './web',
   agentKey: '',
   auth: {},
+  tunnel: {
+    enabled: false,
+    services: { dsh: 3080, dir: 3081 },
+    maxStreams: 128,
+  },
   adapters: {
     mock: { enabled: true },
     dsh: { enabled: false, cfg: { baseUrl: 'http://127.0.0.1:3080' } },
@@ -37,16 +53,26 @@ const DEFAULTS: GatewayConfig = {
 export function loadConfig(path = process.env.GATEWAY_CONFIG ?? './config.json'): GatewayConfig {
   let cfg = DEFAULTS;
   if (existsSync(path)) {
+    let raw: Partial<GatewayConfig>;
     try {
-      cfg = { ...DEFAULTS, ...(JSON.parse(readFileSync(path, 'utf8')) as Partial<GatewayConfig>) };
+      raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<GatewayConfig>;
     } catch (e) {
       throw new Error(`config parse failed: ${path}: ${(e as Error).message}`);
     }
+    cfg = { ...DEFAULTS, ...raw };
+    // 浅合并会吞掉嵌套子键：只写 {"tunnel":{"enabled":true}} 会让 services 整个丢失 —— 显式二次合并
+    cfg.tunnel = {
+      ...DEFAULTS.tunnel,
+      ...(raw.tunnel ?? {}),
+      services: { ...DEFAULTS.tunnel.services, ...(raw.tunnel?.services ?? {}) },
+    };
   }
   // 环境变量覆盖
   if (process.env.PORT) cfg.port = Number(process.env.PORT);
   if (process.env.GATEWAY_HOST) cfg.host = process.env.GATEWAY_HOST;
   if (process.env.DSH_AGENT_KEY) cfg.agentKey = process.env.DSH_AGENT_KEY;
+  if (process.env.GATEWAY_TUNNEL === 'on') cfg.tunnel.enabled = true;
+  if (process.env.GATEWAY_TUNNEL === 'off') cfg.tunnel.enabled = false;
   if (process.env.DSH_BASE_URL) {
     cfg.adapters.dsh = { enabled: true, cfg: { baseUrl: process.env.DSH_BASE_URL } };
   }

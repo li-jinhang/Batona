@@ -3,15 +3,15 @@
  *
  * 职责：
  *  1. 绑定管理：dsh-gw:// 连接串解析/存储、手机配对二维码
- *  2. 服务编排：检测/启动 DSH web(3080) → 启动 frpc 隧道 → 在线状态机
- *  3. frpc 管理：下载/定位 frpc.exe、写配置、spawn 守护（崩溃重启）
+ *  2. 服务编排：检测/启动 DSH web(3080) → 启动隧道 → 在线状态机
+ *  3. 隧道管理：内置隧道（tunnel/client.js，跑在本进程内）为主；灰度期保留 frpc 回退
  *  4. 托盘常驻 + 开机自启 + 日志
  *
  * 渲染进程通过 preload 暴露的 window.dshLink（contextBridge + IPC）与主进程通信。
  */
 'use strict';
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, powerMonitor } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -21,12 +21,21 @@ const http = require('node:http');
 const QRCode = require('qrcode');
 const AdmZip = require('adm-zip');
 
+// 内置隧道客户端（依赖 ws；缺失时静默降级到 frpc，不阻断启动）
+let TunnelClient = null;
+let tunnelRequireError = null;
+try {
+  ({ TunnelClient } = require('./tunnel/client.js'));
+} catch (e) {
+  tunnelRequireError = e.message;
+}
+
 const FRP_VERSION = '0.68.0';
 const DSH_HOST = '127.0.0.1';
 const DSH_PORT_DEFAULT = 3080;   // DSH web 默认端口；实际端口从 stdout 的 dsh web: URL 捕获
 const FRP_REMOTE_PORT = 3080;
-const DIR_SERVICE_PORT = 3081;   // 目录浏览服务（读笔记本本地目录），经 frp 映射到服务器供网关代理
-const DIR_REMOTE_PORT = 3081;    // frp 把该服务映射到服务器的端口（需服务器放行）
+const DIR_SERVICE_PORT = 3081;   // 目录浏览服务（读笔记本本地目录），经隧道映射到服务器供网关代理
+const DIR_REMOTE_PORT = 3081;    // frpc 把该服务映射到服务器的端口（仅 frp 回退路径使用）
 
 // ── 状态 ──────────────────────────────────────────────────────────────
 const state = {
@@ -37,8 +46,10 @@ const state = {
   dshCookie: null,        // { key, value } 用 token 换到的浏览器会话 cookie 缓存
   dshAuthed: false,       // 最近一次认证探测结果
   frpcRunning: false,
-  frpcConnected: false,   // frpc 是否登录服务器成功
-  frpcRestarts: 0,
+  frpcConnected: false,   // frpc 是否登录服务器成功（仅 frp 回退路径）
+  tunnelKind: null,       // 'builtin' | 'frp' — 当前实际使用的隧道类型
+  tunnelConnected: false, // 内置隧道是否已连通
+  tunnelLastError: null,
   logs: [],
 };
 
@@ -212,16 +223,127 @@ function writeFrpcConfig(exePath) {
 
 let frpcProc = null;
 let frpcRestartTimer = null;
+/** 内置隧道客户端实例（运行期） */
+let tunnelClient = null;
+/** auto 模式黏滞位：本会话内已判内置隧道不可用，不再反复探测（frpc 连续崩溃时解禁一次） */
+let builtinBlocked = false;
+let frpcCrashTimes = [];
 
+/** 隧道是否已连通（内置或 frpc 任一） */
+function tunnelUp() {
+  return state.tunnelKind === 'builtin' ? state.tunnelConnected : (!!frpcProc && state.frpcConnected);
+}
+
+/** 本机可提供的服务（内置隧道用）。回调形式：DSH 端口是运行期从 stdout 抓的，重启会变 */
+function tunnelServices() {
+  return [
+    { name: 'dsh', localPort: state.dshPort || DSH_PORT_DEFAULT },
+    { name: 'dir', localPort: DIR_SERVICE_PORT },
+  ];
+}
+
+/**
+ * 启动内置隧道并等待首次握手。
+ * fatal（tunnel-disabled / version-mismatch / bad-hello / bind-failed）→ 返回失败，由调用方回退 frpc。
+ */
+function attemptBuiltin(timeoutMs = 12000) {
+  return new Promise((resolve) => {
+    const b = state.binding;
+    const client = new TunnelClient({
+      host: b.serverIp,
+      gwPort: b.gwPort || 443,
+      token: b.frpToken,
+      services: tunnelServices,
+      // 仅本地联调：DSHLINK_INSECURE=1 时走明文 ws://（生产由 Nginx 终结 TLS，保持默认 wss）
+      tls: process.env.DSHLINK_INSECURE !== '1',
+      log,
+    });
+    tunnelClient = client;
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      log('[tunnel] 首次握手超时');
+      client.stop();
+      if (tunnelClient === client) tunnelClient = null;
+      resolve({ ok: false, reason: 'handshake-timeout' });
+    }, timeoutMs);
+
+    client.on('connected', () => {
+      state.tunnelConnected = true;
+      state.tunnelLastError = null;
+      if (!settled) { settled = true; clearTimeout(timer); resolve({ ok: true }); }
+      void reportLaunchToken();   // 隧道刚通：补报 launch token（对齐 frpc 路径的首连行为）
+    });
+    client.on('disconnected', (info) => {
+      state.tunnelConnected = false;
+      state.tunnelLastError = info.lastError?.message || info.reason || 'disconnected';
+    });
+    client.on('fatal', (info) => {
+      state.tunnelConnected = false;
+      state.tunnelLastError = `${info.code}: ${info.message}`;
+      client.stop();
+      if (tunnelClient === client) tunnelClient = null;
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve({ ok: false, reason: info.message, code: info.code });
+        return;
+      }
+      // 已连上后运行期致命（如服务器切回 frp 模式）→ 直接回退
+      log(`[tunnel] 运行期致命错误 ${info.code} → 回退 frpc`);
+      builtinBlocked = true;
+      state.tunnelKind = 'frp';
+      void startFrpcLegacy();
+    });
+    client.on('superseded', () => {
+      state.tunnelConnected = false;
+      log('[tunnel] 连接被同密钥的另一连接顶替（本机另开了一个 DSH Link？），本实例停止重连');
+      if (tunnelClient === client) tunnelClient = null;
+      if (!settled) { settled = true; clearTimeout(timer); resolve({ ok: false, reason: 'superseded' }); }
+    });
+    client.start();
+  });
+}
+
+/**
+ * 启动隧道（对外保持原函数名与签名——IPC/托盘/生命周期等调用点全部不变）。
+ * 模式：DSHLINK_TUNNEL=auto（默认）| builtin | frp。
+ *   auto：先试内置，不可用则回退 frpc 并在本会话黏滞（例外：frpc 连续崩溃 ≥3 次时再试一次内置）
+ */
 async function startFrpc() {
+  if (tunnelUp()) return true;
+  if (!state.binding) return false;
+  startDirService();   // 目录服务须先起：两条路径都要暴露 3081
+
+  const mode = process.env.DSHLINK_TUNNEL || 'auto';
+  if (mode !== 'frp') {
+    if (!TunnelClient) {
+      log(`内置隧道不可用（加载失败：${tunnelRequireError || '未知'}）`);
+    } else if (!builtinBlocked) {
+      state.tunnelKind = 'builtin';
+      const r = await attemptBuiltin();
+      if (r.ok) return true;
+      log(`内置隧道不可用（${r.reason}${r.code ? ` / ${r.code}` : ''}）`);
+      state.tunnelLastError = `${r.code || 'unavailable'}: ${r.reason}`;
+      if (mode === 'builtin') return false;
+      builtinBlocked = true;   // auto：黏滞，避免反复探测
+    }
+  }
+  state.tunnelKind = 'frp';
+  return startFrpcLegacy();
+}
+
+/** frpc 回退路径（灰度期保留；服务器切到内置隧道后本路径会稳定失败，由崩溃计数触发再探测） */
+async function startFrpcLegacy() {
   if (frpcProc) return true;
   if (!state.binding) return false;
   try {
-    startDirService();   // 目录服务须先于 frpc 启动，供第二条代理映射
     const exe = await ensureFrpc();
     if (!exe) { log('frpc 不可用（未下载/解压 frpc.exe），跳过启动'); return false; }
     const conf = writeFrpcConfig(exe);
     log(`starting frpc: ${exe}`);
+    state.tunnelKind = 'frp';
     frpcProc = spawn(exe, ['-c', conf], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     state.frpcRunning = true;
     state.frpcConnected = false;
@@ -241,6 +363,15 @@ async function startFrpc() {
       state.frpcRunning = false;
       state.frpcConnected = false;
       frpcProc = null;
+      // 例外规则：frpc 连续崩溃（服务器已切内置隧道时 frpc 永远连不上）→ 解禁一次内置探测
+      const now = Date.now();
+      frpcCrashTimes = frpcCrashTimes.filter((t) => now - t < 60000);
+      frpcCrashTimes.push(now);
+      if (frpcCrashTimes.length >= 3 && (process.env.DSHLINK_TUNNEL || 'auto') === 'auto' && !tunnelUp()) {
+        frpcCrashTimes = [];
+        builtinBlocked = false;
+        log('frpc 连续崩溃 ≥3 次，重新探测内置隧道…');
+      }
       frpcRestartTimer = setTimeout(() => { void startFrpc(); }, 5000);
     });
     return true;
@@ -251,10 +382,14 @@ async function startFrpc() {
 }
 
 function stopFrpc() {
+  if (tunnelClient) { tunnelClient.stop(); tunnelClient = null; }
+  state.tunnelConnected = false;
+  state.tunnelKind = null;
   if (frpcRestartTimer) clearTimeout(frpcRestartTimer);
   frpcRestartTimer = null;
   if (frpcProc) { frpcProc.kill(); frpcProc = null; }
   state.frpcRunning = false;
+  state.frpcConnected = false;
 }
 
 // ── DSH 探测/启动 ─────────────────────────────────────────────────────
@@ -554,7 +689,10 @@ async function status() {
     dsh: dshUp,
     dshToken: !!state.dshToken,       // 是否已捕获 launch token（未捕获则手机端链路必断）
     dshAuthed: state.dshAuthed,       // token 是否当前有效
-    frpc: !!frpcProc && state.frpcConnected,
+    // 键名 frpc 保持不变（渲染层只当布尔用）：语义 = "隧道已连通"（内置或 frpc）
+    frpc: tunnelUp(),
+    tunnelKind: state.tunnelKind,     // 'builtin' | 'frp' | null —— 供日志/后续文案区分
+    tunnelLastError: state.tunnelLastError,
     gateway: gatewayUp,
   };
 }
@@ -652,11 +790,23 @@ app.whenReady().then(async () => {
   startTokenReportTimer();
   createWindow();
   createTray();
+
+  // 系统唤醒 / 解锁：立即重连隧道（笔记本合盖唤醒后 TCP 半死，不能干等退避计时）
+  powerMonitor.on('resume', () => {
+    if (tunnelClient) { log('系统唤醒，立即重连隧道'); tunnelClient.reconnectNow(); }
+  });
+  powerMonitor.on('unlock-screen', () => {
+    if (tunnelClient) tunnelClient.reconnectNow();
+  });
+
   log('DSH Link ready');
+  if (tunnelRequireError) log(`提示：内置隧道模块加载失败（${tunnelRequireError}），将使用 frpc`);
 
   // 冒烟模式：启动 2 秒后退出（用于 CI/验证）
   if (process.env.DSHLINK_SMOKE) {
-    console.log('[smoke] DSH Link main OK, binding=' + JSON.stringify(state.binding));
+    console.log('[smoke] DSH Link main OK, binding=' + JSON.stringify(state.binding)
+      + ', tunnelMode=' + (process.env.DSHLINK_TUNNEL || 'auto')
+      + ', tunnelClient=' + (TunnelClient ? 'loaded' : 'UNAVAILABLE'));
     setTimeout(() => app.quit(), 2000);
     return;
   }
@@ -664,8 +814,8 @@ app.whenReady().then(async () => {
   // 已绑定 → 自动拉起服务
   if (state.binding) {
     const dsh = await startDsh();
-    const frpc = await startFrpc();
-    log(`auto-start: dsh=${dsh}, frpc=${frpc}`);
+    const tunnel = await startFrpc();
+    log(`auto-start: dsh=${dsh}, tunnel=${tunnel}（kind=${state.tunnelKind || 'none'}）`);
     void reportLaunchToken();
   }
 });

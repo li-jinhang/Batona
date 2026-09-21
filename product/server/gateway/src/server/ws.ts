@@ -8,7 +8,8 @@
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
-import type { Server } from 'node:http';
+import type { IncomingMessage, Server } from 'node:http';
+import type { Duplex } from 'node:stream';
 import type { AuthService } from '../auth/index.ts';
 import type { AdapterRegistry } from '../adapter/registry.ts';
 import type { SessionRouter } from '../session/router.ts';
@@ -36,8 +37,18 @@ export class GatewayWsServer {
     this.router = router;
   }
 
-  attach(server: Server, path = '/ws'): void {
-    this.wss = new WebSocketServer({ server, path });
+  /**
+   * 创建 WSS（**noServer 模式**）。
+   *
+   * 不能再用 `new WebSocketServer({ server, path })`：ws 库在 path 不匹配时会
+   * `abortHandshake(socket, 400)` 并销毁 socket，同一 http server 上并存两个这样的
+   * 实例会让后注册的端点被先注册的 400 掉（表现为"随机某个端点连不上"）。
+   * 所有 upgrade 统一由 src/server/upgrade.ts 路由后调用 handleUpgrade。
+   *
+   * @param _server 仅为兼容既有调用点保留，不再使用
+   */
+  attach(_server: Server): void {
+    this.wss = new WebSocketServer({ noServer: true });
 
     this.wss.on('connection', (ws, req) => {
       const token = new URL(req.url ?? '/', 'http://x').searchParams.get('token') ?? '';
@@ -58,6 +69,11 @@ export class GatewayWsServer {
       this.broadcast(this.buildPushFrame(gatewaySessionId, event));
     });
   }
+
+  /** upgrade 路由入口（src/server/upgrade.ts 的 /ws 处理器）。noServer 模式下必须手动 emit connection */
+  handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
+    this.wss.handleUpgrade(req, socket, head, (ws) => this.wss.emit('connection', ws, req));
+  };
 
   private async onMessage(ws: WebSocket, state: { authed: boolean; deviceId: string }, data: unknown): Promise<void> {
     let msg: RpcMessage;
@@ -242,7 +258,7 @@ export class GatewayWsServer {
   }
 }
 
-/** 目录浏览：经 frp dir 代理访问 PC 本地目录服务（服务器 127.0.0.1:3081 → 笔记本目录服务） */
+/** 目录浏览：经隧道访问 PC 本地目录服务（网关侧 127.0.0.1:3081 → 笔记本目录服务；frp 时代经 frp dir 代理，内置隧道后经 /tunnel） */
 const DIR_LIST_URL = 'http://127.0.0.1:3081/list';
 
 async function fetchDirList(p: string): Promise<{ ok: boolean; value?: { path: string; dirs?: string[]; roots?: string[] }; error?: string }> {
@@ -254,6 +270,6 @@ async function fetchDirList(p: string): Promise<{ ok: boolean; value?: { path: s
     if (!j.ok) return { ok: false, error: j.error ?? '目录服务返回错误' };
     return { ok: true, value: { path: j.path ?? '', dirs: j.dirs, roots: j.roots } };
   } catch (e) {
-    return { ok: false, error: `目录服务不可达: ${e instanceof Error ? e.message : String(e)}（请确认 PC 端 DSH Link 已启动，且服务器已放行 3081 端口）` };
+    return { ok: false, error: `目录服务不可达: ${e instanceof Error ? e.message : String(e)}（请确认 PC 端 DSH Link 已启动，且隧道已连通）` };
   }
 }

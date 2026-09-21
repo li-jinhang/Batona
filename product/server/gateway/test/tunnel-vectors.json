@@ -1,0 +1,171 @@
+{
+  "_comment": "DSH Link Tunnel v1 黄金向量 —— 网关 protocol.ts 与 PC protocol.js 两份实现共同消费，保证线格式一致。改协议必须同时更新本文件与两份实现。",
+  "constants": {
+    "TUNNEL_PATH": "/tunnel",
+    "PROTO_VERSION": 1,
+    "MAX_FRAME_PAYLOAD": 262144,
+    "WS_MAX_PAYLOAD": 1048576,
+    "INITIAL_WINDOW": 262144,
+    "MAX_STREAM_WINDOW": 4194304,
+    "GLOBAL_BUDGET": 16777216,
+    "MAX_STREAMS": 128,
+    "READ_CHUNK": 65536,
+    "WS_INFLIGHT_HIGH": 2097152,
+    "WS_INFLIGHT_LOW": 524288,
+    "HEARTBEAT_MS": 20000,
+    "PONG_TIMEOUT_MS": 60000,
+    "HANDSHAKE_TIMEOUT_MS": 10000,
+    "OPEN_TIMEOUT_MS": 10000,
+    "SID_MAX": 4294967295
+  },
+  "errorCodes": {
+    "tunnel": {
+      "unauthorized": "unauthorized",
+      "tunnelDisabled": "tunnel-disabled",
+      "versionMismatch": "version-mismatch",
+      "badHello": "bad-hello",
+      "bindFailed": "bind-failed",
+      "superseded": "superseded",
+      "protocolError": "protocol-error",
+      "flowControlViolation": "flow-control-violation"
+    },
+    "stream": {
+      "connectRefused": "connect-refused",
+      "connectFailed": "connect-failed",
+      "openTimeout": "open-timeout",
+      "unknownService": "unknown-service",
+      "tooManyStreams": "too-many-streams",
+      "duplicateSid": "duplicate-sid",
+      "localClosed": "local-closed",
+      "peerReset": "peer-reset",
+      "sessionClosed": "session-closed"
+    }
+  },
+  "dataFrames": [
+    { "why": "空 payload 合法", "sid": 1, "payloadHex": "", "frameHex": "00000001" },
+    { "why": "常规 ascii", "sid": 1, "payloadHex": "68656c6c6f", "frameHex": "0000000168656c6c6f" },
+    { "why": "sid 上界", "sid": 4294967295, "payloadHex": "00ff", "frameHex": "ffffffff00ff" },
+    { "why": "跨字节边界 sid", "sid": 256, "payloadHex": "41", "frameHex": "0000010041" }
+  ],
+  "dataFrameInvalid": [
+    { "why": "空 buffer", "frameHex": "" },
+    { "why": "不足 4 字节头", "frameHex": "000000" },
+    { "why": "sid 0 是保留哨兵", "frameHex": "00000000" }
+  ],
+  "controlValid": [
+    {
+      "dir": "c2s",
+      "why": "hello 完整形态",
+      "text": "{\"t\":\"hello\",\"v\":1,\"client\":{\"app\":\"DSH Link\",\"appVersion\":\"0.2.0\",\"os\":\"win32\"},\"services\":[{\"name\":\"dsh\",\"localPort\":3080},{\"name\":\"dir\",\"localPort\":3081}]}",
+      "expect": {
+        "t": "hello",
+        "v": 1,
+        "client": { "app": "DSH Link", "appVersion": "0.2.0", "os": "win32" },
+        "services": [{ "name": "dsh", "localPort": 3080 }, { "name": "dir", "localPort": 3081 }]
+      }
+    },
+    {
+      "dir": "c2s",
+      "why": "hello 最小形态（client/services 可省）",
+      "text": "{\"t\":\"hello\",\"v\":1}",
+      "expect": { "t": "hello", "v": 1 }
+    },
+    {
+      "dir": "c2s",
+      "why": "open-result 成功（err 省略）",
+      "text": "{\"t\":\"open-result\",\"sid\":7,\"ok\":true}",
+      "expect": { "t": "open-result", "sid": 7, "ok": true }
+    },
+    {
+      "dir": "c2s",
+      "why": "open-result 失败带原因",
+      "text": "{\"t\":\"open-result\",\"sid\":7,\"ok\":false,\"err\":\"connect-refused\"}",
+      "expect": { "t": "open-result", "sid": 7, "ok": false, "err": "connect-refused" }
+    },
+    {
+      "dir": "c2s",
+      "why": "close 半关闭",
+      "text": "{\"t\":\"close\",\"sid\":7,\"half\":\"c2s\"}",
+      "expect": { "t": "close", "sid": 7, "half": "c2s" }
+    },
+    {
+      "dir": "c2s",
+      "why": "reset",
+      "text": "{\"t\":\"reset\",\"sid\":7,\"reason\":\"local-closed\"}",
+      "expect": { "t": "reset", "sid": 7, "reason": "local-closed" }
+    },
+    {
+      "dir": "c2s",
+      "why": "win 回补信用",
+      "text": "{\"t\":\"win\",\"sid\":7,\"dir\":\"s2c\",\"n\":65536}",
+      "expect": { "t": "win", "sid": 7, "dir": "s2c", "n": 65536 }
+    },
+    {
+      "dir": "s2c",
+      "why": "welcome 完整形态",
+      "text": "{\"t\":\"welcome\",\"v\":1,\"tunnelId\":\"3f2a\",\"heartbeatSec\":20,\"window\":{\"initial\":262144,\"max\":4194304,\"global\":16777216},\"services\":[{\"name\":\"dsh\",\"bind\":[\"127.0.0.1\",3080]},{\"name\":\"dir\",\"bind\":[\"127.0.0.1\",3081]}]}",
+      "expect": {
+        "t": "welcome",
+        "v": 1,
+        "tunnelId": "3f2a",
+        "heartbeatSec": 20,
+        "window": { "initial": 262144, "max": 4194304, "global": 16777216 },
+        "services": [{ "name": "dsh", "bind": ["127.0.0.1", 3080] }, { "name": "dir", "bind": ["127.0.0.1", 3081] }]
+      }
+    },
+    {
+      "dir": "s2c",
+      "why": "welcome 省略 heartbeatSec 时默认 20",
+      "text": "{\"t\":\"welcome\",\"v\":1,\"tunnelId\":\"aa\",\"window\":{\"initial\":262144,\"max\":4194304,\"global\":16777216},\"services\":[]}",
+      "expect": {
+        "t": "welcome",
+        "v": 1,
+        "tunnelId": "aa",
+        "heartbeatSec": 20,
+        "window": { "initial": 262144, "max": 4194304, "global": 16777216 },
+        "services": []
+      }
+    },
+    {
+      "dir": "s2c",
+      "why": "open 建流",
+      "text": "{\"t\":\"open\",\"sid\":9,\"service\":\"dsh\"}",
+      "expect": { "t": "open", "sid": 9, "service": "dsh" }
+    },
+    {
+      "dir": "s2c",
+      "why": "error 终止帧",
+      "text": "{\"t\":\"error\",\"code\":\"tunnel-disabled\",\"message\":\"内置隧道未启用\"}",
+      "expect": { "t": "error", "code": "tunnel-disabled", "message": "内置隧道未启用" }
+    },
+    {
+      "dir": "s2c",
+      "why": "close 半关闭",
+      "text": "{\"t\":\"close\",\"sid\":9,\"half\":\"s2c\"}",
+      "expect": { "t": "close", "sid": 9, "half": "s2c" }
+    },
+    {
+      "dir": "s2c",
+      "why": "win 回补信用",
+      "text": "{\"t\":\"win\",\"sid\":9,\"dir\":\"c2s\",\"n\":262144}",
+      "expect": { "t": "win", "sid": 9, "dir": "c2s", "n": 262144 }
+    }
+  ],
+  "controlInvalid": [
+    { "dir": "c2s", "why": "win.n 必须 > 0", "text": "{\"t\":\"win\",\"sid\":7,\"dir\":\"c2s\",\"n\":0}" },
+    { "dir": "c2s", "why": "win.n 超过单流窗口上限", "text": "{\"t\":\"win\",\"sid\":7,\"dir\":\"c2s\",\"n\":4194305}" },
+    { "dir": "c2s", "why": "win.n 非整数", "text": "{\"t\":\"win\",\"sid\":7,\"dir\":\"c2s\",\"n\":1.5}" },
+    { "dir": "c2s", "why": "方向非法", "text": "{\"t\":\"win\",\"sid\":7,\"dir\":\"x2s\",\"n\":1}" },
+    { "dir": "c2s", "why": "sid 0 是保留哨兵", "text": "{\"t\":\"open-result\",\"sid\":0,\"ok\":true}" },
+    { "dir": "c2s", "why": "open-result 缺 ok", "text": "{\"t\":\"open-result\",\"sid\":7}" },
+    { "dir": "c2s", "why": "hello.v 必须是数字", "text": "{\"t\":\"hello\",\"v\":\"1\"}" },
+    { "dir": "c2s", "why": "hello.services 非法形状", "text": "{\"t\":\"hello\",\"v\":1,\"services\":[{\"localPort\":1}]}" },
+    { "dir": "c2s", "why": "未知帧类型", "text": "{\"t\":\"nope\"}" },
+    { "dir": "c2s", "why": "非 JSON", "text": "not json" },
+    { "dir": "c2s", "why": "JSON 数组不是合法帧", "text": "[1,2]" },
+    { "dir": "s2c", "why": "open 缺 service", "text": "{\"t\":\"open\",\"sid\":7}" },
+    { "dir": "s2c", "why": "welcome 缺 window", "text": "{\"t\":\"welcome\",\"v\":1,\"tunnelId\":\"a\",\"services\":[]}" },
+    { "dir": "s2c", "why": "welcome.bind 必须是二元组", "text": "{\"t\":\"welcome\",\"v\":1,\"tunnelId\":\"a\",\"window\":{\"initial\":1,\"max\":1,\"global\":1},\"services\":[{\"name\":\"dsh\",\"bind\":[\"127.0.0.1\"]}]}" },
+    { "dir": "s2c", "why": "error 缺 message", "text": "{\"t\":\"error\",\"code\":\"x\"}" }
+  ]
+}

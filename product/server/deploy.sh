@@ -121,6 +121,17 @@ health_version() {
   { curl -fsS --max-time 5 "$HEALTH_URL" 2>/dev/null || true; } | first_field version
 }
 
+# 当前隧道模式（读 /healthz 的 tunnel.enabled；取不到按 false）
+health_tunnel_enabled() {
+  { curl -fsS --max-time 5 "$HEALTH_URL" 2>/dev/null || true; } | node -e '
+    let s = "";
+    process.stdin.on("data", (d) => s += d).on("end", () => {
+      try { const j = JSON.parse(s); process.stdout.write(j.tunnel && j.tunnel.enabled ? "true" : "false"); }
+      catch (e) { process.stdout.write("false"); }
+    });
+  ' 2>/dev/null || echo false
+}
+
 # 部署状态文件（JSON）读写。键：currentCommit / previousCommit / version / deployedAt
 state_get() {
   [ -f "$STATE_FILE" ] || return 0
@@ -189,13 +200,25 @@ if [ "$ACTION" = "status" ]; then
 
   echo ""
   echo "── 线上服务 ──"
-  for svc in "$SERVICE" frps; do
-    if systemctl is-active --quiet "$svc"; then
-      echo "  [OK] $svc"
+  if systemctl is-active --quiet "$SERVICE"; then
+    echo "  [OK] $SERVICE"
+  else
+    echo "  [FAIL] $SERVICE"
+  fi
+  TUN_EN="$(health_tunnel_enabled)"
+  if [ "$TUN_EN" = "true" ]; then
+    if systemctl is-active --quiet frps; then
+      echo "  [注意] frps 仍在运行（内置隧道已启用，属双跑；建议 bash product/server/install.sh --tunnel on 收尾）"
     else
-      echo "  [FAIL] $svc"
+      echo "  [OK] 隧道模式：builtin（内置，frps 已停用）"
     fi
-  done
+  else
+    if systemctl is-active --quiet frps; then
+      echo "  [OK] 隧道模式：frp（frps 运行中）"
+    else
+      echo "  [FAIL] frps（未运行，且内置隧道未启用 → 隧道不可用）"
+    fi
+  fi
   LIVE_VER="$(health_version)"
   if [ -n "$LIVE_VER" ]; then
     echo "  线上版本   : v$LIVE_VER"
@@ -221,11 +244,16 @@ if [ "$ACTION" = "status" ]; then
   fi
 
   echo ""
-  echo "── 安全核查（3080/3081 严禁对公网开放）──"
+  echo "── 安全核查（3080/3081 不得对公网开放）──"
   for port in 3080 3081; do
     bad="$(public_bind_on "$port")"
     if [ -n "$bad" ]; then
-      echo "  [严重] $port 绑定公网（$bad），请立即封禁公网访问！"
+      if [ "$TUN_EN" = "true" ]; then
+        echo "  [严重] $port 绑定公网（$bad），请立即封禁公网访问！"
+      else
+        # frp 模式下 frps 通配绑定是已知行为（靠防火墙兜底），不按故障报"严重"
+        echo "  [注意] $port 由 frps 通配绑定（$bad）——frp 模式已知行为；建议切内置隧道后关闭 7000"
+      fi
     else
       echo "  [OK] $port 无公网绑定"
     fi

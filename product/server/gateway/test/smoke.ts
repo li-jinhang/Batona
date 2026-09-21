@@ -8,9 +8,10 @@
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';
+import { get as httpGet_ } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { WebSocket } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 
 import { AuthService } from '../src/auth/index.ts';
 import { AdapterRegistry } from '../src/adapter/registry.ts';
@@ -18,6 +19,7 @@ import { createMockAdapter } from '../src/adapter/mock/adapter.ts';
 import { SessionRouter } from '../src/session/router.ts';
 import { GatewayHttpServer } from '../src/server/http.ts';
 import { GatewayWsServer } from '../src/server/ws.ts';
+import { createUpgradeRouter } from '../src/server/upgrade.ts';
 import type { RpcMessage, ServerRequest } from '../src/proto/envelope.ts';
 import type { RpcResult } from '../src/proto/result.ts';
 
@@ -38,6 +40,21 @@ async function main(): Promise<void> {
   const http = new GatewayHttpServer(auth, { webDir: join(HERE, 'web') });
   const ws = new GatewayWsServer(auth, registry, router);
   ws.attach(http.server);
+  // upgrade 路由是全服务器唯一入口（/ws 为 noServer WSS）——app.ts 同款装配。
+  // 同期挂一个 dummy /tunnel 端点做"端点共存"回归：若有人把 ws.ts 改回 {server, path}
+  // 两实例并存，先注册者会对另一方的升级请求回 400 并销毁 socket —— 那会连同 /ws 一起坏掉。
+  const dummyTunnel = new WebSocketServer({ noServer: true });
+  dummyTunnel.on('connection', (c) => {
+    c.send(JSON.stringify({ t: 'error', code: 'tunnel-disabled', message: 'smoke dummy' }));
+    c.close(1008);
+  });
+  createUpgradeRouter(http.server, [
+    { path: '/ws', handle: ws.handleUpgrade },
+    {
+      path: '/tunnel',
+      handle: (req, socket, head) => dummyTunnel.handleUpgrade(req, socket, head, (c) => dummyTunnel.emit('connection', c, req)),
+    },
+  ]);
 
   await new Promise<void>((r) => http.server.listen(0, '127.0.0.1', r));
   const port = (http.server.address() as { port: number }).port;
@@ -179,12 +196,46 @@ async function main(): Promise<void> {
   check('未认证调用被拒', !anonResult.ok && anonResult.error.code === 'auth-required');
   anon.close();
 
+  // ── 10. 端点共存与 /healthz 键序（隧道方案的回归固化）─────────────────
+  const tunnelGet = await httpGet(`http://127.0.0.1:${port}/tunnel`);
+  check('GET /tunnel 返回 426（不落 SPA 兜底）', tunnelGet.status === 426, String(tunnelGet.status));
+
+  const tunnelWs = new WebSocket(`ws://127.0.0.1:${port}/tunnel`);
+  const tunnelFrame = await new Promise<string>((resolveP) => {
+    tunnelWs.once('message', (d) => resolveP(String(d)));
+    tunnelWs.once('error', () => resolveP(''));
+    tunnelWs.once('close', () => resolveP(''));
+    setTimeout(() => resolveP(''), 1500);
+  });
+  check('dummy /tunnel 与 /ws 并存（升级成功）', tunnelFrame.includes('tunnel-disabled'), JSON.stringify(tunnelFrame));
+  tunnelWs.terminate();   // 用 terminate 而非 close：避免退出时握手中途的 socket 触发 libuv 断言
+
+  const healthRaw = (await httpGet(`http://127.0.0.1:${port}/healthz`)).body;
+  const iVer = healthRaw.indexOf('"version"');
+  const iTun = healthRaw.indexOf('"tunnel"');
+  check('/healthz 的 version 是首个 version 字面量', iVer >= 0 && (iTun < 0 || iVer < iTun), healthRaw);
+  check('/healthz 含 tunnel 字段', iTun >= 0, healthRaw);
+
   ws['wss']?.close();
+  dummyTunnel.close();
   await new Promise((r2) => http.server.close(r2));
   rmSync(dataDir, { recursive: true, force: true });
 
   console.log(`\n[smoke] ${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);
+}
+
+/** 用 node:http 直连（显式 Connection: close）——避免 undici 的 keep-alive 连接在 process.exit 时触发 libuv 断言 */
+function httpGet(url: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolveP, rejectP) => {
+    const req = httpGet_(url, { headers: { connection: 'close' } }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolveP({ status: res.statusCode ?? 0, body }));
+    });
+    req.on('error', rejectP);
+  });
 }
 
 function openWs(url: string): Promise<WebSocket> {

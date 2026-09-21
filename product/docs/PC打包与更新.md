@@ -68,7 +68,7 @@ npm run dist
 |---|---|
 | 打包卡在下载工具/超时 | 设上面的镜像环境变量后重试 |
 | 报 `EPERM` / 杀毒拦截 | 把 `product\pc\dist`、`%APPDATA%\DSH Link` 加入 Defender 排除 |
-| `frpc` 下载被拦 | 用 `npm run fetch-frpc`（镜像）或浏览器下载 frpc.exe 放 `pc\frpc-bin\` |
+| `frpc` 下载被拦 | 仅在回退 frpc 时需要；内置隧道不需要 frpc.exe。回退时可用 `npm run fetch-frpc`（镜像）或浏览器下载 frpc.exe 放 `pc\frpc-bin\` |
 | 双击便携版无反应 | 看 `%APPDATA%\DSH Link\` 日志；可能杀毒拦了 frpc，加白名单 |
 
 ---
@@ -77,7 +77,11 @@ npm run dist
 
 打包好的软件打开后自动：
 1. 检测笔记本 DSH(127.0.0.1:3080)，没跑就拉起；
-2. 启动 frpc 隧道（连接服务器 7000）；
+2. 启动隧道：**默认走内置隧道**（跑在本进程内，经 `wss://<服务器>/tunnel` 出站连网关，无外部程序）；
+   服务器若尚未启用内置隧道，会自动回退 frpc（旧版 frp 通道）；
 3. 显示「手机配对二维码」。
 
-状态灯：DSH 绿=DSH在跑；隧道绿=frpc通（关键）；网关灯为乐观探测可能显示红，**忽略**（手机能连即网关通）。
+状态灯：DSH 绿=DSH在跑；隧道绿=**隧道已连通**（内置或 frpc 任一，关键）；网关灯为乐观探测可能显示红，**忽略**（手机能连即网关通）。
+
+隧道排障：环境变量 `DSHLINK_TUNNEL=auto|builtin|frp`（默认 auto）。强制内置便于区分问题出在哪条路径。
+本地联调可用 `DSHLINK_INSECURE=1` 走明文 `ws://`（仅本机网关调试，勿用于生产）。

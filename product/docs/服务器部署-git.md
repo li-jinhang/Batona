@@ -166,7 +166,7 @@ dsh-deploy --rollback   # 回滚
 cd D:\_Projects\26-009DSHplugin
 # ① 改 product/server/gateway/ 下的代码
 # ② 递增 product/server/gateway/package.json 里的 version（如 0.1.30 → 0.1.31）
-# ③ 提交推送（pre-push 钩子会自动跑 typecheck + build）
+# ③ 提交推送（pre-push 钩子会自动跑 typecheck + build + smoke）
 git add -A && git commit -m "网关：xxx" && git push
 git tag v0.1.31 && git push --tags      # 建议打 tag，便于 --tag 定版与回滚
 ```
@@ -176,8 +176,18 @@ git tag v0.1.31 && git push --tags      # 建议打 tag，便于 --tag 定版与
 dsh-deploy
 ```
 
-### 版本号契约（重要）
+### 发布前自检（本地，约 1 分钟）
 
+```bash
+cd product/server/gateway
+npm run typecheck && npm run smoke && npm run tunnel-protocol && npm run tunnel
+node ../../pc/test/tunnel-protocol.test.js
+```
+
+- `typecheck` / `build` / `smoke` 已进 pre-push 钩子（推送即跑，含 `/ws` 与 `/tunnel` 端点共存回归）；
+- `tunnel`（隧道端到端，约 60s）与 PC 侧向量测试较慢、不进钩子——**改动隧道相关代码后必须手动跑**。
+
+### 版本号契约（重要）
 `gateway/package.json` 的 `version` 是**部署验证的依据**：`deploy.sh` 读仓库里目标 commit 的版本号，
 部署后再读 `/healthz` 返回的版本号，两者不一致就判定部署失败并自动回滚。
 
@@ -219,6 +229,37 @@ systemd 单元缺少 `--max-old-space-size`（可用 `SKIP_HEAP_CHECK=1` 跳过�
 
 **执行顺序保证**：`git fetch` 失败、工作区有未提交改动、`--ff-only` 无法快进——
 这些情况都在改动线上之前就中止，不会留下半成品。
+
+---
+
+## 四b、内置隧道切换（frps ↔ builtin）
+
+网关自带隧道服务端：PC 端经 `wss://<服务器>:443/tunnel` 出站连入，网关把 3080/3081
+绑在 **127.0.0.1** 上转发给 PC。PC 端不再需要 frpc.exe（第三方二进制，会被 Windows Defender 误报拦截）。
+
+```bash
+bash product/server/install.sh --tunnel on      # 启用内置隧道（自动停用 frps、释放端口；任一步失败自动回滚）
+bash product/server/install.sh --tunnel off     # 切回 frps 模式
+bash product/server/install.sh --tunnel status  # 查看当前模式 / 服务 / 端口占用
+```
+
+**切换顺序（重要）**：先确认 **PC 端已升级**到含内置隧道的版本，再在服务器执行 `--tunnel on`。
+旧版 PC 只会 frpc，frps 一停即失联且无法自救。
+
+**回滚是两层，别搞混**：
+- `dsh-deploy --rollback` 只回退**代码版本**，**不会**连带回退隧道模式（旧代码不认识 `tunnel` 配置键）；
+- 隧道模式回退要显式执行 `install.sh --tunnel off`。
+
+切换后的变化：
+
+| 项 | frp 模式 | 内置隧道模式 |
+|---|---|---|
+| 防火墙 | 7000 + 443 | **只需 443**（7000 可关闭） |
+| 3080/3081 绑定 | frps 通配 `*:3080`（靠防火墙兜底） | 仅 `127.0.0.1` |
+| PC 端依赖 | frpc.exe（需下载、可能被杀软拦截） | 无外部二进制 |
+| 重新绑定 | 不需要 | **不需要**（frpToken 复用为隧道密钥） |
+
+PC 端排障：环境变量 `DSHLINK_TUNNEL=auto|builtin|frp`（默认 auto：优先内置、不可用自动回退 frpc）。
 
 ---
 

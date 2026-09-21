@@ -6,6 +6,7 @@
 #   bash install.sh --install [--ip 公网IP] [--admin 用户名] [--password 密码]
 #   bash install.sh --update  [--source 网关包路径或URL]
 #   bash install.sh --status
+#   bash install.sh --tunnel on|off|status   # 内置隧道（自研）与 frps 的切换；on 会停用 frps
 #   bash install.sh --selfsigned <公网IP>   # 无域名时生成自签证书（含 IP SAN）
 #   bash install.sh --uninstall
 #
@@ -42,6 +43,7 @@ IP=""
 ADMIN="admin"
 PASSWORD=""
 SOURCE=""
+TUNNEL_MODE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,6 +53,11 @@ while [ $# -gt 0 ]; do
     --selfsigned)
       ACTION="selfsigned"
       IP="${2:-}"
+      shift
+      ;;
+    --tunnel)
+      ACTION="tunnel"
+      TUNNEL_MODE="${2:-}"
       shift
       ;;
     --uninstall) ACTION="uninstall" ;;
@@ -63,7 +70,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-[ -z "$ACTION" ] && { echo "用法: bash install.sh --install | --update | --status | --uninstall" >&2; exit 1; }
+[ -z "$ACTION" ] && { echo "用法: bash install.sh --install | --update | --status | --tunnel on|off|status | --uninstall" >&2; exit 1; }
 [ "$(id -u)" -ne 0 ] && { echo "请用 root 运行" >&2; exit 1; }
 
 log() { echo ">>> $*"; }
@@ -225,6 +232,7 @@ write_gateway_config() {
   "dataDir": "$DATA_DIR",
   "webDir": "$APP_DIR/web",
   "agentKey": "$agent_key",
+  "tunnel": { "enabled": false, "services": { "dsh": 3080, "dir": 3081 }, "maxStreams": 128 },
   "auth": { "initialUser": { "username": "$admin", "password": "$pass" } },
   "adapters": {
     "mock": { "enabled": false },
@@ -233,6 +241,28 @@ write_gateway_config() {
 }
 EOF
   chmod 600 "$CONFIG_FILE"
+}
+
+# 读取 config.json 的 tunnel.enabled（true/false；读不到按 false）
+gateway_tunnel_enabled() {
+  [ -f "$CONFIG_FILE" ] || { echo "false"; return; }
+  node -e '
+    const fs=require("fs");
+    try { const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); process.stdout.write(c.tunnel&&c.tunnel.enabled?"true":"false"); }
+    catch(e){ process.stdout.write("false"); }
+  ' "$CONFIG_FILE" 2>/dev/null || echo "false"
+}
+
+# 写 tunnel.enabled（只改这一个键，其余原样保留；失败返回非 0）
+set_gateway_tunnel_flag() {
+  local want="$1"   # true|false
+  node -e '
+    const fs=require("fs");
+    const f=process.argv[1], want=process.argv[2]==="true";
+    const c=JSON.parse(fs.readFileSync(f,"utf8"));
+    c.tunnel = Object.assign({ services: { dsh: 3080, dir: 3081 }, maxStreams: 128 }, c.tunnel||{}, { enabled: want });
+    fs.writeFileSync(f, JSON.stringify(c,null,2)+"\n");
+  ' "$CONFIG_FILE" "$want" && chmod 600 "$CONFIG_FILE"
 }
 
 ensure_gateway_config_keys() {
@@ -276,6 +306,28 @@ ensure_gateway_config_keys() {
     log "已补写 agentKey（DSH launch token 上报通道开启）"
   else
     err "agentKey 补写失败，请手工在 $CONFIG_FILE 加入 \"agentKey\": \"<frpToken>\""
+  fi
+}
+
+ensure_gateway_tunnel_key() {
+  # 升级场景：给老机器补 tunnel 配置块（**默认关闭**）。
+  # 为什么不默认打开：老服务器上 frps 正占着 0.0.0.0:3080/3081，网关若同时去绑回环同端口会 EADDRINUSE。
+  # 切换到内置隧道由显式命令完成：bash install.sh --tunnel on
+  [ -f "$CONFIG_FILE" ] || return 0
+  if node -e 'const c=require(process.argv[1]); process.exit(c.tunnel?0:1)' "$CONFIG_FILE" 2>/dev/null; then
+    return 0
+  fi
+  if node -e '
+      const fs=require("fs");
+      const f=process.argv[1];
+      const c=JSON.parse(fs.readFileSync(f,"utf8"));
+      c.tunnel={ enabled:false, services:{ dsh:3080, dir:3081 }, maxStreams:128 };
+      fs.writeFileSync(f, JSON.stringify(c,null,2)+"\n");
+    ' "$CONFIG_FILE" 2>/dev/null; then
+    chmod 600 "$CONFIG_FILE"
+    log "已补写 tunnel 配置（默认关闭；启用内置隧道：bash install.sh --tunnel on）"
+  else
+    err "tunnel 配置补写失败，请手工在 $CONFIG_FILE 加入 \"tunnel\": {\"enabled\":false,\"services\":{\"dsh\":3080,\"dir\":3081},\"maxStreams\":128}"
   fi
 }
 
@@ -362,6 +414,106 @@ EOF
   echo ""
 }
 
+# ── 内置隧道切换（--tunnel on|off|status）───────────────────────────────
+
+wait_gateway_health() {
+  local i
+  for i in $(seq 1 15); do
+    if curl -fsS --max-time 3 http://127.0.0.1:3090/healthz >/dev/null 2>&1; then return 0; fi
+    sleep 2
+  done
+  return 1
+}
+
+healthz_tunnel_enabled() {
+  curl -fsS --max-time 5 http://127.0.0.1:3090/healthz 2>/dev/null | node -e '
+    let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
+      try { const j=JSON.parse(s); process.stdout.write(j.tunnel && j.tunnel.enabled ? "true" : "false"); }
+      catch(e){ process.stdout.write("unknown"); }
+    });
+  ' 2>/dev/null || echo unknown
+}
+
+ports_in_use_3080() {
+  ss -ltn 2>/dev/null | awk '{print $4}' | grep -E ':(3080|3081)$' || true
+}
+
+rollback_to_frps() {
+  err "→ 自动回退到 frps 模式…"
+  set_gateway_tunnel_flag false || true
+  systemctl enable --now frps 2>/dev/null || true
+  systemctl restart dsh-gateway 2>/dev/null || true
+  if wait_gateway_health; then err "已回退，线上服务恢复（frps 模式）"; else err "回退后网关仍未就绪，请 journalctl -u dsh-gateway -n 50 排查"; fi
+}
+
+set_tunnel_mode() {
+  local mode="$1"
+  case "$mode" in
+    on)
+      log "切换内置隧道：启用（将停用 frps）"
+      log "  前置确认：PC 端 DSH Link 须已升级到含内置隧道的版本——旧版只会 frpc，frps 停用后无法连接。"
+      cp -f "$CONFIG_FILE" "$CONFIG_FILE.bak" 2>/dev/null || true
+      # 顺序是刻意的：先写 config 再停 frps。反过来的话，中间窗口内网关（启动时读一次 config）
+      # 不会绑端口，隧道彻底不可用且无自动恢复。
+      set_gateway_tunnel_flag true || { err "写入 tunnel.enabled=true 失败，未做任何改动"; exit 1; }
+      systemctl stop frps 2>/dev/null || true
+      systemctl disable frps 2>/dev/null || true
+      sleep 1
+      if [ -n "$(ports_in_use_3080)" ]; then
+        err "3080/3081 仍有监听（frps 未停干净）：$(ports_in_use_3080)"
+        rollback_to_frps
+        exit 1
+      fi
+      systemctl restart dsh-gateway
+      if ! wait_gateway_health; then
+        err "网关健康检查失败"
+        rollback_to_frps
+        exit 1
+      fi
+      local en; en="$(healthz_tunnel_enabled)"
+      if [ "$en" != "true" ]; then
+        err "网关未进入内置隧道模式（/healthz tunnel.enabled=${en}）"
+        rollback_to_frps
+        exit 1
+      fi
+      if [ -n "$(public_bind_on 3080)$(public_bind_on 3081)" ]; then
+        err "3080/3081 出现公网绑定（内置隧道应仅绑 127.0.0.1）"
+        rollback_to_frps
+        exit 1
+      fi
+      log "内置隧道已启用：3080/3081 仅绑回环；frps 已停用。"
+      log "  防火墙的 7000 端口现在可以关闭；PC 端会在 ≤30s 内自动切到内置隧道（无需重新绑定）。"
+      ;;
+    off)
+      log "切换内置隧道：关闭（恢复 frps）"
+      set_gateway_tunnel_flag false || { err "写入 tunnel.enabled=false 失败，未做任何改动"; exit 1; }
+      systemctl enable --now frps 2>/dev/null || err "frps 启动失败，请检查 /etc/frp/frps.toml"
+      systemctl restart dsh-gateway
+      if ! wait_gateway_health; then err "网关健康检查失败，请 journalctl -u dsh-gateway -n 50 排查"; exit 1; fi
+      local en; en="$(healthz_tunnel_enabled)"
+      if [ "$en" != "false" ]; then err "网关未退出内置隧道模式（tunnel.enabled=${en}）"; exit 1; fi
+      log "已恢复 frps 模式；PC 端会自动回退 frpc（无需操作）。"
+      ;;
+    status|"")
+      echo "── 隧道模式 ──"
+      echo "  config.tunnel.enabled : $(gateway_tunnel_enabled)"
+      echo "  /healthz tunnel.enabled: $(healthz_tunnel_enabled)"
+      for svc in dsh-gateway frps; do
+        systemctl is-active --quiet "$svc" 2>/dev/null && echo "  [OK] $svc 运行中" || echo "  [--] $svc 未运行"
+      done
+      if [ -n "$(ports_in_use_3080)" ]; then
+        echo "  3080/3081 监听       : $(ports_in_use_3080 | tr '\n' ' ')"
+      else
+        echo "  3080/3081 监听       : （无）"
+      fi
+      ;;
+    *)
+      err "未知 --tunnel 参数：$mode（应为 on|off|status）"
+      exit 1
+      ;;
+  esac
+}
+
 # ── 动作 ───────────────────────────────────────────────────────────────
 case "$ACTION" in
   install)
@@ -413,8 +565,9 @@ EOF
     if [ ! -f "$CONFIG_FILE" ]; then
       write_gateway_config "$(info_get gwUser || echo admin)" "$(info_get gwPass || echo change-me)"
     else
-      # 已安装的机器：整体保留配置，但补上新增配置项（如 agentKey）
+      # 已安装的机器：整体保留配置，但补上新增配置项（如 agentKey、tunnel）
       ensure_gateway_config_keys
+      ensure_gateway_tunnel_key
     fi
     ensure_gateway_service
     log "升级完成"
@@ -428,15 +581,32 @@ EOF
     done
     echo "── 网关健康 ──"
     curl -fsS http://127.0.0.1:3090/healthz && echo "" || echo "  网关未响应"
-    echo "── 安全核查（3080/3081 严禁对公网开放）──"
+    echo "── 隧道模式 ──"
+    tun_en="$(gateway_tunnel_enabled)"
+    if [ "$tun_en" = "true" ]; then
+      echo "  [OK] 内置隧道已启用（frps 应为停用；3080/3081 仅绑回环，7000 可关闭）"
+    else
+      echo "  [--] frps 模式（内置隧道未启用；切换：bash install.sh --tunnel on）"
+    fi
+    echo "── 安全核查（3080/3081 不得对公网开放）──"
     for port in 3080 3081; do
       bad="$(public_bind_on "$port")"
       if [ -n "$bad" ]; then
-        echo "  [严重] $port 绑定公网（$bad），请立即封禁公网访问！"
+        if [ "$tun_en" = "true" ]; then
+          echo "  [严重] $port 绑定公网（$bad），请立即封禁公网访问！"
+        else
+          # frp 模式下 frps 通配绑定 0.0.0.0 是已知行为，靠防火墙兜底；不当作故障报"严重"，
+          # 否则灰期天天假报警，检查就没人看了
+          echo "  [注意] $port 由 frps 通配绑定（$bad）——frp 模式已知行为；建议切内置隧道后关闭 7000"
+        fi
       else
         echo "  [OK] $port 无公网绑定"
       fi
     done
+    ;;
+
+  tunnel)
+    set_tunnel_mode "$TUNNEL_MODE"
     ;;
 
   selfsigned)

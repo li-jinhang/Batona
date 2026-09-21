@@ -16,6 +16,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import type { AuthService } from '../auth/index.ts';
+import type { TunnelHealth } from '../tunnel/server.ts';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -38,6 +39,8 @@ export interface HttpOptions {
   agentKey?: string;
   /** 收到 token 后的注入动作（由 app.ts 绑定到 DSH 适配器的热更新） */
   onDshLaunchToken?: (token: string) => Promise<void>;
+  /** 内置隧道状态（/healthz 暴露；未启用时不传） */
+  tunnelState?: () => TunnelHealth | null;
 }
 
 export class GatewayHttpServer {
@@ -74,7 +77,15 @@ export class GatewayHttpServer {
       }
       if (req.method === 'GET' && path === '/healthz') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, version: gatewayVersion() }));
+        // 键序不可乱：version 必须是 JSON 里第一个 "version" 字面量
+        // （deploy.sh 的 first_field 取首个字面量做部署版本校验；tunnel 块内不得出现 "version" 键）
+        res.end(JSON.stringify({ ok: true, version: gatewayVersion(), tunnel: this.opts.tunnelState?.() ?? null }));
+        return;
+      }
+      if (path === '/tunnel') {
+        // WebSocket 升级端点：普通 GET 若落进 static 会命中 SPA 兜底返回 200 index.html，排障时误导
+        res.writeHead(426, { 'content-type': 'text/plain' });
+        res.end('upgrade required');
         return;
       }
       if (req.method === 'GET' || req.method === 'HEAD') {

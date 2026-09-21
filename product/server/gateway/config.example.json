@@ -4,6 +4,11 @@
   "dataDir": "./data",
   "webDir": "./web",
   "agentKey": "",
+  "tunnel": {
+    "enabled": false,
+    "services": { "dsh": 3080, "dir": 3081 },
+    "maxStreams": 128
+  },
   "auth": {
     "initialUser": {
       "username": "admin",
