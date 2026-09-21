@@ -321,6 +321,9 @@ class TunnelClient extends EventEmitter {
     this.ws = null;
     if (!ws) return;
     ws.removeAllListeners();
+    // ws 在 TLS/HTTP 握手未完成时 terminate() 会异步 emit error；这是预期的
+    // 主动关闭，不应因已移除业务监听器而变成 Electron 主进程未捕获异常。
+    ws.once('error', () => {});
     try { ws.terminate(); } catch { /* ignore */ }
   }
 

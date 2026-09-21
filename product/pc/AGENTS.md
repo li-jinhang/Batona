@@ -28,7 +28,7 @@ npm run smoke
 npm run dist
 ```
 
-根据改动范围补充实际验证：导入连接串/扫码、DSH 自动启动、隧道重连、launch-token 上报和手机配对。`dist/`、`node_modules/` 与临时下载的二进制均为构建/运行产物，不能作为源码修改的一部分。
+改动隧道连接/停止生命周期时，额外运行 `npm run test:tunnel-client`；它覆盖 TLS 握手未完成就停止时不得让 Electron 主进程崩溃。根据改动范围补充实际验证：导入连接串/扫码、DSH 自动启动、隧道重连、launch-token 上报和手机配对。`dist/`、`node_modules/` 与临时下载的二进制均为构建/运行产物，不能作为源码修改的一部分。
 
 ## 运行、打包与更新
 

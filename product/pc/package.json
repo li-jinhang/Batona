@@ -9,6 +9,7 @@
   "scripts": {
     "start": "electron .",
     "smoke": "set DSHLINK_SMOKE=1&& electron .",
+    "test:tunnel-client": "node test/tunnel-client.test.js",
     "dist": "electron-builder",
     "fetch-frpc": "powershell -ExecutionPolicy Bypass -File scripts/fetch-frpc.ps1"
   },

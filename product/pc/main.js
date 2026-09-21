@@ -804,7 +804,7 @@ app.whenReady().then(async () => {
 
   // 冒烟模式：启动 2 秒后退出（用于 CI/验证）
   if (process.env.DSHLINK_SMOKE) {
-    console.log('[smoke] DSH Link main OK, binding=' + JSON.stringify(state.binding)
+    console.log('[smoke] DSH Link main OK, binding=' + (state.binding ? 'configured' : 'absent')
       + ', tunnelMode=' + (process.env.DSHLINK_TUNNEL || 'auto')
       + ', tunnelClient=' + (TunnelClient ? 'loaded' : 'UNAVAILABLE'));
     setTimeout(() => app.quit(), 2000);
