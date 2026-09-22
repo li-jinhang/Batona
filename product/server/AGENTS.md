@@ -20,7 +20,7 @@
 - 代码：工作树为 `/www/wwwroot/117.72.10.87/26-009DSHlink`，远程为 `git@gitee.com:li-jinhang7/26-010-dshplugin.git`，跟踪 `main`，并且只稀疏检出 `product/server`。
 - 运行时：应用 `/opt/dsh-gateway/app`；配置与服务器登记 `/etc/dsh-gateway`；持久数据与部署回滚状态 `/var/lib/dsh-gateway`；systemd 服务 `dsh-gateway`、`frps`，以及 Nginx。
 - HTTPS：宝塔主虚拟主机 `/www/server/panel/vhost/nginx/117.72.10.87.conf`；DSH 反代 include `/www/server/panel/vhost/nginx/proxy/117.72.10.87/dsh-gateway.conf`，将根路径转发至 `127.0.0.1:3090` 并保留 WebSocket 升级头。80 端口仅重定向至 HTTPS。
-- 网络：443 是网关公网 TLS 入口；当前处于 frps 兼容模式，7000 必须保持放行。7500、3090、3080、3081、3082 不得对公网开放；确认所有 PC 客户端支持内置隧道前，不得关闭 frps 或 7000。
+- 网络：443 是网关公网 TLS 入口；当前处于 frps 兼容模式，7000 必须保持放行。frps 的 `proxyBindAddr` 必须为 `127.0.0.1`，使 3080/3081/3082 只供本机网关使用；7500、3090、3080、3081、3082 不得对公网开放。确认所有 PC 客户端支持内置隧道前，不得关闭 frps 或 7000。
 - 日常只读核验：`dsh-deploy --status`、`curl -k https://127.0.0.1/healthz`、`systemctl is-active dsh-gateway frps nginx`。日常更新用 `dsh-deploy`，代码回退用 `dsh-deploy --rollback`。
 
 ## 服务器获取与更新代码

@@ -157,6 +157,9 @@ ensure_frps() {
   fi
   cat > /etc/frp/frps.toml <<EOF
 bindPort = 7000
+# DSH/目录/Codex 的 reverse-proxy 端口只给本机网关使用；不能随 frps 默认值
+# 绑定到 0.0.0.0。公网仅保留 frps 控制端口 7000（灰度回退期间）。
+proxyBindAddr = "127.0.0.1"
 auth.method = "token"
 auth.token = "${token}"
 # frp v0.68+ 默认支持 TLS；force 才是服务端只接受 TLS 的有效配置键。
@@ -183,6 +186,25 @@ EOF
   systemctl daemon-reload
   systemctl enable --now frps
   log "frps 已启动"
+}
+
+ensure_frps_proxy_bind() {
+  # 老安装会因 ensure_frps 的“已运行即跳过”路径缺少该安全项。只触碰 frps
+  # 自己管理的显式键，并在值改变后重启 frps，让已连接的 PC 自动重连即可。
+  local frps_conf="/etc/frp/frps.toml"
+  [ -f "$frps_conf" ] || return 0
+  if grep -Eq '^proxyBindAddr[[:space:]]*=[[:space:]]*"127\.0\.0\.1"[[:space:]]*$' "$frps_conf"; then
+    return 0
+  fi
+  if grep -qE '^proxyBindAddr[[:space:]]*=' "$frps_conf"; then
+    sed -i -E 's|^proxyBindAddr[[:space:]]*=.*$|proxyBindAddr = "127.0.0.1"|' "$frps_conf"
+  else
+    printf '\n# Reverse-proxy 端口仅供本机网关使用。\nproxyBindAddr = "127.0.0.1"\n' >> "$frps_conf"
+  fi
+  chmod 600 "$frps_conf"
+  systemctl restart frps
+  systemctl is-active --quiet frps || { err "frps 重启失败；已拒绝暴露 reverse-proxy 端口"; exit 1; }
+  log "frps reverse-proxy 端口已限定到 127.0.0.1"
 }
 
 deploy_gateway() {
@@ -544,6 +566,7 @@ EOF
     # 2) 组件安装
     ensure_node
     ensure_frps
+    ensure_frps_proxy_bind
     deploy_gateway "${SOURCE:-$GATEWAY_DEFAULT_SRC}"
     write_gateway_config "$ADMIN" "$gwPass"
     ensure_gateway_service
@@ -554,6 +577,7 @@ EOF
   update)
     log "升级网关（数据与配置保留）"
     ensure_node
+    ensure_frps_proxy_bind
     src="$SOURCE"
     if [ -z "$src" ]; then
       src="$GATEWAY_DEFAULT_SRC"
