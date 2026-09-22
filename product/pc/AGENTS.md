@@ -43,7 +43,7 @@ $env:ELECTRON_BUILDER_BINARIES_MIRROR = "https://npmmirror.com/mirrors/electron-
 $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
 ```
 
-绑定、日志和本地运行数据在 `%APPDATA%\DSH Link`；卸载/覆盖安装不应主动删除它。出现 `EPERM`、打包工具下载失败或便携版打不开时，先检查 Defender/杀毒拦截、`dist/` 目录锁定和该数据目录日志。内置隧道不依赖 frpc；只有服务器尚未启用内置隧道或明确回退时，才使用 `npm run fetch-frpc` 获取回退二进制。
+绑定、日志和本地运行数据在 `%APPDATA%\DSH Link`；卸载/覆盖安装不应主动删除它。`frpc.exe` 在正式包里必须由 `asarUnpack` 提供真实可执行路径，而 `frpc.toml` 始终写入 `%APPDATA%\DSH Link\frpc`，不能写回安装目录或 `app.asar`。出现 `EPERM`、打包工具下载失败或便携版打不开时，先检查 Defender/杀毒拦截、`dist/` 目录锁定和该数据目录日志。内置隧道不依赖 frpc；只有服务器尚未启用内置隧道或明确回退时，才使用 `npm run fetch-frpc` 获取回退二进制。
 
 ## 首次运行与隧道排障
 

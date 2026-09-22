@@ -129,7 +129,11 @@ function connectionString(b = state.binding) {
 function frpcCandidates() {
   return [
     path.join(app.getPath('userData'), 'frpc', 'frpc.exe'),
-    path.join(__dirname, 'frpc-bin', 'frpc.exe'),
+    // Electron 的 asar 虚拟路径可用于 require/readFile，却不是 Windows 子进程
+    // 可稳定执行、可写入配置的真实目录。正式包明确使用 asarUnpack 生成的路径。
+    app.isPackaged
+      ? path.join(process.resourcesPath, 'app.asar.unpacked', 'frpc-bin', 'frpc.exe')
+      : path.join(__dirname, 'frpc-bin', 'frpc.exe'),
   ];
 }
 
@@ -199,7 +203,7 @@ async function ensureFrpc() {
 }
 
 // ── frpc 运行 ─────────────────────────────────────────────────────────
-function writeFrpcConfig(exePath) {
+function writeFrpcConfig() {
   const b = state.binding;
   if (!b) return null;
   const conf = [
@@ -234,7 +238,10 @@ function writeFrpcConfig(exePath) {
     'transport.useEncryption = true',
     '',
   ].join('\n');
-  const confPath = path.join(path.dirname(exePath), 'frpc.toml');
+  // 安装目录/asarUnpack 均应视为只读；运行期配置只保存在当前 Windows 用户的数据目录。
+  const confDir = path.join(app.getPath('userData'), 'frpc');
+  fs.mkdirSync(confDir, { recursive: true });
+  const confPath = path.join(confDir, 'frpc.toml');
   fs.writeFileSync(confPath, conf, 'utf8');
   return confPath;
 }
@@ -398,7 +405,7 @@ async function startFrpcLegacy() {
   try {
     const exe = await ensureFrpc();
     if (!exe) { log('frpc 不可用（未下载/解压 frpc.exe），跳过启动'); return false; }
-    const conf = writeFrpcConfig(exe);
+    const conf = writeFrpcConfig();
     log(`starting frpc: ${exe}`);
     state.tunnelKind = 'frp';
     frpcProc = spawn(exe, ['-c', conf], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
