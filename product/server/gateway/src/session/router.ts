@@ -43,8 +43,12 @@ export class SessionRouter {
   }
 
   private routeEvent(backend: string, backendSessionId: string, event: AgentEvent): void {
-    const gid = this.byBackend.get(`${backend}:${backendSessionId}`);
-    if (!gid) return; // 非本网关创建的会话（如笔记本端本地会话）
+    // Codex Desktop 原生创建的会话也必须可被手机接管。首次事件到来时建立稳定网关映射，
+    // 后续 resume 不再生成第二个 gatewaySessionId。
+    const key = `${backend}:${backendSessionId}`;
+    const gid = this.byBackend.get(key) ?? this.adopt(this.adapters.require(backend), {
+      backend, backendSessionId, state: 'idle', createdAt: Date.now(),
+    }).id;
     const g = this.sessions.get(gid);
     if (g) {
       const next = stateFromEvent(event);
@@ -68,6 +72,14 @@ export class SessionRouter {
   }
 
   private adopt(adapter: AgentAdapter, ref: AgentSessionRef): GatewaySession {
+    const key = `${adapter.id}:${ref.backendSessionId}`;
+    const existingId = this.byBackend.get(key);
+    if (existingId) {
+      const existing = this.sessions.get(existingId)!;
+      existing.title = ref.title ?? existing.title;
+      existing.state = ref.state;
+      return existing;
+    }
     const gs: GatewaySession = {
       id: RpcId(crypto.randomUUID()),
       backend: adapter.id,
@@ -77,7 +89,7 @@ export class SessionRouter {
       createdAt: ref.createdAt,
     };
     this.sessions.set(gs.id, gs);
-    this.byBackend.set(`${adapter.id}:${ref.backendSessionId}`, gs.id);
+    this.byBackend.set(key, gs.id);
     return gs;
   }
 
@@ -91,13 +103,18 @@ export class SessionRouter {
     return g;
   }
 
-  list(): GatewaySession[] {
+  /** 从适配器重新发现持久会话（含 Codex Desktop 已有会话），再返回统一映射。 */
+  async list(): Promise<GatewaySession[]> {
+    await Promise.all(this.adapters.list().map(async (adapter) => {
+      const refs = await adapter.listSessions();
+      for (const ref of refs) this.adopt(adapter, ref);
+    }));
     return [...this.sessions.values()];
   }
 
   // ── 操作转发 ────────────────────────────────────────────────────────
 
-  async prompt(gatewaySessionId: string, parts: PromptPart[], opts?: { queueAction?: 'prompt' | 'steer' | 'queue' }): Promise<void> {
+  async prompt(gatewaySessionId: string, parts: PromptPart[], opts?: { queueAction?: 'prompt' | 'steer' | 'queue'; agentPreset?: string }): Promise<void> {
     const g = this.requireSession(gatewaySessionId);
     await this.adapters.require(g.backend).prompt(refOf(g), parts, opts);
   }
@@ -177,6 +194,12 @@ export class SessionRouter {
     const a = this.adapterFor(backendId, 'models');
     if (!a.listModels) throw Object.assign(new Error('not implemented'), { code: 'not-implemented' });
     return a.listModels();
+  }
+
+  async listPermissionProfiles(backendId?: string): Promise<import('../adapter/contract.ts').AgentProfile[]> {
+    const a = this.adapterFor(backendId, 'permissionProfiles');
+    if (!a.listPermissionProfiles) throw Object.assign(new Error('not implemented'), { code: 'not-implemented' });
+    return a.listPermissionProfiles();
   }
 
   async selectModel(gatewaySessionId: string, model: ModelRef): Promise<void> {

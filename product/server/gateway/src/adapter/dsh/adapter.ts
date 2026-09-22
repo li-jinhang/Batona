@@ -83,6 +83,7 @@ export class DshAdapter implements AgentAdapter {
     resume: true,
     workspace: true,
     models: true,
+    permissionProfiles: false,
     concurrency: 'queue',      // DSH 官方队列（session/prompt mode: 'queue'）
     voice: 'forward',
   };
@@ -592,7 +593,7 @@ export class DshAdapter implements AgentAdapter {
     return this.refOf(backendSessionId, this.titleOf(backendSessionId));
   }
 
-  async prompt(session: AgentSessionRef, parts: PromptPart[], opts?: { queueAction?: 'prompt' | 'steer' | 'queue' }): Promise<void> {
+  async prompt(session: AgentSessionRef, parts: PromptPart[], opts?: { queueAction?: 'prompt' | 'steer' | 'queue'; agentPreset?: string }): Promise<void> {
     const sessionId = session.backendSessionId;
     // 先开 follow 流再提交，避免漏掉回合最初的事件
     this.ensureFollower(sessionId);
@@ -626,7 +627,10 @@ export class DshAdapter implements AgentAdapter {
     }
 
     // 提问：{ skip:true } = 放弃应答（交给下一个 answerer）；否则回填 answers
-    const p = payload as { selected?: unknown; custom?: unknown; answer?: unknown; skip?: unknown } | null;
+    const p = payload as {
+      selected?: unknown; custom?: unknown; answer?: unknown; skip?: unknown;
+      answers?: { id?: unknown; selected?: unknown; custom?: unknown; answer?: unknown }[];
+    } | null;
     if (p?.skip === true) {
       const r = await this.requireClient().respondEvent({ clientId, eventId: serverRequestRpcId, outcome: { kind: 'next' } });
       if (!r.ok) throw toError(r.error.code, r.error.message);
@@ -637,12 +641,21 @@ export class DshAdapter implements AgentAdapter {
     }
 
     const questions = pending.questions ?? [];
-    const selected = Array.isArray(p?.selected) ? p.selected.map(String) : (p?.selected ? [String(p.selected)] : []);
-    const custom = typeof p?.custom === 'string' ? p.custom : (typeof p?.answer === 'string' ? p.answer : undefined);
+    const submitted = Array.isArray(p?.answers) ? p.answers : [];
+    const legacySelected = Array.isArray(p?.selected) ? p.selected.map(String) : (p?.selected ? [String(p.selected)] : []);
+    const legacyCustom = typeof p?.custom === 'string' ? p.custom : (typeof p?.answer === 'string' ? p.answer : undefined);
     const value: DshAskUserQuestionAnswer = {
-      answers: questions.map((q) => (custom === undefined ? { id: q.id, selected } : { id: q.id, selected, custom })),
+      answers: questions.map((q) => {
+        const answer = submitted.find((item) => String(item?.id ?? '') === q.id);
+        const selected = answer
+          ? (Array.isArray(answer.selected) ? answer.selected.map(String) : (answer.selected ? [String(answer.selected)] : []))
+          : legacySelected;
+        const custom = answer
+          ? (typeof answer.custom === 'string' ? answer.custom : (typeof answer.answer === 'string' ? answer.answer : undefined))
+          : legacyCustom;
+        return custom === undefined ? { id: q.id, selected } : { id: q.id, selected, custom };
+      }),
     };
-    console.log(`[dsh-question-respond] eventId=${serverRequestRpcId} value=${JSON.stringify(value)}`);
     const r = await this.requireClient().respondEvent({ clientId, eventId: serverRequestRpcId, outcome: { kind: 'result', value } });
     if (!r.ok) throw toError(r.error.code, r.error.message);
     this.pending.delete(serverRequestRpcId);

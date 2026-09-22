@@ -157,12 +157,22 @@ class GatewayClient(
         runCatching { call("session.list").let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(SessionListResult.serializer(), r.value!!).sessions else emptyList() } }
             .getOrElse { emptyList() }
 
-    suspend fun sessionCreate(backend: String, title: String? = null, workspaceId: String? = null): GatewaySession? =
+    suspend fun sessionCreate(
+        backend: String,
+        title: String? = null,
+        workspaceId: String? = null,
+        workspacePath: String? = null,
+        model: ModelRef? = null,
+        agentPreset: String? = null,
+    ): GatewaySession? =
         runCatching {
             call("session.create", buildJsonObject {
                 put("backend", backend)
                 title?.let { put("title", it) }
                 workspaceId?.let { put("workspaceId", it) }
+                workspacePath?.let { put("workspacePath", it) }
+                agentPreset?.let { put("agentPreset", it) }
+                model?.let { put("model", modelJson(it)) }
             }).let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(GatewaySession.serializer(), r.value!!) else null }
         }.getOrNull()
 
@@ -175,19 +185,20 @@ class GatewayClient(
             }).let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(GatewaySession.serializer(), r.value!!) else null }
         }.getOrNull()
 
-    suspend fun sessionPrompt(sessionId: String, text: String) =
+    suspend fun sessionPrompt(sessionId: String, text: String, agentPreset: String? = null) =
         call("session.prompt", buildJsonObject {
             put("sessionId", sessionId)
             put("parts", buildJsonArray {
                 add(buildJsonObject { put("type", "text"); put("text", text) })
             })
             put("queueAction", "queue")
+            agentPreset?.let { put("agentPreset", it) }
         })
 
     suspend fun sessionCancel(sessionId: String) = call("session.cancel", buildJsonObject { put("sessionId", sessionId) })
 
-    suspend fun sessionRename(sessionId: String, title: String) =
-        call("session.rename", buildJsonObject { put("sessionId", sessionId); put("title", title) })
+    suspend fun sessionRename(sessionId: String, title: String, backend: String? = null) =
+        call("session.rename", buildJsonObject { put("sessionId", sessionId); put("title", title); backend?.let { put("backend", it) } })
 
     suspend fun sessionHistory(sessionId: String): List<AgentEvent> =
         runCatching {
@@ -212,13 +223,13 @@ class GatewayClient(
             put("payload", payload)
         })
 
-    suspend fun workspaceList(): List<WorkspaceView> =
-        runCatching { call("workspace.list").let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(WorkspaceListResult.serializer(), r.value!!).items else emptyList() } }
+    suspend fun workspaceList(backend: String? = null): List<WorkspaceView> =
+        runCatching { call("workspace.list", backendPayload(backend)).let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(WorkspaceListResult.serializer(), r.value!!).items else emptyList() } }
             .getOrElse { emptyList() }
 
-    suspend fun workspaceTree(): List<WorkspaceNode> =
+    suspend fun workspaceTree(backend: String? = null): List<WorkspaceNode> =
         runCatching {
-            val ret = call("workspace.tree").let { r ->
+            val ret = call("workspace.tree", backendPayload(backend)).let { r ->
                 if (r.ok && r.value != null) {
                     val items = json.decodeFromJsonElement(WorktreeResult.serializer(), r.value!!).items
                     android.util.Log.w("DSHLINK", "treeRPC ok items=${items.size}")
@@ -232,15 +243,15 @@ class GatewayClient(
         }.onFailure { android.util.Log.w("DSHLINK", "treeRPC FAIL: ${it}") }
             .getOrElse { emptyList() }
 
-    suspend fun workspaceDelete(workspaceId: String) =
-        call("workspace.delete", buildJsonObject { put("workspaceId", workspaceId) })
+    suspend fun workspaceDelete(workspaceId: String, backend: String? = null) =
+        call("workspace.delete", buildJsonObject { put("workspaceId", workspaceId); backend?.let { put("backend", it) } })
 
-    suspend fun archiveSession(sessionId: String) =
-        call("workspace.archiveSession", buildJsonObject { put("sessionId", sessionId) })
+    suspend fun archiveSession(sessionId: String, backend: String? = null) =
+        call("workspace.archiveSession", buildJsonObject { put("sessionId", sessionId); backend?.let { put("backend", it) } })
 
-    suspend fun workspaceCreate(path: String): WorkspaceCreateResult =
+    suspend fun workspaceCreate(path: String, backend: String? = null): WorkspaceCreateResult =
         runCatching {
-            call("workspace.create", buildJsonObject { put("path", path) })
+            call("workspace.create", buildJsonObject { put("path", path); backend?.let { put("backend", it) } })
                 .let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(WorkspaceCreateResult.serializer(), r.value!!) else WorkspaceCreateResult() }
         }.getOrElse { WorkspaceCreateResult() }
 
@@ -261,8 +272,12 @@ class GatewayClient(
         }.onFailure { android.util.Log.w("DSHLINK", "dirRPC FAIL: ${it}") }
             .getOrElse { DirListResult() }
 
-    suspend fun modelList(): List<ModelRef> =
-        runCatching { call("model.list").let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(ModelListResult.serializer(), r.value!!).items else emptyList() } }
+    suspend fun modelList(backend: String? = null): List<ModelRef> =
+        runCatching { call("model.list", backendPayload(backend)).let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(ModelListResult.serializer(), r.value!!).items else emptyList() } }
+            .getOrElse { emptyList() }
+
+    suspend fun agentProfileList(backend: String): List<AgentProfile> =
+        runCatching { call("agent.profile.list", backendPayload(backend)).let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(AgentProfileListResult.serializer(), r.value!!).items else emptyList() } }
             .getOrElse { emptyList() }
 
     suspend fun modelSelect(sessionId: String, model: ModelRef) =
@@ -280,6 +295,14 @@ class GatewayClient(
             .getOrElse { emptyList() }
 
     suspend fun deviceRevoke(deviceId: String) = call("device.revoke", buildJsonObject { put("deviceId", deviceId) })
+
+    private fun backendPayload(backend: String?): JsonElement = buildJsonObject { backend?.let { put("backend", it) } }
+
+    private fun modelJson(model: ModelRef): JsonElement = buildJsonObject {
+        put("provider", model.provider); put("model", model.model)
+        model.reasoningEffort?.let { put("reasoningEffort", it) }
+        model.displayName?.let { put("displayName", it) }
+    }
 
     private suspend fun awaitWithTimeout(deferred: CompletableDeferred<RpcResult<JsonElement>>): RpcResult<JsonElement> =
         withContext(Dispatchers.IO) {

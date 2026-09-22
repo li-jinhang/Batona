@@ -1,7 +1,7 @@
 {
   "name": "dsh-link-pc",
   "productName": "DSH Link",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "DSH Link PC 端 — 一键启动 DeepSeek Harness 并接入服务器，手机随时远程操控",
   "main": "main.js",
   "author": "DSH Link",
@@ -33,6 +33,7 @@
     },
     "files": [
       "main.js",
+      "codex-bridge.js",
       "dir-service.js",
       "dsh-launcher.js",
       "preload.js",

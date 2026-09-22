@@ -6,8 +6,10 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.dshlink.app.data.Binding
+import com.dshlink.app.data.CodexMirrorCache
 import com.dshlink.app.data.ConnectionParser
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.Json
 
 private val Context.dataStore by preferencesDataStore(name = "dshlink")
 
@@ -15,6 +17,8 @@ private val Context.dataStore by preferencesDataStore(name = "dshlink")
 class SettingsStore(private val app: Application) {
     private val KEY_BINDING = stringPreferencesKey("binding")
     private val KEY_TOKEN = stringPreferencesKey("token")
+    private val KEY_CODEX_MIRROR = stringPreferencesKey("codex_mirror")
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     suspend fun loadBinding(): Binding? {
         val raw = app.dataStore.data.first()[KEY_BINDING] ?: return null
@@ -31,8 +35,21 @@ class SettingsStore(private val app: Application) {
         app.dataStore.edit { it[KEY_TOKEN] = token }
     }
 
+    suspend fun loadCodexMirror(): CodexMirrorCache? {
+        val raw = app.dataStore.data.first()[KEY_CODEX_MIRROR] ?: return null
+        return runCatching { json.decodeFromString(CodexMirrorCache.serializer(), raw) }.getOrNull()
+    }
+
+    /**
+     * 存储的是 PC 已脱敏的 Codex 会话投影，供断网时浏览；认证信息仍只在既有
+     * binding/token 键中保存，且 clear() 会在注销或重新绑定时一并清掉该镜像。
+     */
+    suspend fun saveCodexMirror(cache: CodexMirrorCache) {
+        app.dataStore.edit { it[KEY_CODEX_MIRROR] = json.encodeToString(CodexMirrorCache.serializer(), cache) }
+    }
+
     suspend fun clear() {
-        app.dataStore.edit { it.remove(KEY_BINDING); it.remove(KEY_TOKEN) }
+        app.dataStore.edit { it.remove(KEY_BINDING); it.remove(KEY_TOKEN); it.remove(KEY_CODEX_MIRROR) }
     }
 
     companion object {

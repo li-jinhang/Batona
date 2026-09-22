@@ -33,6 +33,7 @@ export class MockAdapter implements AgentAdapter {
     resume: true,
     workspace: true,
     models: true,
+    permissionProfiles: false,
     concurrency: 'single',
     voice: 'forward',
   };

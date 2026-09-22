@@ -48,6 +48,7 @@ fun App() {
         else -> HomeScreen(
             binding = binding!!,
             token = token!!,
+            store = store,
             onLogout = {
                 scope.launch { store.clear() }
                 token = null

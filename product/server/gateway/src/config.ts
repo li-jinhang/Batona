@@ -41,12 +41,14 @@ const DEFAULTS: GatewayConfig = {
   auth: {},
   tunnel: {
     enabled: false,
-    services: { dsh: 3080, dir: 3081 },
+    services: { dsh: 3080, dir: 3081, codex: 3082 },
     maxStreams: 128,
   },
   adapters: {
     mock: { enabled: true },
     dsh: { enabled: false, cfg: { baseUrl: 'http://127.0.0.1:3080' } },
+    // 需先升级 PC 端（本机 3082 CodexBridge）后再在生产 config.json 显式开启。
+    codex: { enabled: false, cfg: { baseUrl: 'http://127.0.0.1:3082' } },
   },
 };
 
@@ -66,6 +68,9 @@ export function loadConfig(path = process.env.GATEWAY_CONFIG ?? './config.json')
       ...(raw.tunnel ?? {}),
       services: { ...DEFAULTS.tunnel.services, ...(raw.tunnel?.services ?? {}) },
     };
+    // 旧生产 config.json 往往只写 mock/dsh；不能因为顶层浅合并而丢掉新加的
+    // codex 默认禁用项，也不能丢掉某个 adapter 的 baseUrl 默认值。
+    cfg.adapters = mergeAdapters(DEFAULTS.adapters, raw.adapters);
   }
   // 环境变量覆盖
   if (process.env.PORT) cfg.port = Number(process.env.PORT);
@@ -77,4 +82,22 @@ export function loadConfig(path = process.env.GATEWAY_CONFIG ?? './config.json')
     cfg.adapters.dsh = { enabled: true, cfg: { baseUrl: process.env.DSH_BASE_URL } };
   }
   return cfg;
+}
+
+function mergeAdapters(
+  defaults: GatewayConfig['adapters'],
+  raw: GatewayConfig['adapters'] | undefined,
+): GatewayConfig['adapters'] {
+  const ids = new Set([...Object.keys(defaults), ...Object.keys(raw ?? {})]);
+  const merged: GatewayConfig['adapters'] = {};
+  for (const id of ids) {
+    const base = defaults[id] ?? {};
+    const override = raw?.[id] ?? {};
+    merged[id] = {
+      ...base,
+      ...override,
+      cfg: { ...(base.cfg ?? {}), ...(override.cfg ?? {}) },
+    };
+  }
+  return merged;
 }

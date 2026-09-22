@@ -58,7 +58,14 @@ data class AgentEvent(
 )
 
 @Serializable
-data class QuestionItem(val id: String, val kind: String, val prompt: String, val placeholder: String? = null, val options: List<QuestionOption>? = null)
+data class QuestionItem(
+    val id: String,
+    val kind: String,
+    val prompt: String,
+    val placeholder: String? = null,
+    val isSecret: Boolean = false,
+    val options: List<QuestionOption>? = null,
+)
 
 @Serializable
 data class QuestionOption(val id: String, val label: String, val description: String? = null)
@@ -79,6 +86,13 @@ data class ModelRef(val provider: String, val model: String, val reasoningEffort
 
 @Serializable
 data class ModelListResult(val items: List<ModelRef> = emptyList())
+
+/** PC 端实际校验过、手机仅可选择的 Codex 权限档。 */
+@Serializable
+data class AgentProfile(val id: String, val label: String, val description: String, val available: Boolean = false)
+
+@Serializable
+data class AgentProfileListResult(val items: List<AgentProfile> = emptyList())
 
 /** 设备 */
 @Serializable
@@ -107,3 +121,14 @@ data class WorkspaceMini(val workspaceId: String, val path: String, val title: S
 
 @Serializable
 data class SessionNode(val sessionId: String, val title: String? = null, val state: String = "idle", val updatedAt: Long = 0)
+
+/**
+ * 仅供已绑定手机离线浏览的 Codex 镜像；不保存令牌、连接串或待处理的审批/提问答案。
+ * 工作区仅留最近 5 个会话，单会话最多留 200 个已经过 PC 脱敏的事件。
+ */
+@Serializable
+data class CodexMirrorCache(
+    val worktree: List<WorkspaceNode> = emptyList(),
+    val histories: Map<String, List<AgentEvent>> = emptyMap(),
+    val savedAt: Long = 0,
+)

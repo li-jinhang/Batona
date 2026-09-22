@@ -27,6 +27,7 @@ interface PendingAnswer {
 export class GatewayWsServer {
   private wss!: WebSocketServer;
   private pending = new Map<string, PendingAnswer>(); // 网关侧 rpcId → 适配器应答信息
+  private resolving = new Set<string>(); // 同一审批/提问多终端竞态：首个有效应答获胜
   private auth: AuthService;
   private registry: AdapterRegistry;
   private router: SessionRouter;
@@ -111,7 +112,7 @@ export class GatewayWsServer {
     try {
       switch (method) {
         case 'auth.hello': return ok(this.hello());
-        case 'session.list': return ok({ sessions: this.router.list() });
+        case 'session.list': return ok({ sessions: await this.router.list() });
         case 'session.create': {
           const p = payload as { backend?: string; title?: string; agentPreset?: string; workspacePath?: string; workspaceId?: string; model?: unknown };
           const backend = p.backend ?? this.registry.default()?.id;
@@ -129,8 +130,8 @@ export class GatewayWsServer {
           return ok(await this.router.resume(backend, p.backendSessionId));
         }
         case 'session.prompt': {
-          const p = payload as { sessionId: string; parts: unknown[]; queueAction?: 'prompt' | 'steer' | 'queue' };
-          await this.router.prompt(p.sessionId, p.parts as never, { queueAction: p.queueAction });
+          const p = payload as { sessionId: string; parts: unknown[]; queueAction?: 'prompt' | 'steer' | 'queue'; agentPreset?: string };
+          await this.router.prompt(p.sessionId, p.parts as never, { queueAction: p.queueAction, agentPreset: p.agentPreset });
           return ok({ accepted: true });
         }
         case 'session.cancel': {
@@ -158,9 +159,16 @@ export class GatewayWsServer {
           const p = payload as { sessionId: string; serverRequestRpcId: string; payload: unknown };
           const pending = this.pending.get(p.serverRequestRpcId);
           if (!pending) return err('bad-request', 'no pending interaction for rpcId');
-          await this.router.respond(p.sessionId, pending.adapterRpcId, p.payload);
-          this.pending.delete(p.serverRequestRpcId);
-          return ok({ accepted: true });
+          if (pending.gatewaySessionId !== p.sessionId) return err('bad-request', 'interaction does not belong to this session');
+          if (this.resolving.has(p.serverRequestRpcId)) return err('bad-request', 'interaction is being resolved by another device');
+          this.resolving.add(p.serverRequestRpcId);
+          try {
+            await this.router.respond(p.sessionId, pending.adapterRpcId, p.payload);
+            this.pending.delete(p.serverRequestRpcId);
+            return ok({ accepted: true });
+          } finally {
+            this.resolving.delete(p.serverRequestRpcId);
+          }
         }
         case 'workspace.list': {
           const p = payload as { backend?: string };
@@ -192,6 +200,10 @@ export class GatewayWsServer {
           const p = payload as { sessionId: string; model: unknown };
           await this.router.selectModel(p.sessionId, p.model as never);
           return ok({ accepted: true });
+        }
+        case 'agent.profile.list': {
+          const p = payload as { backend?: string };
+          return ok({ items: await this.router.listPermissionProfiles(p.backend) });
         }
         case 'device.list':
           return ok({ items: this.auth.listDevices() });

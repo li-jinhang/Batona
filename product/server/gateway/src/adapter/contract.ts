@@ -53,6 +53,8 @@ export interface AskUserQuestionItem {
   kind: 'text' | 'select' | 'confirm';
   prompt: string;
   placeholder?: string;
+  /** 输入框是否必须遮蔽；例如 Codex request_user_input 的 isSecret。 */
+  isSecret?: boolean;
   options?: { id: string; label: string; description?: string }[];
 }
 
@@ -65,6 +67,14 @@ export interface CreateSessionOpts {
   model?: { provider: string; model: string; reasoningEffort?: string };
 }
 
+/** PC 端定义、手机仅可选择的固定权限档。 */
+export interface AgentProfile {
+  id: string;
+  label: string;
+  description: string;
+  available: boolean;
+}
+
 /** 适配器能力声明（网关据此路由 workspace.* / model.* / respond） */
 export interface AdapterCapabilities {
   text: boolean;
@@ -74,6 +84,7 @@ export interface AdapterCapabilities {
   resume: boolean;         // 是否支持恢复历史会话
   workspace: boolean;      // 是否提供工作区管理（workspace.*）
   models: boolean;         // 是否提供模型目录与选择（model.*）
+  permissionProfiles: boolean; // 是否提供由 PC 校验的固定权限档
   concurrency: 'single' | 'queue' | 'parallel';
   voice: 'none' | 'forward'; // v2 语音：agent 不感知，网关模态层透传
 }
@@ -121,7 +132,7 @@ export interface AgentAdapter {
   resumeSession(backendSessionId: string): Promise<AgentSessionRef>;
 
   /** 触发回合；结果与中间事件经 onEvent 推送（含 approval/requested 等可应答帧） */
-  prompt(session: AgentSessionRef, parts: PromptPart[], opts?: { queueAction?: 'prompt' | 'steer' | 'queue' }): Promise<void>;
+  prompt(session: AgentSessionRef, parts: PromptPart[], opts?: { queueAction?: 'prompt' | 'steer' | 'queue'; agentPreset?: string }): Promise<void>;
 
   /**
    * 应答 server-request（审批 / 提问）；后续事件继续经 onEvent 推送。
@@ -149,6 +160,7 @@ export interface AgentAdapter {
   workspaceTree?(): Promise<WorkspaceTree>;
   listModels?(): Promise<ModelRef[]>;
   selectModel?(session: AgentSessionRef, model: ModelRef): Promise<void>;
+  listPermissionProfiles?(): Promise<AgentProfile[]>;
   /** 重命名会话（DSH：session.rename，标题以 session/title 事件持久化） */
   renameSession?(session: AgentSessionRef, title: string): Promise<{ title: string }>;
 

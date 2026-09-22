@@ -14,6 +14,7 @@ import { AuthService } from './auth/index.ts';
 import { AdapterRegistry } from './adapter/registry.ts';
 import { createMockAdapter } from './adapter/mock/adapter.ts';
 import { createDshAdapter } from './adapter/dsh/adapter.ts';
+import { createCodexAdapter } from './adapter/codex/adapter.ts';
 import { SessionRouter } from './session/router.ts';
 import { GatewayHttpServer } from './server/http.ts';
 import { GatewayWsServer } from './server/ws.ts';
@@ -49,7 +50,7 @@ async function main(): Promise<void> {
   }
 
   const registry = await AdapterRegistry.assemble(
-    { mock: createMockAdapter, dsh: createDshAdapter },
+    { mock: createMockAdapter, dsh: createDshAdapter, codex: createCodexAdapter },
     cfg.adapters,
   );
 

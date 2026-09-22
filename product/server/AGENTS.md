@@ -7,7 +7,7 @@
 ## 当前实现
 
 - 网关核心位于 `gateway/`：Node.js ESM + 原生 TypeScript 源码，生产构建为 `gateway/dist/app.mjs`；Node 基线为 18+。
-- HTTP/WS 入口在 `gateway/src/server/`，认证/TOTP/设备管理在 `gateway/src/auth/`，会话路由在 `gateway/src/session/`，DSH 与 mock 适配器在 `gateway/src/adapter/`。
+- HTTP/WS 入口在 `gateway/src/server/`，认证/TOTP/设备管理在 `gateway/src/auth/`，会话路由在 `gateway/src/session/`，DSH、Codex 与 mock 适配器在 `gateway/src/adapter/`。
 - 内置 WSS 隧道服务端在 `gateway/src/tunnel/`；它是 PC 出站隧道的对端，不依赖对公网开放 DSH 端口。
 - `install.sh` 负责首次安装与运行时配置，`deploy.sh` 负责 Git 拉取、构建、健康检查、失败回滚；两者必须来自同一提交。
 - 持久配置在 `/etc/dsh-gateway`，数据与部署状态在 `/var/lib/dsh-gateway`，运行应用在 `/opt/dsh-gateway/app`；更新时不得误删配置或数据。
@@ -20,7 +20,7 @@
 - 代码：工作树为 `/www/wwwroot/117.72.10.87/26-009DSHlink`，远程为 `git@gitee.com:li-jinhang7/26-010-dshplugin.git`，跟踪 `main`，并且只稀疏检出 `product/server`。
 - 运行时：应用 `/opt/dsh-gateway/app`；配置与服务器登记 `/etc/dsh-gateway`；持久数据与部署回滚状态 `/var/lib/dsh-gateway`；systemd 服务 `dsh-gateway`、`frps`，以及 Nginx。
 - HTTPS：宝塔主虚拟主机 `/www/server/panel/vhost/nginx/117.72.10.87.conf`；DSH 反代 include `/www/server/panel/vhost/nginx/proxy/117.72.10.87/dsh-gateway.conf`，将根路径转发至 `127.0.0.1:3090` 并保留 WebSocket 升级头。80 端口仅重定向至 HTTPS。
-- 网络：443 是网关公网 TLS 入口；当前处于 frps 兼容模式，7000 必须保持放行。7500、3090、3080、3081 不得对公网开放；确认所有 PC 客户端支持内置隧道前，不得关闭 frps 或 7000。
+- 网络：443 是网关公网 TLS 入口；当前处于 frps 兼容模式，7000 必须保持放行。7500、3090、3080、3081、3082 不得对公网开放；确认所有 PC 客户端支持内置隧道前，不得关闭 frps 或 7000。
 - 日常只读核验：`dsh-deploy --status`、`curl -k https://127.0.0.1/healthz`、`systemctl is-active dsh-gateway frps nginx`。日常更新用 `dsh-deploy`，代码回退用 `dsh-deploy --rollback`。
 
 ## 服务器获取与更新代码
@@ -90,6 +90,7 @@ Git 永不提交 `frpc.toml`、frpc/exe、APK、PC `dist/`、`node_modules/`、�
 ## 端内约束
 
 - 服务器只做 TLS 后的认证、会话路由、协议适配和隧道转发。不得把 Agent、LLM 或工具执行迁到服务器，也不能令服务器主动接入用户内网 PC。
+- Codex adapter 的 `baseUrl` 只能是服务器回环的 `http://127.0.0.1:3082`，并且仅在 PC 已升级、桥健康且 App Server 能枚举会话/模型/profile 后才在生产配置显式启用。不能把 3082 加入公网监听或安全组，也不能用 `codex exec` 代替桌面会话控制。
 - 公网入口只应为反向代理后的 TLS；网关服务监听 `127.0.0.1:3090`，内置隧道的 3080/3081 仅绑定回环。`trustedHosts` 不是认证，认证由账号密码、TOTP 和设备令牌承担。
 - 不记录或回显账号密码、连接串、`agentKey`、launch token、TOTP 秘钥或设备令牌。更改认证、限速、吊销或数据结构时要考虑已有数据的迁移与失效策略。
 - 跨端 RPC、连接串、二维码、launch-token 上报和隧道帧以 `../README.md` 的跨端契约为准。修改协议须同步检查 Android 与 PC 的兼容性，并保持旧客户端的明确行为。

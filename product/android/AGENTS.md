@@ -9,6 +9,7 @@
 - 原生 Android：Kotlin、Jetpack Compose、单模块 `app`；包名 `com.dshlink.app`。
 - 环境基线：`compileSdk` / `targetSdk` 34，`minSdk` 26，Java/Kotlin 17；版本号在 `app/build.gradle.kts` 中维护。
 - 网络层使用 OkHttp：REST 登录和 WebSocket RPC 都集中在 `app/src/main/java/com/dshlink/app/data/GatewayClient.kt`。
+- 主页按 backend 显示独立工作区树：DSH 与 Codex 会话不混用。Codex 的权限档、模型与状态都来自网关/PC 的能力查询，手机不构造底层 permission profile 或直连 Codex。
 - 连接串与二维码解析在 `data/ConnectionParser.kt`；持久化设置与凭据在 `SettingsStore.kt`；数据模型在 `data/Models.kt`。
 - UI 入口为 `MainActivity.kt` 与 `ui/App.kt`；绑定、登录、主页分别位于 `ui/BindScreen.kt`、`ui/LoginScreen.kt`、`ui/HomeScreen.kt`。
 
@@ -17,6 +18,9 @@
 - 连接串、配对二维码、认证字段、RPC 信封或事件名称以 `../README.md` 的跨端契约为准；不得只改客户端来“兼容”未定义的新字段。
 - 不在客户端硬编码网关地址、账号、密码、TOTP 秘钥、设备令牌或 PC 的 DSH launch token；敏感值应走现有绑定/安全存储流程，并避免写入日志。
 - Android 只能连接网关的 HTTPS/WSS 入口，不能假设手机可访问 PC 的 `localhost:3080` 或服务器内部端口。
+- Codex 仅发送文本请求；工具调用、结果与审批/提问由 PC 脱敏后经网关镜像。每个工作区默认显示最近 5 个会话，展开后才显示更早记录。
+- Codex 手机镜像缓存仅保存最近 5 个会话/工作区和已脱敏的最近 200 条历史事件/会话；它只支持断网浏览、绝不排队发送，并由 `SettingsStore.clear()` 在注销或重新绑定时清除。
+- 系统通知只允许“等待审批、等待回答、完成、失败”四种不带正文的状态。Android 13+ 必须取得通知权限；应用或 WebSocket 未运行时不能伪造后台推送。
 - 保持 UI 状态与网络 I/O 分层：Composable 不直接持有网络连接或执行阻塞请求；断线、重连、审批/提问事件须经 `GatewayClient` 的既有模型处理。
 - 修改 Manifest、网络安全配置、CameraX 扫码或权限时，要同时检查首次绑定与拒绝权限时的可恢复路径。
 
@@ -28,7 +32,7 @@
 .\gradlew.bat :app:assembleDebug
 ```
 
-若改动了扫码、绑定、登录、WebSocket 或会话 UI，按下方的 **Android Studio 模拟器基线** 验证：首次绑定、TOTP 登录、断网重连、流式对话和审批/提问应答。构建产生的 APK 是发布物，不要把新的 APK、`build/`、`.gradle/` 或 IDE 状态作为源码提交。
+若改动了扫码、绑定、登录、WebSocket 或会话 UI，按下方的 **Android Studio 模拟器基线** 验证：首次绑定、TOTP 登录、断网重连、流式对话和审批/提问应答。Codex 还要验证三档权限、目录选取、缓存离线浏览、通知权限拒绝后的可恢复状态。构建产生的 APK 是发布物，不要把新的 APK、`build/`、`.gradle/` 或 IDE 状态作为源码提交。
 
 ## Android Studio 模拟器基线
 

@@ -22,6 +22,7 @@ const QRCode = require('qrcode');
 const AdmZip = require('adm-zip');
 const { DirectoryService } = require('./dir-service.js');
 const { resolveDshLauncher } = require('./dsh-launcher.js');
+const { CodexBridge } = require('./codex-bridge.js');
 
 // 本机服务固定监听 3080/3081，因此桌面端不能并行运行多个主实例。
 // 第二次启动应将焦点交给第一个实例，而不是抢占端口后令主进程崩溃。
@@ -43,6 +44,8 @@ const DSH_PORT_DEFAULT = 3080;   // DSH web 默认端口；实际端口从 stdou
 const FRP_REMOTE_PORT = 3080;
 const DIR_SERVICE_PORT = 3081;   // 目录浏览服务（读笔记本本地目录），经隧道映射到服务器供网关代理
 const DIR_REMOTE_PORT = 3081;    // frpc 把该服务映射到服务器的端口（仅 frp 回退路径使用）
+const CODEX_SERVICE_PORT = 3082; // Codex App Server 本机桥；只经既有隧道转发
+const CODEX_REMOTE_PORT = 3082;
 
 // ── 状态 ──────────────────────────────────────────────────────────────
 const state = {
@@ -222,6 +225,14 @@ function writeFrpcConfig(exePath) {
     `remotePort = ${DIR_REMOTE_PORT}`,
     'transport.useEncryption = true',
     '',
+    '[[proxies]]',
+    'name = "codex"',
+    'type = "tcp"',
+    'localIP = "127.0.0.1"',
+    `localPort = ${CODEX_SERVICE_PORT}`,
+    `remotePort = ${CODEX_REMOTE_PORT}`,
+    'transport.useEncryption = true',
+    '',
   ].join('\n');
   const confPath = path.join(path.dirname(exePath), 'frpc.toml');
   fs.writeFileSync(confPath, conf, 'utf8');
@@ -248,6 +259,7 @@ function tunnelServices() {
   return [
     { name: 'dsh', localPort: state.dshPort || DSH_PORT_DEFAULT },
     { name: 'dir', localPort: DIR_SERVICE_PORT },
+    { name: 'codex', localPort: CODEX_SERVICE_PORT },
   ];
 }
 
@@ -329,8 +341,9 @@ function startFrpc() {
 async function startFrpcOnce() {
   if (tunnelUp()) return true;
   if (!state.binding) return false;
-  // 目录服务必须先起；端口冲突时不能继续把错误服务暴露给手机端。
+  // 两个本机桥都必须先起；端口冲突时不能继续把错误服务暴露给手机端。
   if (!(await startDirService())) return false;
+  if (!(await startCodexBridge())) return false;
 
   const mode = process.env.DSHLINK_TUNNEL || 'auto';
   if (mode !== 'frp') {
@@ -668,6 +681,27 @@ function stopDirService() {
   if (service) void service.stop();
 }
 
+// ── Codex App Server 本机桥（只绑定回环，经隧道供网关适配）─────────────
+let codexBridge = null;
+
+function startCodexBridge() {
+  if (!codexBridge) {
+    codexBridge = new CodexBridge({
+      host: '127.0.0.1',
+      port: CODEX_SERVICE_PORT,
+      userDataDir: app.getPath('userData'),
+      log,
+    });
+  }
+  return codexBridge.start();
+}
+
+function stopCodexBridge() {
+  const bridge = codexBridge;
+  codexBridge = null;
+  if (bridge) void bridge.stop();
+}
+
 // ── 状态汇总 ──────────────────────────────────────────────────────────
 /** 探测 HTTPS（Node fetch 不信任自签证书，改用 https.request 并忽略证书校验） */
 function probeHttps(url, timeoutMs = 5000) {
@@ -767,7 +801,7 @@ function registerIpc() {
     return { dsh, frpc };
   });
   ipcMain.handle('service:startFrpc', async () => ({ ok: await startFrpc() }));
-  ipcMain.handle('service:stop', () => { stopFrpc(); stopDsh(); stopDirService(); return { ok: true }; });
+  ipcMain.handle('service:stop', () => { stopFrpc(); stopDsh(); stopDirService(); stopCodexBridge(); return { ok: true }; });
   ipcMain.handle('service:status', () => status());
   ipcMain.handle('log:tail', () => state.logs.slice(-200));
   ipcMain.handle('qr:pair', async () => {
@@ -838,6 +872,6 @@ if (ownsSingleInstanceLock) app.on('window-all-closed', (e) => {
   if (process.platform !== 'darwin') { /* 不退出 */ }
 });
 
-if (ownsSingleInstanceLock) app.on('before-quit', () => { stopFrpc(); stopDirService(); stopDsh(); });
+if (ownsSingleInstanceLock) app.on('before-quit', () => { stopFrpc(); stopDirService(); stopCodexBridge(); stopDsh(); });
 
 if (ownsSingleInstanceLock) app.on('activate', () => { if (!win) createWindow(); });
