@@ -823,8 +823,9 @@ function registerIpc() {
   ipcMain.handle('binding:clear', () => { stopFrpc(); state.binding = null; try { fs.unlinkSync(bindingPath()); } catch {} return { ok: true }; });
   ipcMain.handle('binding:connString', () => connectionString());
   ipcMain.handle('service:start', async () => {
-    const dsh = await startDsh();
-    const frpc = await startFrpc();
+    // Codex 桥不依赖 DSH web。若旧 DSH 正在重启、端口被遗留进程占用或
+    // launch token 尚未刷新，不能让它的等待周期阻塞手机端的 Codex 通道。
+    const [dsh, frpc] = await Promise.all([startDsh(), startFrpc()]);
     void reportLaunchToken();
     return { dsh, frpc };
   });
@@ -881,8 +882,8 @@ if (ownsSingleInstanceLock) app.whenReady().then(async () => {
 
   // 已绑定 → 自动拉起服务
   if (state.binding) {
-    const dsh = await startDsh();
-    const tunnel = await startFrpc();
+    // DSH 与隧道必须独立恢复：后者还承载 Codex App Server，不能等待 DSH。
+    const [dsh, tunnel] = await Promise.all([startDsh(), startFrpc()]);
     log(`auto-start: dsh=${dsh}, tunnel=${tunnel}（kind=${state.tunnelKind || 'none'}）`);
     void reportLaunchToken();
   }

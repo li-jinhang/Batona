@@ -47,6 +47,6 @@ $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
 
 ## 首次运行与隧道排障
 
-默认启动顺序是：检测 `127.0.0.1:3080` 的 DSH → 未运行则启动 → 读取网关 `/healthz` 的内置隧道状态 → 选择内置 WSS 或 frpc → 显示手机配对二维码。健康状态明确为未启用内置隧道时，`auto` 会直接走 frpc；健康状态不可读时才保留“先试内置、失败回退”的兼容逻辑。内置隧道经 `/tunnel` 出站连服务器；`DSHLINK_TUNNEL=auto|builtin|frp` 可用于定位问题，默认 `auto`。`DSHLINK_INSECURE=1` 仅允许本机明文网关调试，绝不能用于生产。
+默认启动时，DSH 恢复与“目录/Codex 桥 + 隧道”并行执行：Codex 不应等待 DSH 取得 launch token 或排除遗留端口占用。隧道会读取网关 `/healthz` 的内置隧道状态，再选择内置 WSS 或 frpc。健康状态明确为未启用内置隧道时，`auto` 会直接走 frpc；健康状态不可读时才保留“先试内置、失败回退”的兼容逻辑。内置隧道经 `/tunnel` 出站连服务器；`DSHLINK_TUNNEL=auto|builtin|frp` 可用于定位问题，默认 `auto`。`DSHLINK_INSECURE=1` 仅允许本机明文网关调试，绝不能用于生产。
 
 状态灯中 DSH 与隧道在线最关键；网关灯是乐观探测，不能单独用它判断手机端是否可用。隧道失败时检查连接串 `gwPort`/token、服务器内置隧道状态、PC 日志和 launch-token 上报；不要以关闭 TLS 校验或公开本地端口作为修复手段。
