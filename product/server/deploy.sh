@@ -244,8 +244,8 @@ if [ "$ACTION" = "status" ]; then
   fi
 
   echo ""
-  echo "── 安全核查（3080/3081 不得对公网开放）──"
-  for port in 3080 3081; do
+  echo "── 安全核查（3080/3081/3082 不得对公网开放）──"
+  for port in 3080 3081 3082; do
     bad="$(public_bind_on "$port")"
     if [ -n "$bad" ]; then
       if [ "$TUN_EN" = "true" ]; then

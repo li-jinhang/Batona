@@ -436,8 +436,8 @@ healthz_tunnel_enabled() {
   ' 2>/dev/null || echo unknown
 }
 
-ports_in_use_3080() {
-  ss -ltn 2>/dev/null | awk '{print $4}' | grep -E ':(3080|3081)$' || true
+ports_in_use_tunnel() {
+  ss -ltn 2>/dev/null | awk '{print $4}' | grep -E ':(3080|3081|3082)$' || true
 }
 
 rollback_to_frps() {
@@ -461,8 +461,8 @@ set_tunnel_mode() {
       systemctl stop frps 2>/dev/null || true
       systemctl disable frps 2>/dev/null || true
       sleep 1
-      if [ -n "$(ports_in_use_3080)" ]; then
-        err "3080/3081 仍有监听（frps 未停干净）：$(ports_in_use_3080)"
+      if [ -n "$(ports_in_use_tunnel)" ]; then
+        err "3080/3081/3082 仍有监听（frps 未停干净）：$(ports_in_use_tunnel)"
         rollback_to_frps
         exit 1
       fi
@@ -478,12 +478,12 @@ set_tunnel_mode() {
         rollback_to_frps
         exit 1
       fi
-      if [ -n "$(public_bind_on 3080)$(public_bind_on 3081)" ]; then
-        err "3080/3081 出现公网绑定（内置隧道应仅绑 127.0.0.1）"
+      if [ -n "$(public_bind_on 3080)$(public_bind_on 3081)$(public_bind_on 3082)" ]; then
+        err "3080/3081/3082 出现公网绑定（内置隧道应仅绑 127.0.0.1）"
         rollback_to_frps
         exit 1
       fi
-      log "内置隧道已启用：3080/3081 仅绑回环；frps 已停用。"
+      log "内置隧道已启用：3080/3081/3082 仅绑回环；frps 已停用。"
       log "  防火墙的 7000 端口现在可以关闭；PC 端会在 ≤30s 内自动切到内置隧道（无需重新绑定）。"
       ;;
     off)
@@ -503,10 +503,10 @@ set_tunnel_mode() {
       for svc in dsh-gateway frps; do
         systemctl is-active --quiet "$svc" 2>/dev/null && echo "  [OK] $svc 运行中" || echo "  [--] $svc 未运行"
       done
-      if [ -n "$(ports_in_use_3080)" ]; then
-        echo "  3080/3081 监听       : $(ports_in_use_3080 | tr '\n' ' ')"
+      if [ -n "$(ports_in_use_tunnel)" ]; then
+        echo "  3080/3081/3082 监听  : $(ports_in_use_tunnel | tr '\n' ' ')"
       else
-        echo "  3080/3081 监听       : （无）"
+        echo "  3080/3081/3082 监听  : （无）"
       fi
       ;;
     *)
@@ -593,12 +593,12 @@ EOF
     echo "── 隧道模式 ──"
     tun_en="$(gateway_tunnel_enabled)"
     if [ "$tun_en" = "true" ]; then
-      echo "  [OK] 内置隧道已启用（frps 应为停用；3080/3081 仅绑回环，7000 可关闭）"
+      echo "  [OK] 内置隧道已启用（frps 应为停用；3080/3081/3082 仅绑回环，7000 可关闭）"
     else
       echo "  [--] frps 模式（内置隧道未启用；切换：bash install.sh --tunnel on）"
     fi
-    echo "── 安全核查（3080/3081 不得对公网开放）──"
-    for port in 3080 3081; do
+    echo "── 安全核查（3080/3081/3082 不得对公网开放）──"
+    for port in 3080 3081 3082; do
       bad="$(public_bind_on "$port")"
       if [ -n "$bad" ]; then
         if [ "$tun_en" = "true" ]; then
