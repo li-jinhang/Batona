@@ -1,7 +1,7 @@
 {
   "name": "dsh-link-pc",
   "productName": "DSH Link",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "DSH Link PC 端 — 一键启动 DeepSeek Harness 并接入服务器，手机随时远程操控",
   "main": "main.js",
   "author": "DSH Link",
@@ -39,6 +39,9 @@
       "preload.js",
       "renderer/**/*",
       "frpc-bin/frpc.exe"
+    ],
+    "asarUnpack": [
+      "frpc-bin/**"
     ],
     "win": {
       "target": [

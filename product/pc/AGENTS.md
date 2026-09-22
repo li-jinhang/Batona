@@ -10,7 +10,7 @@
 - 连接串导入、DSH 启动与生命周期、网关 API、配对二维码、窗口行为由 `main.js` 协调；渲染端经 preload 暴露的窄 API 与主进程交互。
 - 自研 WSS 隧道客户端在 `tunnel/client.js`，帧协议在 `tunnel/protocol.js`；它连接到服务器内置隧道服务端，并将流量安全转发至本机 DSH。
 - Codex 桥在 `codex-bridge.js`：它以 stdio 启动本机 Codex App Server，且只监听 `127.0.0.1:3082`。该端口只能由既有隧道转发；桥必须在 PC 端脱敏事件，不能记录或转发认证资料、连接串、原始工具输出或私钥。
-- 依赖与打包配置在 `package.json`。`electron-builder` 的 `files` 白名单决定进安装包的文件，新增运行时文件时必须同步检查。
+- 依赖与打包配置在 `package.json`。`electron-builder` 的 `files` 白名单决定进安装包的文件；任何需由 Windows 直接执行的二进制（当前为 `frpc-bin/frpc.exe`）还必须在 `asarUnpack` 中，不能只封进 `app.asar`。
 
 ## 端内约束
 
