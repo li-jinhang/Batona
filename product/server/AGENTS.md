@@ -52,7 +52,7 @@ bash product/server/deploy.sh --status
 bash product/server/install.sh --install --ip <公网IP> --admin <管理员> --password <强密码>
 ```
 
-安装完成后创建 `/usr/local/bin/dsh-deploy` 包装命令，内容只执行固定工作树中的 `bash product/server/deploy.sh "$@"`。它不是软链接，避免切换旧 commit 时失效。安装会保留/生成 `/etc/dsh-gateway/server-info.json`，并输出包含敏感凭据的连接串；只通过受控渠道交给 PC/手机，不能贴入 issue、日志或 Git。
+安装完成后创建 `/usr/local/bin/dsh-deploy` 包装命令，内容只执行固定工作树中的 `bash product/server/deploy.sh "$@"`。它不是软链接，避免切换旧 commit 时失效。安装会保留/生成权限为 `600` 的 `/etc/dsh-gateway/server-info.json`；日常安装与更新绝不回显连接串。只有在 root 的受控终端明确运行 `bash product/server/install.sh --show-binding` 时才导出，不能贴入 issue、日志或 Git。
 
 ### 发布、版本与回滚
 

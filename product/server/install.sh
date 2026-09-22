@@ -6,6 +6,7 @@
 #   bash install.sh --install [--ip 公网IP] [--admin 用户名] [--password 密码]
 #   bash install.sh --update  [--source 网关包路径或URL]
 #   bash install.sh --status
+#   bash install.sh --show-binding            # 仅 root 在受控终端显式导出绑定串
 #   bash install.sh --tunnel on|off|status   # 内置隧道（自研）与 frps 的切换；on 会停用 frps
 #   bash install.sh --selfsigned <公网IP>   # 无域名时生成自签证书（含 IP SAN）
 #   bash install.sh --uninstall
@@ -17,7 +18,7 @@
 # 设计目标（用户硬性要求）：
 #   - 宝塔终端一条命令安装；之后全部 GUI 操作
 #   - 支持频繁更新：--update 幂等重部署，保留数据(/var/lib/dsh-gateway)与配置(/etc/dsh-gateway)
-#   - 输出"连接串"，供 PC 软件 / 手机 App 扫码或粘贴绑定
+#   - 绑定凭据仅保存在 root 可读配置；日常安装/更新日志绝不输出连接串
 #
 # 目录布局：
 #   /opt/dsh-gateway/app     网关代码（每次更新整体替换）
@@ -50,6 +51,7 @@ while [ $# -gt 0 ]; do
     --install) ACTION="install" ;;
     --update)  ACTION="update" ;;
     --status)  ACTION="status" ;;
+    --show-binding) ACTION="show-binding" ;;
     --selfsigned)
       ACTION="selfsigned"
       IP="${2:-}"
@@ -70,7 +72,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-[ -z "$ACTION" ] && { echo "用法: bash install.sh --install | --update | --status | --tunnel on|off|status | --uninstall" >&2; exit 1; }
+[ -z "$ACTION" ] && { echo "用法: bash install.sh --install | --update | --status | --show-binding | --tunnel on|off|status | --uninstall" >&2; exit 1; }
 [ "$(id -u)" -ne 0 ] && { echo "请用 root 运行" >&2; exit 1; }
 
 log() { echo ">>> $*"; }
@@ -389,30 +391,29 @@ print_binding() {
 
   local conn="dsh-gw://${ip}?frpPort=7000&gwPort=${gwPort}&frpToken=${token}&gwUser=${admin}&gwPass=${pass}&pair=${pair}"
 
-  # 生成 web/pair.html（供 PC 摄像头扫码/浏览器查看连接串）
-  if [ -d "$APP_DIR/web" ]; then
-    cat > "$APP_DIR/web/pair.html" <<EOF
-<!doctype html><html><head><meta charset="utf-8"><title>DSH Link 绑定</title></head>
-<body style="background:#0f1115;color:#e6e8ee;font-family:system-ui,sans-serif;padding:32px;text-align:center">
-<h1>DSH Link 绑定连接串</h1>
-<p>用 PC 软件「添加服务器」扫描此页（摄像头）或复制下方内容粘贴：</p>
-<p style="word-break:break-all;background:#171a21;padding:16px;border-radius:8px;font-family:monospace">${conn}</p>
-</body></html>
-EOF
-    chmod 644 "$APP_DIR/web/pair.html"
-    log "绑定页已生成：http://${ip}:3090/pair.html（仅建议安装后短期内使用）"
-  fi
-
   echo ""
   echo "════════════════════════════════════════════════════════════"
   echo "  DSH Link 绑定连接串（PC 软件 / 手机 App 扫码或粘贴）"
   echo "════════════════════════════════════════════════════════════"
   echo "  ${conn}"
   echo ""
-  echo "  浏览器访问 http://${ip}:3090/pair.html 可查看"
-  echo "  （配对码有效期 24 小时）"
+  echo "  仅限受控 root 终端；请勿粘贴到聊天、日志或仓库。"
   echo "════════════════════════════════════════════════════════════"
   echo ""
+}
+
+remove_legacy_pair_page() {
+  # 旧版会把完整连接串写进随网关公开提供的 pair.html。该页面并非绑定所必需：
+  # PC/Android 仍可通过受控渠道导入连接串，故升级时立即移除历史文件。
+  local legacy="$APP_DIR/web/pair.html"
+  if [ -f "$legacy" ]; then
+    rm -f "$legacy"
+    log "已移除旧版公开绑定页"
+  fi
+}
+
+binding_stored_notice() {
+  log "绑定凭据已保存在 root-only 配置；日常日志不回显。需要时仅在受控 root 终端运行：bash install.sh --show-binding"
 }
 
 # ── 内置隧道切换（--tunnel on|off|status）───────────────────────────────
@@ -546,7 +547,8 @@ EOF
     deploy_gateway "${SOURCE:-$GATEWAY_DEFAULT_SRC}"
     write_gateway_config "$ADMIN" "$gwPass"
     ensure_gateway_service
-    print_binding "$IP"
+    remove_legacy_pair_page
+    binding_stored_notice
     ;;
 
   update)
@@ -571,7 +573,13 @@ EOF
       ensure_gateway_tunnel_key
     fi
     ensure_gateway_service
+    remove_legacy_pair_page
     log "升级完成"
+    binding_stored_notice
+    ;;
+
+  show-binding)
+    [ -f "$INFO_FILE" ] || { err "尚未找到服务器绑定资料"; exit 1; }
     print_binding "$(info_get serverIp)"
     ;;
 
