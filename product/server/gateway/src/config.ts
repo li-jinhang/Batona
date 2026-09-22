@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 
 export interface GatewayConfig {
+  access?: { adminKeyFile: string; vaultKeyFile: string };
   host: string;
   port: number;
   dataDir: string;

@@ -2,7 +2,7 @@
  * DSH Link — Electron 主进程
  *
  * 职责：
- *  1. 绑定管理：dsh-gw:// 连接串解析/存储、手机配对二维码
+ *  1. 托管账号：接入密钥登录、安全存储设备授权、手机配对确认
  *  2. 服务编排：检测/启动 DSH web(3080) → 启动隧道 → 在线状态机
  *  3. 隧道管理：仅使用内置 WSS 隧道（tunnel/client.js，跑在本进程内）
  *  4. 托盘常驻 + 开机自启 + 日志
@@ -11,7 +11,7 @@
  */
 'use strict';
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, powerMonitor } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, safeStorage, powerMonitor } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -20,8 +20,13 @@ const https = require('node:https');
 const http = require('node:http');
 const QRCode = require('qrcode');
 const { DirectoryService } = require('./dir-service.js');
-const { resolveDshLauncher } = require('./dsh-launcher.js');
-const { CodexBridge } = require('./codex-bridge.js');
+const { resolveDshLauncher, isDshAuthenticated, createDshOutputParser } = require('./dsh-launcher.js');
+const { CodexBridge, redactText } = require('./codex-bridge.js');
+const { probeSoftware } = require('./software-status.js');
+const { AccessClient } = require('./access-client.js');
+const { awaitInitialConnection } = require('./tunnel/startup.js');
+let access = null;
+let activePair = null;
 
 // 本机服务固定监听 3080/3081，因此桌面端不能并行运行多个主实例。
 // 第二次启动应将焦点交给第一个实例，而不是抢占端口后令主进程崩溃。
@@ -44,7 +49,7 @@ const CODEX_SERVICE_PORT = 3082; // Codex App Server 本机桥；只经既有隧
 
 // ── 状态 ──────────────────────────────────────────────────────────────
 const state = {
-  binding: null,          // { serverIp, frpPort, gwPort, frpToken, gwUser, gwPass, pair, createdAt }
+  binding: null,          // 主进程专用：{ serverIp, gwPort, deviceToken, hosted }
   dshRunning: false,
   dshPort: null,          // DSH web 实际端口
   dshToken: null,         // DSH launch token（0.1.2+ 的 /api 认证凭据，DSH 重启即变）
@@ -59,193 +64,17 @@ const state = {
 const MAX_LOG = 500;
 
 function log(msg) {
-  const line = `[${new Date().toISOString()}] ${msg}`;
+  const line = `[${new Date().toISOString()}] ${redactText(msg)}`;
   state.logs.push(line);
   if (state.logs.length > MAX_LOG) state.logs.shift();
   console.log(line);
 }
 
-// ── 绑定存储 ──────────────────────────────────────────────────────────
-function bindingPath() {
-  return path.join(app.getPath('userData'), 'binding.json');
-}
+// ── 邀请制账号：凭据只留主进程和 Windows 安全存储 ──
+function loadBinding() { state.binding = access?.binding() || null; return state.binding; }
 
-function loadBinding() {
-  try {
-    state.binding = JSON.parse(fs.readFileSync(bindingPath(), 'utf8'));
-  } catch { state.binding = null; }
-  return state.binding;
-}
-
-function saveBinding(b) {
-  state.binding = b;
-  fs.writeFileSync(bindingPath(), JSON.stringify(b, null, 2), 'utf8');
-  log(`binding saved: ${b.serverIp}`);
-}
-
-/** 解析 dsh-gw:// 连接串 → 绑定对象；格式非法返回 null */
-function parseDshGw(text) {
-  const t = String(text || '').trim();
-  const m = /^dsh-gw:\/\/([^/?#]+)(?:\?(.*))?$/i.exec(t);
-  if (!m) return null;
-  const host = m[1];
-  const params = new URLSearchParams(m[2] || '');
-  const serverIp = host.split(':')[0];
-  if (!serverIp) return null;
-  const b = {
-    serverIp,
-    frpPort: Number(params.get('frpPort') || 7000),
-    gwPort: Number(params.get('gwPort') || 443),
-    frpToken: params.get('frpToken') || '',
-    gwUser: params.get('gwUser') || 'admin',
-    gwPass: params.get('gwPass') || '',
-    pair: params.get('pair') || '',
-    createdAt: Date.now(),
-  };
-  return b.frpToken ? b : null;
-}
-
-function connectionString(b = state.binding) {
-  if (!b) return '';
-  const p = new URLSearchParams({
-    frpPort: String(b.frpPort),
-    gwPort: String(b.gwPort),
-    frpToken: b.frpToken,
-    gwUser: b.gwUser,
-    gwPass: b.gwPass,
-    pair: b.pair,
-  });
-  return `dsh-gw://${b.serverIp}?${p.toString()}`;
-}
-
-// ── frpc 定位/下载 ────────────────────────────────────────────────────
-function frpcCandidates() {
-  return [
-    path.join(app.getPath('userData'), 'frpc', 'frpc.exe'),
-    // Electron 的 asar 虚拟路径可用于 require/readFile，却不是 Windows 子进程
-    // 可稳定执行、可写入配置的真实目录。正式包明确使用 asarUnpack 生成的路径。
-    app.isPackaged
-      ? path.join(process.resourcesPath, 'app.asar.unpacked', 'frpc-bin', 'frpc.exe')
-      : path.join(__dirname, 'frpc-bin', 'frpc.exe'),
-  ];
-}
-
-function findFrpc() {
-  return frpcCandidates().find((p) => fs.existsSync(p)) || null;
-}
-
-/** 容错删除：Windows 杀毒可能锁定刚下载的文件，删除失败不致命 */
-function safeUnlink(p) {
-  try { fs.unlinkSync(p); } catch (e) { log(`(cleanup skipped: ${p} ${e.code || e.message})`); }
-}
-
-function download(url, dest) {
-  return new Promise((resolve, reject) => {
-    const mod = url.startsWith('https:') ? https : http;
-    const file = fs.createWriteStream(dest);
-    const req = mod.get(url, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        file.close(() => safeUnlink(dest));
-        return resolve(download(res.headers.location, dest));
-      }
-      if (res.statusCode !== 200) {
-        file.close(() => safeUnlink(dest));
-        return reject(new Error(`download failed HTTP ${res.statusCode}: ${url}`));
-      }
-      res.pipe(file);
-      file.on('finish', () => file.close(() => resolve(dest)));
-    });
-    req.on('error', (e) => { file.close(() => safeUnlink(dest)); reject(e); });
-    req.setTimeout(120000, () => req.destroy(new Error('download timeout')));
-  });
-}
-
-/** 下载 frpc.exe 到 userData/frpc/；镜像可经 DSHLINK_FRP_MIRROR 指定 */
-async function ensureFrpc() {
-  const existing = findFrpc();
-  if (existing) return existing;
-  const dir = path.join(app.getPath('userData'), 'frpc');
-  fs.mkdirSync(dir, { recursive: true });
-  const zipPath = path.join(dir, `frp_${FRP_VERSION}_windows_amd64.zip`);
-  const mirror = process.env.DSHLINK_FRP_MIRROR || '';
-  const base = mirror
-    ? `${mirror.replace(/\/+$/, '')}/v${FRP_VERSION}/frp_${FRP_VERSION}_windows_amd64.zip`
-    : `https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_windows_amd64.zip`;
-  log(`downloading frpc: ${base}`);
-  try {
-    await download(base, zipPath);
-  } catch (e) {
-    log(`frpc 下载失败：${e.message}（可用浏览器手动下载放到 pc/frpc-bin/frpc.exe）`);
-    return null;
-  }
-  const target = path.join(dir, 'frpc.exe');
-  try {
-    const zip = new AdmZip(zipPath);
-    const entry = zip.getEntries().find((e) => e.entryName.endsWith('frpc.exe'));
-    if (!entry) throw new Error('frpc.exe not found in archive');
-    fs.writeFileSync(target, entry.getData());
-  } catch (e) {
-    log(`frpc 解压失败（可能是杀毒锁定刚下载的 zip）：${e.message}`);
-    return null;
-  } finally {
-    // EPERM：杀毒/安全软件可能锁定刚下载的 zip；清理失败不影响功能
-    try { fs.unlinkSync(zipPath); } catch (e) { log(`(zip 未清理: ${e.code || e.message})`); }
-  }
-  log('frpc ready: ' + target);
-  return target;
-}
-
-// ── frpc 运行 ─────────────────────────────────────────────────────────
-function writeFrpcConfig() {
-  const b = state.binding;
-  if (!b) return null;
-  const conf = [
-    `serverAddr = "${b.serverIp}"`,
-    `serverPort = ${b.frpPort || 7000}`,
-    '',
-    'auth.method = "token"',
-    `auth.token = "${b.frpToken}"`,
-    '',
-    '[[proxies]]',
-    'name = "dsh"',
-    'type = "tcp"',
-    'localIP = "127.0.0.1"',
-    `localPort = ${state.dshPort || DSH_PORT_DEFAULT}`,
-    `remotePort = ${FRP_REMOTE_PORT}`,
-    'transport.useEncryption = true',
-    '',
-    '[[proxies]]',
-    'name = "dir"',
-    'type = "tcp"',
-    'localIP = "127.0.0.1"',
-    `localPort = ${DIR_SERVICE_PORT}`,
-    `remotePort = ${DIR_REMOTE_PORT}`,
-    'transport.useEncryption = true',
-    '',
-    '[[proxies]]',
-    'name = "codex"',
-    'type = "tcp"',
-    'localIP = "127.0.0.1"',
-    `localPort = ${CODEX_SERVICE_PORT}`,
-    `remotePort = ${CODEX_REMOTE_PORT}`,
-    'transport.useEncryption = true',
-    '',
-  ].join('\n');
-  // 安装目录/asarUnpack 均应视为只读；运行期配置只保存在当前 Windows 用户的数据目录。
-  const confDir = path.join(app.getPath('userData'), 'frpc');
-  fs.mkdirSync(confDir, { recursive: true });
-  const confPath = path.join(confDir, 'frpc.toml');
-  fs.writeFileSync(confPath, conf, 'utf8');
-  return confPath;
-}
-
-let frpcProc = null;
-let frpcRestartTimer = null;
 /** 内置隧道客户端实例（运行期） */
 let tunnelClient = null;
-/** auto 模式黏滞位：本会话内已判内置隧道不可用，不再反复探测（frpc 连续崩溃时解禁一次） */
-let builtinBlocked = false;
-let frpcCrashTimes = [];
 /** 同一时刻只允许一次隧道启动：主进程自动启动、渲染 IPC 与重连回调会并发到达。 */
 let tunnelStartPromise = null;
 
@@ -268,60 +97,36 @@ function tunnelServices() {
  * fatal（tunnel-disabled / version-mismatch / bad-hello / bind-failed）→ 返回失败并保留明确状态。
  */
 function attemptBuiltin(timeoutMs = 12000) {
-  return new Promise((resolve) => {
-    const b = state.binding;
-    const client = new TunnelClient({
-      host: b.serverIp,
-      gwPort: b.gwPort || 443,
-      token: b.frpToken,
-      services: tunnelServices,
-      // 仅本地联调：DSHLINK_INSECURE=1 时走明文 ws://（生产由 Nginx 终结 TLS，保持默认 wss）
-      tls: process.env.DSHLINK_INSECURE !== '1',
-      log,
-    });
-    tunnelClient = client;
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      log('[tunnel] 首次握手超时');
-      client.stop();
-      if (tunnelClient === client) tunnelClient = null;
-      resolve({ ok: false, reason: 'handshake-timeout' });
-    }, timeoutMs);
-
-    client.on('connected', () => {
-      state.tunnelConnected = true;
-      state.tunnelLastError = null;
-      if (!settled) { settled = true; clearTimeout(timer); resolve({ ok: true }); }
-      void reportLaunchToken();   // 隧道刚通：补报 launch token
-    });
-    client.on('disconnected', (info) => {
-      state.tunnelConnected = false;
-      state.tunnelLastError = info.lastError?.message || info.reason || 'disconnected';
-    });
-    client.on('fatal', (info) => {
-      state.tunnelConnected = false;
-      state.tunnelLastError = `${info.code}: ${info.message}`;
-      client.stop();
-      if (tunnelClient === client) tunnelClient = null;
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve({ ok: false, reason: info.message, code: info.code });
-        return;
-      }
-      // 生产发布只支持自研隧道；服务端关闭该能力时保持离线并等待明确修复。
-      log(`[tunnel] 运行期致命错误 ${info.code}，自研隧道已停止`);
-    });
-    client.on('superseded', () => {
-      state.tunnelConnected = false;
-      log('[tunnel] 连接被同密钥的另一连接顶替（本机另开了一个 DSH Link？），本实例停止重连');
-      if (tunnelClient === client) tunnelClient = null;
-      if (!settled) { settled = true; clearTimeout(timer); resolve({ ok: false, reason: 'superseded' }); }
-    });
-    client.start();
+  const b = state.binding;
+  const client = new TunnelClient({
+    host: b.serverIp, gwPort: b.gwPort || 443, token: b.deviceToken,
+    services: tunnelServices, tls: true, log,
   });
+  tunnelClient = client;
+  const first = awaitInitialConnection(client, timeoutMs);
+  client.on('connected', () => {
+    if (tunnelClient !== client) return;
+    state.tunnelConnected = true; state.tunnelLastError = null;
+    void reportLaunchToken();
+  });
+  client.on('disconnected', info => {
+    if (tunnelClient !== client) return;
+    state.tunnelConnected = false;
+    state.tunnelLastError = info.lastError?.message || info.reason || 'disconnected';
+  });
+  client.on('fatal', info => {
+    if (tunnelClient !== client) return;
+    state.tunnelConnected = false;
+    state.tunnelLastError = `${info.code}: ${info.message}`;
+    client.stop(); tunnelClient = null;
+  });
+  client.on('superseded', () => {
+    if (tunnelClient !== client) return;
+    state.tunnelConnected = false; tunnelClient = null;
+    log('[tunnel] 连接已被替换，本连接停止重试');
+  });
+  client.start();
+  return first;
 }
 
 /**
@@ -335,6 +140,7 @@ function startFrpc() {
 
 async function startFrpcOnce() {
   if (tunnelUp()) return true;
+  if (tunnelClient) { tunnelClient.reconnectNow(); return false; }
   if (!state.binding) return false;
   // 两个本机桥都必须先起；端口冲突时不能继续把错误服务暴露给手机端。
   if (!(await startDirService())) return false;
@@ -370,62 +176,11 @@ async function gatewayBuiltinTunnelEnabled() {
   }
 }
 
-/** frpc 回退路径（灰度期保留；服务器切到内置隧道后本路径会稳定失败，由崩溃计数触发再探测） */
-async function startFrpcLegacy() {
-  if (frpcProc) return true;
-  if (!state.binding) return false;
-  try {
-    const exe = await ensureFrpc();
-    if (!exe) { log('frpc 不可用（未下载/解压 frpc.exe），跳过启动'); return false; }
-    const conf = writeFrpcConfig();
-    log(`starting frpc: ${exe}`);
-    state.tunnelKind = 'frp';
-    frpcProc = spawn(exe, ['-c', conf], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    state.frpcRunning = true;
-    state.frpcConnected = false;
-    frpcProc.stdout.on('data', (d) => {
-      const s = String(d);
-      log(`[frpc] ${s.trim()}`);
-      if (/login to server success|start proxy success|success/i.test(s)) {
-        const first = !state.frpcConnected;
-        state.frpcConnected = true;
-        // 隧道刚通：补报一次 launch token（网关可能刚重启，或上次上报时隧道还没起来）
-        if (first) void reportLaunchToken();
-      }
-    });
-    frpcProc.stderr.on('data', (d) => log(`[frpc!] ${String(d).trim()}`));
-    frpcProc.on('exit', (code) => {
-      log(`frpc exited (${code}), restarting in 5s...`);
-      state.frpcRunning = false;
-      state.frpcConnected = false;
-      frpcProc = null;
-      // 例外规则：frpc 连续崩溃（服务器已切内置隧道时 frpc 永远连不上）→ 解禁一次内置探测
-      const now = Date.now();
-      frpcCrashTimes = frpcCrashTimes.filter((t) => now - t < 60000);
-      frpcCrashTimes.push(now);
-      if (frpcCrashTimes.length >= 3 && (process.env.DSHLINK_TUNNEL || 'auto') === 'auto' && !tunnelUp()) {
-        frpcCrashTimes = [];
-        builtinBlocked = false;
-        log('frpc 连续崩溃 ≥3 次，重新探测内置隧道…');
-      }
-      frpcRestartTimer = setTimeout(() => { void startFrpc(); }, 5000);
-    });
-    return true;
-  } catch (e) {
-    log(`frpc start failed: ${e.message}`);
-    return false;
-  }
-}
 
 function stopFrpc() {
   if (tunnelClient) { tunnelClient.stop(); tunnelClient = null; }
   state.tunnelConnected = false;
   state.tunnelKind = null;
-  if (frpcRestartTimer) clearTimeout(frpcRestartTimer);
-  frpcRestartTimer = null;
-  if (frpcProc) { frpcProc.kill(); frpcProc = null; }
-  state.frpcRunning = false;
-  state.frpcConnected = false;
 }
 
 // ── DSH 探测/启动 ─────────────────────────────────────────────────────
@@ -514,36 +269,23 @@ function portOpen(host, port, timeoutMs = 1500) {
 
 /**
  * DSH 是否可用。0.1.2+ 起 /api 强制会话认证，未认证探测（旧的 host.describe）恒 401，
- * 所以先换 cookie 再调 session/list；拿不到 200 时退化为端口存活探测，
- * 避免把"端口上已有 DSH"误判成"没在跑"而重复拉起实例。
+ * 必须同时通过 session/list 认证；TCP 存活只用于防止重复启动，不能标为就绪。
  */
 async function detectDsh() {
   state.dshAuthed = false;
   if (state.dshToken) {
     const r = await dshCall('session/list', { _request: {} });
-    if (r.status === 200) { state.dshAuthed = true; return true; }
+    if (isDshAuthenticated(r)) { state.dshAuthed = true; return true; }
     if (r.status === 401) state.dshCookie = null;   // token 可能已过期，下次重新交换
   }
-  return portOpen(DSH_HOST, state.dshPort || DSH_PORT_DEFAULT);
+  return false;
 }
 
 /** DSH 启动时打印 "dsh web: http://127.0.0.1:<port>/?token=<token>" */
-const DSH_WEB_LINE = /dsh web:\s*(https?:\/\/[^\s/?]+)\/?\?token=([\w.~-]+)/g;
-let dshOutBuf = '';
-
-/**
- * 从 stdout 抓 launch token：输出可能被分片，用滚动缓冲拼接后再匹配。
- * 取缓冲里**最后一次**匹配——同一 PC 会话内 DSH 重启（旧 token 行仍在缓冲里）时才能拿到新 token。
- */
-function captureDshToken(chunk) {
-  dshOutBuf = (dshOutBuf + chunk).slice(-4096);
-  const m = [...dshOutBuf.matchAll(DSH_WEB_LINE)].pop();
-  if (!m) return;
-  let port = DSH_PORT_DEFAULT;
-  try { port = Number(new URL(m[1]).port) || DSH_PORT_DEFAULT; } catch { /* 保持默认端口 */ }
-  if (state.dshToken === m[2] && state.dshPort === port) return;
+function captureDshToken({ port, token }) {
+  if (state.dshToken === token && state.dshPort === port) return;
   state.dshPort = port;
-  state.dshToken = m[2];
+  state.dshToken = token;
   state.dshCookie = null;
   saveDshToken();
   log(`捕获 DSH launch token（port=${port}）`);
@@ -554,6 +296,11 @@ let dshProc = null;
 
 async function startDsh() {
   if (await detectDsh()) { state.dshRunning = true; return true; }
+  state.dshRunning = false;
+  if (await portOpen(DSH_HOST, state.dshPort || DSH_PORT_DEFAULT)) {
+    log('DSH 端口已占用但认证未通过：启动令牌已失效。请退出旧 DSH 后重新启动服务；不会重复启动或终止未知进程。');
+    return false;
+  }
   const launcher = resolveDshLauncher();
   if (!launcher) {
     log('DSH 启动失败：未找到 dsh 或 npx；请安装 DSH，或设置 DSHLINK_DSH_CMD');
@@ -569,12 +316,10 @@ async function startDsh() {
     // 会导致 DSH 输出的 UTF-8 中文被以 GBK 渲染成乱码（锟斤拷）。先 chcp 65001 强制 UTF-8。
     const cmdLine = `${launcher.command} ${args.join(' ')}`;
     dshProc = spawn('cmd.exe', ['/c', `chcp 65001 >nul && ${cmdLine}`], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    dshProc.stdout?.on('data', (d) => {
-      const s = String(d);
-      log(`[dsh] ${s.trim()}`);
-      captureDshToken(s);   // 0.1.2+ 的 launch token 只在这里出现一次
-    });
-    dshProc.stderr.on('data', (d) => log(`[dsh!] ${String(d).trim()}`));
+    const stdout = createDshOutputParser(captureDshToken, line => log(`[dsh] ${line}`));
+    const stderr = createDshOutputParser(captureDshToken, line => log(`[dsh!] ${line}`));
+    dshProc.stdout?.on('data', d => stdout(String(d)));
+    dshProc.stderr.on('data', d => stderr(String(d)));
     dshProc.on('exit', (code) => { state.dshRunning = false; log(`dsh exited (${code})`); });
     // 等待就绪：须同时拿到 launch token 且 /api 认证通过（未认证探测恒 401，不能只看端口）
     for (let i = 0; i < 30; i++) {
@@ -610,7 +355,7 @@ function jsonRequest(url, method, headers, body, timeoutMs = 8000) {
       path: u.pathname + u.search,
       method,
       headers,
-      rejectUnauthorized: false,
+      rejectUnauthorized: true,
     }, (res) => {
       let data = '';
       res.setEncoding('utf8');
@@ -626,25 +371,15 @@ function jsonRequest(url, method, headers, body, timeoutMs = 8000) {
 
 /**
  * 把 DSH 的 launch token 上报给网关：手机端连的是服务器，链路的最后一段
- * （网关 → frp → 本机 DSH）需要这个 token 换 cookie，DSH 重启即失效。
- * 认证用绑定串里的 frpToken（网关侧配置项 agentKey）。
+ * （账号隔离的网关 → 自研隧道 → 本机 DSH）需要这个 token 换 cookie，DSH 重启即失效。
+ * 认证使用 PC 独立设备授权；令牌只更新该 PC 运行时。
  */
 async function reportLaunchToken() {
   const b = state.binding;
   if (!b || !state.dshToken) return false;
-  const url = `https://${b.serverIp}:${b.gwPort || 443}/api/dsh/launch-token`;
-  try {
-    const res = await jsonRequest(url, 'POST', {
-      'content-type': 'application/json',
-      'x-dsh-agent-key': b.frpToken,
-    }, JSON.stringify({ token: state.dshToken }));
-    if (res.status === 200) { log('launch token 已上报网关'); return true; }
-    log(`launch token 上报被拒：HTTP ${res.status} ${String(res.body).slice(0, 120)}`);
-    return false;
-  } catch (e) {
-    log(`launch token 上报失败：${e.message}`);
-    return false;
-  }
+  if (!(await detectDsh())) { state.dshRunning = false; return false; }
+  try { await access.call('launch-token', {token:state.dshToken}); return true; }
+  catch { log('launch token 上报失败，请检查登录和隧道状态'); return false; }
 }
 
 /** 周期兜底：网关重启或网络抖动后，无需人工干预即可恢复链路 */
@@ -714,7 +449,7 @@ function stopCodexBridge() {
 function probeHttps(url, timeoutMs = 5000) {
   return new Promise((resolve) => {
     const mod = url.startsWith('https:') ? https : http;
-    const req = mod.get(url, { rejectUnauthorized: false }, (res) => {
+    const req = mod.get(url, { rejectUnauthorized: true }, (res) => {
       res.resume();
       resolve(res.statusCode === 200);
     });
@@ -724,7 +459,11 @@ function probeHttps(url, timeoutMs = 5000) {
 }
 
 async function status() {
-  const dshUp = await detectDsh();
+  if (access?.data.token) {
+    try { if (!(await access.refresh()).loggedIn) { stopFrpc(); loadBinding(); } }
+    catch { /* A transport failure is not revocation. Keep the binding for recovery. */ }
+  }
+  const [dshUp, software] = await Promise.all([detectDsh(), probeSoftware()]);
   let gatewayUp = false;
   if (state.binding) {
     const port = state.binding.gwPort || 443;
@@ -732,13 +471,17 @@ async function status() {
   }
   return {
     bound: !!state.binding,
+    accountId: access?.data.accountId || null,
     serverIp: state.binding?.serverIp || null,
     dsh: dshUp,
+    dshProcess: dshUp || software.dshProcess,
+    codexDesktop: software.codexDesktop,
+    codexBridge: !!codexBridge?.appServer?.ready,
     dshToken: !!state.dshToken,       // 是否已捕获 launch token（未捕获则手机端链路必断）
     dshAuthed: state.dshAuthed,       // token 是否当前有效
-    // 键名 frpc 保持不变（渲染层只当布尔用）：语义 = "隧道已连通"（内置或 frpc）
+    // 键名 frpc 保持不变（渲染层只当布尔用）：语义 = "隧道已连通"（仅自研隧道）
     frpc: tunnelUp(),
-    tunnelKind: state.tunnelKind,     // 'builtin' | 'frp' | null —— 供日志/后续文案区分
+    tunnelKind: state.tunnelKind,     // 'builtin' | null —— 供日志/后续文案区分
     tunnelLastError: state.tunnelLastError,
     gateway: gatewayUp,
   };
@@ -759,10 +502,14 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => {
+    if (activePair) { void access.call('pair-close', {pairId:activePair}).catch(()=>{}); activePair=null; }
+    win = null;
+  });
 }
 
 /** 应用/任务栏图标：内嵌 SVG 圆点（打包时可用 assets 目录的真实 .ico 覆盖） */
@@ -791,16 +538,24 @@ function createTray() {
 
 // ── IPC ───────────────────────────────────────────────────────────────
 function registerIpc() {
-  ipcMain.handle('binding:get', () => loadBinding());
-  ipcMain.handle('binding:save', async (_e, text) => {
-    const b = parseDshGw(text);
-    if (!b) return { ok: false, error: '连接串格式无效（应为 dsh-gw://...）' };
-    saveBinding(b);
-    void reportLaunchToken();   // 换绑后立刻把 token 报到新服务器
-    return { ok: true, binding: b };
+  ipcMain.handle('binding:get', () => access.publicState());
+  ipcMain.handle('access:login', async (_e, key, replace) => {
+    try { const r = await access.login(String(key), replace === true); stopFrpc(); loadBinding(); return r; }
+    catch(e) { return {ok:false,error:e.code || e.message}; }
   });
-  ipcMain.handle('binding:clear', () => { stopFrpc(); state.binding = null; try { fs.unlinkSync(bindingPath()); } catch {} return { ok: true }; });
-  ipcMain.handle('binding:connString', () => connectionString());
+  ipcMain.handle('binding:clear', async () => {
+    try { await access.logout(); stopFrpc(); loadBinding(); return {ok:true}; }
+    catch(e) { return {ok:false,error:e.code || e.message}; }
+  });
+  ipcMain.handle('access:call', async (_e, op, body) => {
+    if (!['devices','rename-phone','unbind-phone','pair-open','pair-status','pair-confirm','pair-close'].includes(op)) return {ok:false,error:'不支持此操作'};
+    try {
+      const r = await access.call(op, body);
+      if (op === 'pair-open') { activePair=r.pairId; r.dataUrl=await QRCode.toDataURL(r.qr,{width:300,margin:2}); }
+      if (op === 'pair-close') activePair=null;
+      return r;
+    } catch(e) { return {ok:false,error:e.code || e.message}; }
+  });
   ipcMain.handle('service:start', async () => {
     // Codex 桥不依赖 DSH web。若旧 DSH 正在重启、端口被遗留进程占用或
     // launch token 尚未刷新，不能让它的等待周期阻塞手机端的 Codex 通道。
@@ -809,14 +564,9 @@ function registerIpc() {
     return { dsh, frpc };
   });
   ipcMain.handle('service:startFrpc', async () => ({ ok: await startFrpc() }));
-  ipcMain.handle('service:stop', () => { stopFrpc(); stopDsh(); stopDirService(); stopCodexBridge(); return { ok: true }; });
+  ipcMain.handle('service:stop', () => { stopFrpc(); return { ok: true }; });
   ipcMain.handle('service:status', () => status());
   ipcMain.handle('log:tail', () => state.logs.slice(-200));
-  ipcMain.handle('qr:pair', async () => {
-    const s = connectionString();
-    if (!s) return { ok: false, error: '未绑定' };
-    return { ok: true, dataUrl: await QRCode.toDataURL(s, { width: 480, margin: 1 }) };
-  });
   ipcMain.handle('settings:autostart:get', () => app.getLoginItemSettings().openAtLogin);
   ipcMain.handle('settings:autostart:set', (_e, on) => {
     app.setLoginItemSettings({ openAtLogin: !!on });
@@ -826,12 +576,7 @@ function registerIpc() {
 
 // ── 生命周期 ──────────────────────────────────────────────────────────
 if (ownsSingleInstanceLock) app.whenReady().then(async () => {
-  // 自签证书场景（无域名服务器）：忽略证书校验（仅主进程健康探测与后续请求使用）
-  session.defaultSession.on('certificate-error', (event, _wc, _url, _error, _cert, callback) => {
-    event.preventDefault();
-    callback(true);
-  });
-
+  access = new AccessClient({userData:app.getPath('userData'),safeStorage});
   registerIpc();
   loadBinding();
   loadDshToken();
@@ -848,7 +593,7 @@ if (ownsSingleInstanceLock) app.whenReady().then(async () => {
   });
 
   log('DSH Link ready');
-  if (tunnelRequireError) log(`提示：内置隧道模块加载失败（${tunnelRequireError}），将使用 frpc`);
+  if (tunnelRequireError) log('提示：自研隧道模块加载失败，远程服务不可用');
 
   // 冒烟模式：启动 2 秒后退出（用于 CI/验证）
   if (process.env.DSHLINK_SMOKE) {

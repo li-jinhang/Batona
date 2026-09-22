@@ -32,7 +32,7 @@ data class LoginResponse(val ok: Boolean, val token: String? = null, val deviceI
 
 /** 会话 */
 @Serializable
-data class GatewaySession(val id: String, val backend: String, val backendSessionId: String, val title: String? = null, val state: String, val createdAt: Long)
+data class GatewaySession(val id: String, val backend: String, val backendSessionId: String, val title: String? = null, val state: String, val createdAt: Long, val model: ModelRef? = null)
 
 @Serializable
 data class SessionListResult(val sessions: List<GatewaySession> = emptyList())

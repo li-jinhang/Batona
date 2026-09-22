@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DSH Link · 测试账号管理</title><link rel="stylesheet" href="/access-admin.css"><script defer src="/access-admin.js"></script></head>
+<body><main><header><div><span class="eyebrow">DSH LINK / PRIVATE BETA</span><h1>测试账号管理</h1><p>发放访问资格。工作区与对话始终属于用户。</p></div><button id="logout" hidden>退出管理</button></header>
+<p id="message" role="status" aria-live="polite"></p>
+<form id="login"><label for="admin-key">管理员密钥</label><input id="admin-key" type="password" autocomplete="off" required minlength="32"><button>进入管理后台</button><small>仅用于服务器管理，与电脑登录密钥不同。</small></form>
+<section id="panel" hidden><div class="toolbar"><form id="create"><label for="remark">发给谁</label><input id="remark" maxlength="100" placeholder="例如：小王 · 第一批测试"><button>生成测试账号</button></form><button id="refresh" class="secondary">刷新列表</button></div>
+<div class="table-wrap"><table><thead><tr><th>账号备注</th><th>状态</th><th>近 24 小时请求</th><th>操作</th></tr></thead><tbody id="accounts"></tbody></table></div><p id="empty" hidden>还没有测试账号。生成第一把密钥，开始邀请。</p><footer>仅统计手机成功提交给电脑 Agent 的请求，各后端合计。禁用不可恢复；重置将创建新账号。</footer></section>
+<dialog id="key-dialog"><h2>账号访问密钥</h2><p>请通过受控渠道交给使用者，在电脑端登录。关闭后隐藏。</p><textarea id="revealed-key" readonly aria-label="账号访问密钥"></textarea><button id="close-key">关闭并隐藏</button></dialog>
+</main></body></html>

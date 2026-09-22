@@ -168,7 +168,8 @@ export class CodexAdapter implements AgentAdapter {
     if (title) this.titles.set(id, title);
     this.states.set(id, state);
     this.updated.set(id, Number(thread.updatedAt) || Date.now());
-    return { backend: this.id, backendSessionId: id, title, state, createdAt: Number(thread.createdAt) || Date.now() };
+    const model = thread.model ? { provider: 'openai', model: thread.model, reasoningEffort: thread.reasoningEffort } : undefined;
+    return { backend: this.id, backendSessionId: id, title, state, model, createdAt: Number(thread.createdAt) || Date.now() };
   }
 
   private updateFromEvent(id: string, event: AgentEvent): void {

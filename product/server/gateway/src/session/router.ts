@@ -17,6 +17,7 @@ export interface GatewaySession {
   backend: string;          // 适配器 id
   backendSessionId: string; // 后端原生会话 id
   title?: string;
+  model?: ModelRef;
   state: SessionState;
   createdAt: number;
 }
@@ -78,6 +79,7 @@ export class SessionRouter {
       const existing = this.sessions.get(existingId)!;
       existing.title = ref.title ?? existing.title;
       existing.state = ref.state;
+      existing.model = ref.model;
       return existing;
     }
     const gs: GatewaySession = {
@@ -85,6 +87,7 @@ export class SessionRouter {
       backend: adapter.id,
       backendSessionId: ref.backendSessionId,
       title: ref.title,
+      model: ref.model,
       state: ref.state,
       createdAt: ref.createdAt,
     };
@@ -207,6 +210,7 @@ export class SessionRouter {
     const a = this.adapters.require(g.backend);
     if (!a.selectModel) throw Object.assign(new Error('not implemented'), { code: 'not-implemented' });
     await a.selectModel(refOf(g), model);
+    g.model = model;
   }
 
   async rename(backendSessionId: string, title: string, backendId?: string): Promise<{ title: string }> {

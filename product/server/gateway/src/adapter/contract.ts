@@ -21,6 +21,7 @@ export interface AgentSessionRef {
   backend: string;          // 适配器 id
   backendSessionId: string; // 后端原生会话 id
   title?: string;
+  model?: ModelRef;
   state: SessionState;
   createdAt: number;
 }

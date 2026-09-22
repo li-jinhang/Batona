@@ -20,4 +20,25 @@ function resolveDshLauncher(env = process.env, hasCommand = commandExists) {
   return null;
 }
 
-module.exports = { resolveDshLauncher };
+function isDshAuthenticated(reply) {
+  if (reply.status !== 200) return false;
+  try { return JSON.parse(reply.body).result?.ok === true; } catch { return false; }
+}
+
+// Only parse complete lines: stdout may split in the middle of a launch token.
+function createDshOutputParser(onToken, onLine) {
+  let buffer = '';
+  return chunk => {
+    buffer += chunk;
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop().slice(-8192);
+    for (const line of lines) {
+      const match = /dsh web:\s*(https?:\/\/[^\s/?]+)\/?\?token=([\w.~-]+)(?:\s|$)/.exec(line);
+      if (match) onToken({ port: Number(new URL(match[1]).port) || 3080, token: match[2] });
+      // Launch URLs are credentials, not diagnostics.
+      onLine(line.replace(/([?&]token=)[^\s)]+/gi, '$1<REDACTED>'));
+    }
+  };
+}
+
+module.exports = { resolveDshLauncher, isDshAuthenticated, createDshOutputParser };

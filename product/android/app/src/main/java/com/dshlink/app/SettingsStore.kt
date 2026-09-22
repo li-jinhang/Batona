@@ -18,6 +18,8 @@ class SettingsStore(private val app: Application) {
     private val KEY_BINDING = stringPreferencesKey("binding")
     private val KEY_TOKEN = stringPreferencesKey("token")
     private val KEY_CODEX_MIRROR = stringPreferencesKey("codex_mirror")
+    private val KEY_ACCESS = stringPreferencesKey("hosted_access_v1")
+    private val KEY_DEVICE = stringPreferencesKey("hosted_device_v1")
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     suspend fun loadBinding(): Binding? {
@@ -49,7 +51,20 @@ class SettingsStore(private val app: Application) {
     }
 
     suspend fun clear() {
-        app.dataStore.edit { it.remove(KEY_BINDING); it.remove(KEY_TOKEN); it.remove(KEY_CODEX_MIRROR) }
+        app.dataStore.edit { it.remove(KEY_BINDING); it.remove(KEY_TOKEN); it.remove(KEY_CODEX_MIRROR); it.remove(KEY_ACCESS) }
+    }
+
+    suspend fun loadAccess(): String? = app.dataStore.data.first()[KEY_ACCESS]?.let { runCatching { DeviceSecrets.decrypt(it) }.getOrNull() }
+    suspend fun saveAccess(token: String) {
+        val encrypted = DeviceSecrets.encrypt(token)
+        app.dataStore.edit { it.remove(KEY_BINDING); it.remove(KEY_TOKEN); it.remove(KEY_CODEX_MIRROR); it[KEY_ACCESS] = encrypted }
+    }
+    suspend fun deviceSecret(): String {
+        app.dataStore.data.first()[KEY_DEVICE]?.let { runCatching { DeviceSecrets.decrypt(it) }.getOrNull()?.let { secret -> return secret } }
+        val value = java.util.UUID.randomUUID().toString() + java.util.UUID.randomUUID().toString()
+        val encrypted = DeviceSecrets.encrypt(value)
+        app.dataStore.edit { it[KEY_DEVICE] = encrypted }
+        return value
     }
 
     companion object {

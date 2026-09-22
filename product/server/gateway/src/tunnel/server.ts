@@ -45,6 +45,8 @@ export interface TunnelHealth {
 export interface TunnelServerDeps {
   /** 共享密钥（= install.sh 写入的 agentKey = 连接串 frpToken） */
   agentKey: string;
+  authenticate?: (req: import('node:http').IncomingMessage) => boolean;
+  onDisconnected?: () => void;
   log?: (msg: string) => void;
   /** 测试可覆盖时序参数 */
   heartbeatMs?: number;
@@ -100,7 +102,10 @@ export class TunnelServer {
       }
       srv.on('error', (e: Error) => this.log(`[tunnel] 监听 ${name} 运行期错误：${e.message}`));
       this.listeners.set(name, srv);
-      this.bound.push(`127.0.0.1:${port}`);
+      const address = srv.address();
+      const actualPort = address && typeof address !== 'string' ? address.port : port;
+      this.cfg.services[name] = actualPort;
+      this.bound.push(`127.0.0.1:${actualPort}`);
     }
     return this.bindError
       ? { ok: false, bound: this.bound, error: this.bindError }
@@ -129,6 +134,7 @@ export class TunnelServer {
 
   /** Bearer 共享密钥，定长比较（写法对齐 http.ts 的 launch-token 通道） */
   private authenticate(req: import('node:http').IncomingMessage): boolean {
+    if (this.deps.authenticate) return this.deps.authenticate(req);
     const expected = this.deps.agentKey;
     if (!expected) return false;   // 未配置密钥 = 通道关闭（但此处仍回 401，hello 阶段的 tunnel-disabled 才是给 PC 的信号）
     const raw = String(req.headers.authorization ?? '');
@@ -198,7 +204,7 @@ export class TunnelServer {
 
   private onSessionClose(session: TunnelSession): void {
     this.sessions.delete(session);
-    if (this.active === session) this.active = null;
+    if (this.active === session) { this.active = null; this.deps.onDisconnected?.(); }
   }
 
   // ── 本地监听 → 流 ─────────────────────────────────────────────────────

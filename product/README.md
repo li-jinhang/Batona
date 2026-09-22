@@ -1,5 +1,7 @@
 # DSH Link — 三端工程导航与共享契约
 
+当前工作树为邀请制托管接入候选版；生产切换另行批准。迁移与回退先读 [托管接入运维](server/hosted-access-operations.md)，验收记录见 [实施证据](../docs/plans/hosted-access/evidence.md)。
+
 DSH Link 让 Android 手机通过公网网关远程操控笔记本上的 DeepSeek Harness（DSH）或 Codex。
 Agent、LLM 与工具执行始终留在 PC；服务器只提供认证、会话路由和 PC 的出站隧道。
 
@@ -41,49 +43,49 @@ Android 手机 App ── HTTPS / WSS ──▶ 服务器网关 ◀── WSS �
 
 | 端 | 负责 | 不负责 |
 |---|---|---|
-| Android | 绑定、登录、按后端分组的会话/工作区/模型/设备 UI，消费网关 RPC | 直连 PC、保存 launch token、执行 Agent |
-| PC | 启动本地 DSH、托管本地 Codex App Server 桥、保管连接串、维持出站隧道、上报 launch token | 对公网监听 Agent 服务、把特权能力给 renderer |
+| Android | 绑定、登录、按后端分组的会话/工作区/模型 UI，消费网关 RPC | 直连 PC、保存 launch token、执行 Agent |
+| PC | 启动本地 DSH、托管本地 Codex App Server 桥、安全保存 PC 授权、维持出站隧道、上报 launch token | 对公网监听 Agent 服务、把特权能力给 renderer |
 | 服务器 | TLS 后认证、设备管理、协议适配、会话路由、隧道服务端 | 执行 Agent/LLM/工具、主动连入用户内网 PC |
 
 - 公网只暴露反向代理后的 TLS 入口；网关监听 `127.0.0.1:3090`，DSH 只在 PC 回环地址运行。
-- 内置隧道将服务器 3080/3081/3082 仅绑定到回环；旧 frp 回退模式另有 7000，不能将 Agent 端口暴露公网。
-- `trustedHosts` 仅是 DSH 的防重绑栅栏，不是认证；认证由账号密码、TOTP、设备令牌和连接串内共享密钥承担。
+- 每台 PC 的隧道、适配器、会话路由与推送独立，服务器分配动态回环端口；PC 本机服务仍为 3080/3081/3082。仅使用自研 WSS。
+- `trustedHosts` 仅是 DSH 的防重绑栅栏，不是认证；认证由独立的管理员密钥、账号接入密钥和 PC/手机设备授权承担，三者不可互用。
 
 ## 跨端绑定与连接契约
 
-### 连接串与二维码
+### 邀请密钥与手机配对
 
-服务器安装输出的连接串及二维码载荷相同：
+管理员在 `/access-admin` 用单独管理员密钥登录，创建、查看、备注、永久禁用、重置或删除账号；仅显示滚动 24 小时手机请求受理数。测试用户在 PC 输入账号接入密钥，不输入用户名密码。PC 保存 Windows safeStorage 加密后的设备授权与设备身份，不持久保存账号原始接入密钥。
 
-```text
-dsh-gw://<serverIp>?frpPort=7000&gwPort=443&frpToken=<token>&gwUser=<admin>&gwPass=<password>&pair=<code>
-```
+PC 登录并连通隧道后打开手机配对页，显示随机手动码和 `dsh-pair://<code>` 二维码；它不包含账号密钥。手机输入/扫描后必须由 PC 明确批准。PC 页面维持 20 秒可续期租约，4 秒轮询续租；最小化继续，关闭、断线、拒绝或成功后旧码不可再次使用。成功结果允许原请求凭证明文在内存保留 60 秒供手机安全领取；不写日志/数据库。
 
-`frpToken` 是连接串的必填共享密钥；PC 和 Android 的解析器必须保留 `frpPort`（默认 7000）、`gwPort`（默认 443）、`gwUser`、`gwPass` 与 `pair`。它包含凭据，不能提交、记录、截图公开或写入诊断日志。
+每账号暂限一台 PC、一部手机，以独立设备 ID 和账号所有权关联；设备授权不能跨角色、账号或 PC 路由。换电脑必须确认替换并让手机重新配对；换手机须先在 PC 解绑旧手机。PC 退出保留手机绑定和授权，同机同密钥登录后恢复；手机退出只撤销授权并保留名额，原手机重新配对仍需 PC 批准。管理员禁用不可恢复，重置创建新身份，删除清除登记；上述操作只终止远程访问，不取消 PC 本地任务。
 
-绑定路径：服务器安装生成连接串 → PC 扫码/粘贴后保存连接并启动 DSH 与隧道 → PC 显示同载荷二维码 → 手机扫码/粘贴，预填网关账号并完成 TOTP 登录。`pair` 是服务器生成的绑定标识；设备授权的真实安全边界仍是网关登录与设备令牌。
+新版客户端固定使用 `https://117.72.10.87`，遵循系统 CA 与 IP 身份校验。旧连接串、TOTP、共享 agentKey、浏览器远程入口不再是托管入口；旧 REST 返回 410，WS 查询参数不授予权限。旧授权资料不自动转换。
 
 ### 手机 ↔ 网关 RPC
 
-手机连接 `wss://<server>:<gwPort>/ws?token=…`，也可在首帧 `auth.hello` 完成握手。协议版本为 v1，使用四象限信封：`client-request`、`server-response`、`server-request`、`client-response`。
+手机连接 `wss://117.72.10.87/ws`，设备令牌仅在首帧 `auth.hello.payload.token` 传递；认证前无业务推送。协议版本为 v1，使用四象限信封：`client-request`、`server-response`、`server-request`、`client-response`。
 
-- 上行：`auth.hello`、`session.list/create/resume/prompt/cancel/history/rename`、`workspace.*`、`model.*`、`agent.profile.list`、`respond`、`device.*`。
+- 上行：`auth.hello`、`session.list/create/resume/prompt/cancel/history/rename`、`workspace.*`、`model.*`、`agent.profile.list`、`respond`；设备管理仅走 PC 的 `/api/access/*` REST。
 - 下行：`session/event`、`approval/requested`、`question/requested`。审批/提问必须用原始 `serverRequestRpcId` 经 `respond` 回答。
 - 任何字段、方法、事件或兼容策略变更都必须同步检查 Android、PC、服务器，并更新本文件与受影响端的 `AGENTS.md`。
 
 ### Codex 接入边界
 
+- `session.create/resume/list` 的会话对象可携带 `model: { provider, model, reasoningEffort?, displayName? }`。该值来自后端会话快照，缺失表示尚未同步；手机打开或切换会话时刷新此值，不能沿用上一会话的选择或拿模型目录第一项冒充。旧客户端忽略可选字段，旧网关下新版手机显示“模型未同步”。
+
 - PC 的 `codex-bridge.js` 仅监听 `127.0.0.1:3082`，通过本机 Codex `app-server` 的 stdio JSON-RPC 工作；网关只能经既有隧道访问它。不能配置公网 listener，也不能把 App Server 原始帧、认证资料或未脱敏工具输出转给服务器。
 - Codex 会话与 DSH 会话是不同 backend；手机切换后只显示当前 backend 的工作区树。Codex 工作区按 PC 上会话的 `cwd` 分组；用户通过现有目录浏览服务选择任意本机目录，新建空工作区仅登记路径，不创建或删除磁盘目录。
-- Codex App Server 的 `thread/list` 发现桌面端已有会话，`thread/resume`/`turn/start` 继续原生会话；PC 轮询持久状态并把运行状态同步到手机。若 App Server 能力/版本不可用，网关应明确显示不可用，不得降级为不受控的 `codex exec`。
+- Codex App Server 的 `thread/list` 发现桌面端已有会话，打开/历史浏览使用 `thread/read` 与 `thread/turns/list`，不取得第二个 writer。发送时才 `thread/resume`/`turn/start`；当前独立 stdio 桥无法写入 Desktop 已持有的会话，会返回 `codex-desktop-owned` 并保留手机输入。同进程控制通道接入完成前，不得将历史可读视为手机原会话双向控制已完成，也不得用 fork 或抢锁替代。PC 轮询持久状态同步到手机；能力不可用时不能降级为 `codex exec`。
 - 手机上的 `请求批准`、`帮我审批`、`完全访问` 是 PC 校验后的固定档，分别只会映射到已允许的 `:workspace`/`:danger-full-access` App Server permission profile 与对应 approval policy；手机不能自定义底层权限。所有镜像事件先在 PC 脱敏，且只接受文本输入。
 - 手机只在本地缓存每个工作区最近 5 个 Codex 会话和每个会话最多 200 条已脱敏历史；断网只能浏览、不可排队发送，注销或重新绑定会清空缓存。通知仅提示等待审批、等待回答、完成或失败，且不含对话、命令、路径或凭据。
 
 ### PC ↔ 服务器隧道与 launch token
 
-PC 默认以 `wss://<server>:<gwPort>/tunnel` 建立出站隧道，使用 `Authorization: Bearer <frpToken>`。服务器的 `agentKey` 与连接串 `frpToken` 保持一致；PC 启动 DSH 后以同一密钥调用 `POST /api/dsh/launch-token` 上报每个进程临时的 launch token。
+PC 以 `wss://117.72.10.87/tunnel` 建立出站隧道，使用 `Authorization: Bearer <PC-device-token>`。同一 PC 授权调用 `POST /api/access/launch-token` 上报临时 DSH launch token，服务器只更新该 PC 的适配器。管理员密钥、账号密钥与手机令牌不能登录隧道。
 
-隧道线格式在 [pc/tunnel/protocol.js](pc/tunnel/protocol.js) 与 [server/gateway/src/tunnel/protocol.ts](server/gateway/src/tunnel/protocol.ts) 有两份实现，必须同步修改，并运行两端共同消费的黄金向量测试。内置隧道不可用时，PC 在 `auto` 模式可回退 frp；切换服务器到内置隧道前必须确认 PC 已升级。
+隧道帧见 [PC 协议](pc/tunnel/protocol.js) 和 [服务器协议](server/gateway/src/tunnel/protocol.ts)，两端黄金向量必须一致。无 FRP 回退。DSH HTTP、Cookie 交换和 WS 使用 PC authority `127.0.0.1:3080`，不能让服务器动态端口变成 Cookie 身份。
 
 ## 三端构建、发布与联调
 
@@ -93,12 +95,12 @@ PC 默认以 `wss://<server>:<gwPort>/tunnel` 建立出站隧道，使用 `Autho
 | Windows 运行、打包与更新 | PC | [pc/AGENTS.md](pc/AGENTS.md) |
 | APK 构建、安装、UI/真机验证 | Android 工程 | [android/AGENTS.md](android/AGENTS.md) |
 
-跨端发布遵循：先改动并验证受影响端 → 服务器网关版本递增并部署 → 确认 PC 隧道/launch-token 上报 → 用手机完成登录、会话流式消息、审批和提问测试。服务器更新不会删除 `/etc/dsh-gateway` 或 `/var/lib/dsh-gateway`，因此正常更新后 PC/手机无需重新绑定。
+跨端发布遵循：先改动并验证受影响端 → 服务器网关版本递增并部署 → 确认 PC 隧道/launch-token 上报 → 用手机完成登录、会话流式消息、审批和提问测试。服务器更新不会删除 `/etc/dsh-gateway` 或 `/var/lib/dsh-gateway`，因此同一托管模式正常更新后 PC/手机无需重新绑定；从旧认证升级则必须执行单独迁移和重新接入。
 
 最小端到端验收：
 
-1. PC 导入连接串，DSH 与隧道均在线；
-2. 手机完成 TOTP 登录，能读取会话与工作区；
+1. 管理员发密钥，PC 登录，DSH 与隧道均在线；
+2. 手机输配对码，PC 确认，能读取会话与工作区；
 3. 新建/恢复会话、流式消息、审批与提问可往返；
 4. Codex Desktop 已登录时，手机能查看现有 Codex 工作区/会话、创建或恢复会话、选择真实模型和固定权限档，并从 PC/手机任一端看到状态变化；
 5. 手机断网后恢复，PC 隧道可重连；

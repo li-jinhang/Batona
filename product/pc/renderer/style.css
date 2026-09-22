@@ -42,6 +42,14 @@ button.danger { background: rgba(231,76,60,.85); }
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #444; flex: none; }
 .dot.on { background: var(--ok); }
 .dot.off { background: var(--bad); }
+.dot.warn { background: var(--warn); }
+.dot.unknown { background: var(--muted); }
+.software-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.software-grid .hint { min-height: 38px; }
+.software-state { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+.status-label { margin-left: auto; color: var(--muted); font-size: 12px; }
+.status-label + .dot { margin-left: 8px; }
+@media (max-width: 560px) { .software-grid { grid-template-columns: 1fr; gap: 0; } }
 
 #qr-box { text-align: center; }
 #qr-img { width: 240px; height: 240px; border-radius: 8px; background: #fff; padding: 8px; }

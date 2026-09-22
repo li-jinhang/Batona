@@ -28,26 +28,23 @@ import kotlin.coroutines.resume
  * 网关客户端：REST（登录）+ WebSocket（四象限 RPC）
  *
  * 事件推送（server-request）经 onPush 回调；请求-响应按 rpcId 配对。
- * 自签证书：信任所有证书（DSH Link 服务器无域名场景；生产建议换正规证书）。
+ * 使用系统 CA 与主机名校验；不接受自签、过期或身份不匹配的证书。
  */
 class GatewayClient(
     private val binding: Binding,
     private val onPush: (ServerRequest) -> Unit,
     private val onConnChange: (Boolean) -> Unit,
     private val onAuthFailed: () -> Unit = {},
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
+        .pingInterval(20, TimeUnit.SECONDS).build(),
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .pingInterval(20, TimeUnit.SECONDS)
-        .sslSocketFactory(TrustAll.socketFactory, TrustAll.trustManager)
-        .hostnameVerifier { _, _ -> true }
-        .build()
 
     var token: String = ""
 
     private var ws: WebSocket? = null
+    @Volatile private var authenticated = false
     private val pending = ConcurrentHashMap<String, CompletableDeferred<RpcResult<JsonElement>>>()
     private val scope = kotlinx.coroutines.CoroutineScope(Dispatchers.IO)
 
@@ -67,53 +64,74 @@ class GatewayClient(
     }
 
     // ── WebSocket 四象限 RPC ─────────────────────────────────────────
+    private var stopped = false
+    private var reconnectJob: kotlinx.coroutines.Job? = null
+    private var reconnectAttempts = 0
+
     fun connect() {
-        if (token.isEmpty()) return
-        // 网关经 HTTPS 反代，WebSocket 恒为 wss://（必须是 :// 而非 //，否则 OkHttp 解析抛异常）
-        val url = "wss://${binding.wsHost}:${binding.wsPort}/ws?token=${java.net.URLEncoder.encode(token, "UTF-8")}"
-        val req = Request.Builder().url(url).build()
+        if (token.isEmpty() || stopped) return
+        authenticated = false
+        val req = Request.Builder().url("wss://${binding.wsHost}:${binding.wsPort}/ws").build()
         ws = client.newWebSocket(req, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                android.util.Log.w("DSHLINK", "WS OPEN url=$url")
-                onConnChange(true)
-                scope.launchSafe { hello() }
+                scope.launchSafe {
+                    val result = call("auth.hello", buildJsonObject { put("token", token) })
+                    if (result.ok && !stopped && ws === webSocket) { authenticated = true; reconnectAttempts = 0; onConnChange(true) }
+                }
             }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                handleMessage(text)
-            }
-
+            override fun onMessage(webSocket: WebSocket, text: String) { if (ws === webSocket && !stopped) handleMessage(text) }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { if (ws === webSocket) authenticated = false; webSocket.close(code, reason) }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                android.util.Log.w("DSHLINK", "WS CLOSED code=$code reason=$reason")
+                if (ws !== webSocket || stopped) return
+                authenticated = false
                 onConnChange(false)
-                scheduleReconnect()
+                if (reason == "unauthorized" || reason == "authorization-revoked") {
+                    scope.launchSafe {
+                        try { access("status"); scheduleReconnect() }
+                        catch (e: AccessFailure) { if (e.code == "unauthorized") onAuthFailed() else scheduleReconnect() }
+                        catch (_: Exception) { scheduleReconnect() }
+                    }
+                } else scheduleReconnect()
             }
-
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                android.util.Log.w("DSHLINK", "WS FAIL=${t.message} resp=${response?.code}")
-                onConnChange(false)
-                scheduleReconnect()
+                if (ws !== webSocket || stopped) return
+                authenticated = false
+                onConnChange(false); scheduleReconnect()
             }
         })
     }
 
     fun disconnect() {
-        ws?.close(1000, "bye")
-        ws = null
+        stopped = true; authenticated = false; reconnectJob?.cancel(); ws?.close(1000, "bye"); ws = null
+        pending.values.forEach { it.complete(RpcResult(ok = false, error = RpcError("disconnected", "连接已关闭"))) }
+        pending.clear()
+    }
+    private fun scheduleReconnect() {
+        if (stopped) return
+        reconnectJob?.cancel()
+        pending.values.forEach { it.complete(RpcResult(ok = false, error = RpcError("disconnected", "连接中断，提交结果可能未知"))) }
+        pending.clear()
+        val wait = (500L * (1 shl reconnectAttempts.coerceAtMost(6))).coerceAtMost(30_000L)
+        reconnectAttempts++
+        reconnectJob = scope.launch {
+            kotlinx.coroutines.delay(wait)
+            if (!stopped && token.isNotEmpty()) connect()
+        }
     }
 
-    private var reconnectAttempts = 0
-    private fun scheduleReconnect() {
-        if (reconnectAttempts > 10) return
-        val delay = (500L * (1 shl reconnectAttempts)).coerceAtMost(30_000L)
-        reconnectAttempts++
-        scope.launchSafe {
-            kotlinx.coroutines.delay(delay)
-            if (token.isNotEmpty()) connect()
+    suspend fun access(op: String, body: kotlinx.serialization.json.JsonObject = buildJsonObject {}): kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val req = Request.Builder().url("${binding.gatewayBase}/api/access/$op")
+            .header("Authorization", "Bearer $token")
+            .post(body.toString().toRequestBody("application/json".toMediaType())).build()
+        client.newCall(req).execute().use { response ->
+            val result = json.parseToJsonElement(response.body?.string() ?: "{}").jsonObject
+            if (!response.isSuccessful) throw AccessFailure(result["error"]?.jsonPrimitive?.content ?: "connection-failed")
+            result
         }
     }
 
     suspend fun call(method: String, payload: JsonElement = buildJsonObject {}): RpcResult<JsonElement> {
+        if (method != "auth.hello" && !authenticated) return RpcResult(ok = false, error = RpcError("not-connected", "连接未完成认证，请恢复网络后重试；消息未排队。"))
         val rpcId = UUID.randomUUID().toString()
         val req = ClientRequest(rpcId = rpcId, method = method, payload = payload)
         val s = ws
@@ -130,7 +148,7 @@ class GatewayClient(
             pending.remove(rpcId)
             return RpcResult(ok = false, error = RpcError("send-failed", e.message ?: "发送异常"))
         }
-        return awaitWithTimeout(deferred)
+        return try { awaitWithTimeout(deferred) } finally { pending.remove(rpcId) }
     }
     private fun handleMessage(text: String) {
         try {
@@ -149,7 +167,7 @@ class GatewayClient(
     }
 
     private suspend fun hello() {
-        call("auth.hello", buildJsonObject { })
+        call("auth.hello", buildJsonObject { put("token", token) })
     }
 
     // ── 便捷方法（全部防御式：后端不可达/解析失败 → 返回空/默认，不抛异常）──
@@ -178,12 +196,12 @@ class GatewayClient(
 
     /** 恢复（附加）一个已有后端会话，返回可供聊天的网关会话 */
     suspend fun resumeSession(backend: String, backendSessionId: String): GatewaySession? =
-        runCatching {
+        run {
             call("session.resume", buildJsonObject {
                 put("backend", backend)
                 put("backendSessionId", backendSessionId)
-            }).let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(GatewaySession.serializer(), r.value!!) else null }
-        }.getOrNull()
+            }).let { r -> json.decodeFromJsonElement(GatewaySession.serializer(), r.requireValue()) }
+        }
 
     suspend fun sessionPrompt(sessionId: String, text: String, agentPreset: String? = null) =
         call("session.prompt", buildJsonObject {
@@ -201,20 +219,8 @@ class GatewayClient(
         call("session.rename", buildJsonObject { put("sessionId", sessionId); put("title", title); backend?.let { put("backend", it) } })
 
     suspend fun sessionHistory(sessionId: String): List<AgentEvent> =
-        runCatching {
-            call("session.history", buildJsonObject { put("sessionId", sessionId) })
-                .let { r ->
-                    if (r.ok && r.value != null) {
-                        val ev = json.decodeFromJsonElement(HistoryResult.serializer(), r.value!!).events
-                        android.util.Log.w("DSHLINK", "historyRPC ok sid=$sessionId events=${ev.size}")
-                        ev
-                    } else {
-                        android.util.Log.w("DSHLINK", "historyRPC kafka sid=$sessionId ok=${r.ok} err=${r.error?.code} ${r.error?.message}")
-                        emptyList()
-                    }
-                }
-        }.onFailure { android.util.Log.w("DSHLINK", "historyRPC DECODE-FAIL sid=$sessionId: ${it}") }
-            .getOrElse { emptyList() }
+        json.decodeFromJsonElement(HistoryResult.serializer(),
+            call("session.history", buildJsonObject { put("sessionId", sessionId) }).requireValue()).events
 
     suspend fun respond(sessionId: String, serverRequestRpcId: String, payload: JsonElement) =
         call("respond", buildJsonObject {
@@ -228,20 +234,8 @@ class GatewayClient(
             .getOrElse { emptyList() }
 
     suspend fun workspaceTree(backend: String? = null): List<WorkspaceNode> =
-        runCatching {
-            val ret = call("workspace.tree", backendPayload(backend)).let { r ->
-                if (r.ok && r.value != null) {
-                    val items = json.decodeFromJsonElement(WorktreeResult.serializer(), r.value!!).items
-                    android.util.Log.w("DSHLINK", "treeRPC ok items=${items.size}")
-                    items
-                } else {
-                    android.util.Log.w("DSHLINK", "treeRPC kafka ok=${r.ok} err=${r.error?.code} ${r.error?.message}")
-                    emptyList()
-                }
-            }
-            ret
-        }.onFailure { android.util.Log.w("DSHLINK", "treeRPC FAIL: ${it}") }
-            .getOrElse { emptyList() }
+        json.decodeFromJsonElement(WorktreeResult.serializer(),
+            call("workspace.tree", backendPayload(backend)).requireValue()).items
 
     suspend fun workspaceDelete(workspaceId: String, backend: String? = null) =
         call("workspace.delete", buildJsonObject { put("workspaceId", workspaceId); backend?.let { put("backend", it) } })
@@ -325,13 +319,14 @@ private fun kotlinx.coroutines.CoroutineScope.launchSafe(block: suspend () -> Un
     launch(Dispatchers.IO) { runCatching { block() } }
 }
 
-/** 自签证书：信任所有（仅用于 DSH Link 无域名服务器） */
-private object TrustAll {
-    val trustManager: javax.net.ssl.X509TrustManager = object : javax.net.ssl.X509TrustManager {
-        override fun checkClientTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
-        override fun checkServerTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) {}
-        override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
-    }
-    val socketFactory: javax.net.ssl.SSLSocketFactory =
-        javax.net.ssl.SSLContext.getInstance("TLS").apply { init(null, arrayOf(trustManager), null) }.socketFactory
-}
+
+class AccessFailure(val code: String) : Exception(when (code) {
+    "pair-invalid" -> "配对码已失效，请重新打开电脑端配对页。"
+    "pair-pending" -> "已有手机等待确认，请在电脑端关闭并重新打开配对页。"
+    "phone-slot-occupied" -> "此账号已绑定其他手机，请先在电脑端解除旧绑定。"
+    "unauthorized" -> "授权已失效，请重新配对。"
+    "pc-offline" -> "电脑暂时离线，请启动电脑端并连接隧道。"
+    "rate-limited" -> "操作过于频繁，请稍后重试。"
+    "upgrade-required" -> "服务器尚未切换新版，请等待管理员发布。"
+    else -> "操作失败，请检查网络后重试。"
+})

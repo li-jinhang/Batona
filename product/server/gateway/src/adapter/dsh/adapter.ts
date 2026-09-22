@@ -33,6 +33,9 @@ export interface DshAdapterConfig extends AdapterConfig {
   baseUrl: string;
   /** DSH 进程 launch token（启动时打印；由 PC 端上报，见 server/http.ts 的 /api/dsh/launch-token） */
   authToken?: string;
+  /** HTTP/WS authority of the actual PC service, independent of private tunnel port. */
+  authority?: string;
+  waitForBaseline?: boolean;
 }
 
 interface PendingInteraction {
@@ -99,6 +102,7 @@ export class DshAdapter implements AgentAdapter {
   private workspaceStreamId: string | null = null;
   private workspaceResolve: (() => void) | null = null;
   private workspaceBaseline: Promise<void> | null = null;
+  private workspaceReady = false;
   private workspaces = new Map<string, DshWorkspaceView>();
   private workspaceOrder: string[] = [];
 
@@ -121,7 +125,7 @@ export class DshAdapter implements AgentAdapter {
   async connect(cfg: AdapterConfig): Promise<boolean> {
     const c = cfg as DshAdapterConfig;
     if (!c.baseUrl) throw new Error('dsh adapter: missing baseUrl');
-    this.cfg = { baseUrl: c.baseUrl, authToken: c.authToken };
+    this.cfg = { baseUrl: c.baseUrl, authToken: c.authToken, authority: c.authority, waitForBaseline: c.waitForBaseline };
     await this.open();
     return true;
   }
@@ -130,7 +134,7 @@ export class DshAdapter implements AgentAdapter {
   private async open(): Promise<void> {
     const cfg = this.cfg;
     if (!cfg) throw new Error('dsh adapter: not configured');
-    const client = new DshApiClient({ baseUrl: cfg.baseUrl, timeoutMs: 120_000, authToken: cfg.authToken });
+    const client = new DshApiClient({ baseUrl: cfg.baseUrl, timeoutMs: 8000, authToken: cfg.authToken, authority: cfg.authority });
     await client.ensureAuthenticated();
     this.client = client;
     console.log(`[dsh] auth=${cfg.authToken ? 'launch-token ✓' : 'none'} cookie=${client.getCookie() ? 'set' : 'none'}`);
@@ -139,13 +143,14 @@ export class DshAdapter implements AgentAdapter {
       cfg.baseUrl,
       {
         getCookie: () => this.client?.getCookie() ?? null,
+        authority: cfg.authority,
         onUnauthorized: async () => {
           this.client?.resetAuth();
           await this.client?.ensureAuthenticated();
         },
       },
       {
-        onStateChange: (s) => { if (s !== 'open') console.log(`[dsh] remote.mux ${s}`); },
+        onStateChange: (s) => { if (s !== 'open') { this.workspaceReady = false; console.log(`[dsh] remote.mux ${s}`); } },
         // 逻辑流由 mux 跨代次自动重开（streamId 不变），这里只重置派生状态
         onGeneration: () => this.resetGeneration(),
       },
@@ -155,7 +160,7 @@ export class DshAdapter implements AgentAdapter {
 
     this.openCoreStreams();
     // 工作区基线（首帧 baseline）就绪后再返回，保证首个 workspace.tree 有数据
-    await Promise.race([this.workspaceBaseline ?? Promise.resolve(), sleep(8000)]);
+    if (cfg.waitForBaseline !== false) await Promise.race([this.workspaceBaseline ?? Promise.resolve(), sleep(8000)]);
   }
 
   /** 打开两条常驻逻辑流（$events / workspace/follow）：只做一次，重连由 mux 重发 open */
@@ -184,6 +189,8 @@ export class DshAdapter implements AgentAdapter {
    */
   private resetGeneration(): void {
     this.eventClientId = null;
+    this.workspaceReady = false;
+    this.workspaceResolve?.();
     this.workspaceBaseline = new Promise<void>((resolve) => {
       let settled = false;
       const done = (): void => { if (!settled) { settled = true; resolve(); } };
@@ -309,6 +316,7 @@ export class DshAdapter implements AgentAdapter {
     if (!frame || typeof frame !== 'object') return;
     switch (frame.type) {
       case 'baseline': {
+        this.workspaceReady = true;
         const items = frame.value?.items ?? [];
         this.workspaces = new Map(items.map((w) => [w.workspaceId, w]));
         this.workspaceOrder = items.map((w) => w.workspaceId);
@@ -552,7 +560,9 @@ export class DshAdapter implements AgentAdapter {
       .filter((s) => s.origin !== 'subagent')   // 子代理会话不进手机端会话列表
       .map((s) => {
         const projected = (s.projections?.values as { title?: unknown } | undefined)?.title;
-        return this.refOf(s.sessionId, this.titleOf(s.sessionId, typeof projected === 'string' ? projected : undefined), s.updatedAt);
+        const ref = this.refOf(s.sessionId, this.titleOf(s.sessionId, typeof projected === 'string' ? projected : undefined), s.updatedAt);
+        ref.model = projectedModel(s.projections?.values?.modelSelection);
+        return ref;
       });
   }
 
@@ -583,14 +593,17 @@ export class DshAdapter implements AgentAdapter {
       });
       if (!sel.ok) throw toError(sel.error.code, sel.error.message);
     }
+    ref.model = opts.model;
     return ref;
   }
 
   async resumeSession(backendSessionId: string): Promise<AgentSessionRef> {
     // DSH：恢复 = 附加会话（prompt 时自动附加）。这里顺手开 follow 流，
     // 让手机端进入会话后立刻拿到实时事件（含电脑端正跑着的回合）。
+    const session = (await this.listSessions()).find(s => s.backendSessionId === backendSessionId);
+    if (!session) throw toError('session-not-found', 'DSH 会话不存在');
     this.ensureFollower(backendSessionId);
-    return this.refOf(backendSessionId, this.titleOf(backendSessionId));
+    return session;
   }
 
   async prompt(session: AgentSessionRef, parts: PromptPart[], opts?: { queueAction?: 'prompt' | 'steer' | 'queue'; agentPreset?: string }): Promise<void> {
@@ -698,6 +711,11 @@ export class DshAdapter implements AgentAdapter {
   }
 
   async listWorkspaces(): Promise<WorkspaceView[]> {
+    // Login need not wait for a PC, but a list must not mistake a pending baseline for an empty workspace.
+    const generation = this.workspaceBaseline;
+    await generation;
+    if (!this.workspaceReady && generation !== this.workspaceBaseline) await this.workspaceBaseline;
+    if (!this.workspaceReady) throw toError('not-connected', 'DSH 工作区尚未同步，请稍后重试');
     return this.orderedWorkspaces().map(toWorkspaceView);
   }
 
@@ -986,6 +1004,18 @@ function toWorkspaceView(w: DshWorkspaceView): WorkspaceView {
     createdAt: w?.createdAt ?? '',
     updatedAt: w?.updatedAt ?? '',
   };
+}
+
+/** Only copy the public model-selection projection; never forward raw config. */
+export function projectedModel(value: unknown): ModelRef | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const projection = value as { next?: unknown; lastUsed?: unknown };
+  const selected = projection.next ?? projection.lastUsed;
+  if (!selected || typeof selected !== 'object') return undefined;
+  const m = selected as Record<string, unknown>;
+  if (typeof m.provider !== 'string' || !m.provider || typeof m.model !== 'string' || !m.model) return undefined;
+  return { provider: m.provider, model: m.model,
+    ...(typeof m.reasoningEffort === 'string' ? { reasoningEffort: m.reasoningEffort } : {}) };
 }
 
 function stringOf(v: unknown): string {

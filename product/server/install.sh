@@ -3,12 +3,10 @@
 # DSH Link — 服务器端一键安装 / 升级脚本（Ubuntu/Debian，宝塔环境）
 #
 # 用法：
-#   bash install.sh --install [--ip 公网IP] [--admin 用户名] [--password 密码]
+#   bash install.sh --install                 # 全新托管接入安装
 #   bash install.sh --update  [--source 网关包路径或URL]
 #   bash install.sh --status
-#   bash install.sh --show-binding            # 仅 root 在受控终端显式导出绑定串
-#   bash install.sh --tunnel on|off|status   # 内置隧道（自研）与 frps 的切换；on 会停用 frps
-#   bash install.sh --selfsigned <公网IP>   # 无域名时生成自签证书（含 IP SAN）
+#   bash install.sh --tunnel status           # 仅自研隧道，不切换 FRP
 #   bash install.sh --uninstall
 #
 # 注意：日常更新不要直接调 --update，请用同目录的 deploy.sh —— 它负责从 git 取
@@ -22,9 +20,8 @@
 #
 # 目录布局：
 #   /opt/dsh-gateway/app     网关代码（每次更新整体替换）
-#   /etc/dsh-gateway/        config.json + server-info.json（保留）
-#   /var/lib/dsh-gateway     数据（auth.json 等，保留）
-#   /usr/local/frp           frps（极少更新）
+#   /etc/dsh-gateway/        config.json + 独立管理员/账号库保护密钥（保留）
+#   /var/lib/dsh-gateway     加密账号库及部署状态（保留）
 # ============================================================================
 set -euo pipefail
 
@@ -72,7 +69,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-[ -z "$ACTION" ] && { echo "用法: bash install.sh --install | --update | --status | --show-binding | --tunnel on|off|status | --uninstall" >&2; exit 1; }
+[ -z "$ACTION" ] && { echo "用法: bash install.sh --install | --update | --status | --tunnel status | --uninstall" >&2; exit 1; }
 [ "$(id -u)" -ne 0 ] && { echo "请用 root 运行" >&2; exit 1; }
 
 log() { echo ">>> $*"; }
@@ -243,29 +240,37 @@ deploy_gateway() {
 }
 
 write_gateway_config() {
-  local admin="$1" pass="$2"
-  # DSH 0.1.2+ 的 /api 需浏览器会话认证：网关用 DSH 进程的 launch token 模拟 cookie 交换。
-  # token 由 PC 端自动上报（POST /api/dsh/launch-token）；这里只留一个静态回退，
-  # 需要时用 DSH_AUTH_TOKEN 指定（如 DSH 跑在别的机器、无法自动上报）。
-  local auth_token="${DSH_AUTH_TOKEN:-}"
-  # 上报通道的共享密钥：直接复用 frpToken（PC 绑定串里已有），免额外配置
-  local agent_key; agent_key="$(info_get frpToken)"
+  mkdir -p "$CONF_DIR" "$DATA_DIR"
   cat > "$CONFIG_FILE" <<EOF
 {
   "host": "127.0.0.1",
   "port": 3090,
   "dataDir": "$DATA_DIR",
   "webDir": "$APP_DIR/web",
-  "agentKey": "$agent_key",
-  "tunnel": { "enabled": false, "services": { "dsh": 3080, "dir": 3081 }, "maxStreams": 128 },
-  "auth": { "initialUser": { "username": "$admin", "password": "$pass" } },
-  "adapters": {
-    "mock": { "enabled": false },
-    "dsh": { "enabled": true, "cfg": { "baseUrl": "http://127.0.0.1:3080"${auth_token:+, "authToken": "$auth_token"} } }
-  }
+  "tunnel": { "enabled": true }
 }
 EOF
   chmod 600 "$CONFIG_FILE"
+  node "$APP_DIR/scripts/init-access.mjs" "$CONFIG_FILE" "$CONF_DIR"
+}
+
+require_hosted_config() {
+  if systemctl is-active --quiet frps; then
+    err "frps 仍在运行；请在获准迁移窗口单独停用，托管网关不会与旧共享隧道双跑。"
+    exit 1
+  fi
+  if ! node -e '
+    const fs = require("fs");
+    const c = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    if (!c.access || c.host !== "127.0.0.1") process.exit(1);
+    for (const p of [c.access.adminKeyFile, c.access.vaultKeyFile]) {
+      if (!/^[a-f0-9]{64}$/.test(fs.readFileSync(p, "utf8").trim())) process.exit(1);
+    }
+  ' "$CONFIG_FILE" 2>/dev/null; then
+    err "未初始化托管接入配置或密钥不可用；尚未替换运行目录。"
+    err "旧版迁移必须先获准停机、联合备份配置/数据/密钥，再按 hosted-access 运维文档初始化。"
+    exit 1
+  fi
 }
 
 # 读取 config.json 的 tunnel.enabled（true/false；读不到按 false）
@@ -558,43 +563,20 @@ set_tunnel_mode() {
 # ── 动作 ───────────────────────────────────────────────────────────────
 case "$ACTION" in
   install)
-    [ -z "$IP" ] && IP="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || echo '你的公网IP')"
-    log "安装开始（IP=${IP} admin=${ADMIN}）"
-
-    # 1) 确定/生成 server-info（保留旧 frpToken，避免重装后 PC 需重新绑定）
-    tok="$(info_get frpToken)"; [ -z "$tok" ] && tok="$(openssl rand -hex 16)"
-    pair="$(info_get pair)"; [ -z "$pair" ] && pair="$(openssl rand -hex 4)"
-    gwPass="$PASSWORD"; [ -z "$gwPass" ] && gwPass="$(info_get gwPass)"; [ -z "$gwPass" ] && gwPass="$(openssl rand -hex 8)"
-    mkdir -p "$CONF_DIR"
-    cat > "$INFO_FILE" <<EOF
-{
-  "serverIp": "$IP",
-  "frpPort": 7000,
-  "frpToken": "$tok",
-  "gwUser": "$ADMIN",
-  "gwPass": "$gwPass",
-  "pair": "$pair",
-  "pairExpiresAt": "$(($(date +%s) + 86400))",
-  "installedAt": "$(date -Iseconds)"
-}
-EOF
-    chmod 600 "$INFO_FILE"
-
-    # 2) 组件安装
+    [ ! -f "$CONFIG_FILE" ] || { err "检测到既有配置，拒绝覆盖；请使用部署或迁移流程。"; exit 1; }
+    log "安装托管接入网关（仅自研隧道，不安装 frps）"
     ensure_node
-    ensure_frps
-    ensure_frps_proxy_bind
     deploy_gateway "${SOURCE:-$GATEWAY_DEFAULT_SRC}"
-    write_gateway_config "$ADMIN" "$gwPass"
+    write_gateway_config
     ensure_gateway_service
     remove_legacy_pair_page
-    binding_stored_notice
+    log "管理员入口 /access-admin；管理员密钥位于受保护的 access-admin.key，不写入日志。"
     ;;
 
   update)
     log "升级网关（数据与配置保留）"
     ensure_node
-    ensure_frps_proxy_bind
+    require_hosted_config
     src="$SOURCE"
     if [ -z "$src" ]; then
       src="$GATEWAY_DEFAULT_SRC"
@@ -606,27 +588,19 @@ EOF
       src="/tmp/gw-src/$(ls /tmp/gw-src | head -1)"
     fi
     deploy_gateway "$src"
-    if [ ! -f "$CONFIG_FILE" ]; then
-      write_gateway_config "$(info_get gwUser || echo admin)" "$(info_get gwPass || echo change-me)"
-    else
-      # 已安装的机器：整体保留配置，但补上新增配置项（如 agentKey、tunnel）
-      ensure_gateway_config_keys
-      ensure_gateway_tunnel_key
-    fi
     ensure_gateway_service
     remove_legacy_pair_page
-    log "升级完成"
-    binding_stored_notice
+    log "托管接入升级完成（配置、账号库和密钥保留）"
     ;;
 
   show-binding)
-    [ -f "$INFO_FILE" ] || { err "尚未找到服务器绑定资料"; exit 1; }
-    print_binding "$(info_get serverIp)"
+    err "新版不再生成连接串；管理员发放测试密钥，PC 登录后打开手机配对。"
+    exit 1
     ;;
 
   status)
     echo "── 服务状态 ──"
-    for svc in dsh-gateway frps; do
+    for svc in dsh-gateway; do
       systemctl is-active --quiet "$svc" && echo "  [OK] $svc" || echo "  [FAIL] $svc"
     done
     echo "── 网关健康 ──"
@@ -634,9 +608,9 @@ EOF
     echo "── 隧道模式 ──"
     tun_en="$(gateway_tunnel_enabled)"
     if [ "$tun_en" = "true" ]; then
-      echo "  [OK] 内置隧道已启用（frps 应为停用；3080/3081/3082 仅绑回环，7000 可关闭）"
+      echo "  [OK] 内置隧道已启用（托管版每个 PC 使用独立动态回环端口，7000 不参与）"
     else
-      echo "  [--] frps 模式（内置隧道未启用；切换：bash install.sh --tunnel on）"
+      echo "  [--] 当前不是托管模式，请先完成单独迁移审批与备份。"
     fi
     echo "── 安全核查（3080/3081/3082 不得对公网开放）──"
     for port in 3080 3081 3082; do
@@ -656,25 +630,13 @@ EOF
     ;;
 
   tunnel)
+    if [ "$TUNNEL_MODE" != "status" ]; then err "托管版仅支持自研隧道，不允许切回 frps。"; exit 1; fi
     set_tunnel_mode "$TUNNEL_MODE"
     ;;
 
   selfsigned)
-    ssl_ip="${IP:-}"
-    [ -z "$ssl_ip" ] && ssl_ip="$(info_get serverIp)"
-    [ -z "$ssl_ip" ] && { echo "用法: bash install.sh --selfsigned <公网IP>" >&2; exit 1; }
-    mkdir -p /etc/nginx/ssl
-    openssl req -x509 -newkey rsa:2048 -nodes -days 825 -sha256 \
-      -keyout /etc/nginx/ssl/dsh-gateway.key \
-      -out /etc/nginx/ssl/dsh-gateway.crt \
-      -subj "/CN=$ssl_ip" \
-      -addext "subjectAltName=IP:$ssl_ip"
-    chmod 600 /etc/nginx/ssl/dsh-gateway.key
-    chmod 644 /etc/nginx/ssl/dsh-gateway.crt
-    log "自签证书已生成（SAN=IP:$ssl_ip）"
-    log "  cert: /etc/nginx/ssl/dsh-gateway.crt"
-    log "  key : /etc/nginx/ssl/dsh-gateway.key"
-    log "在宝塔 SSL → 其他证书 中粘贴两者内容；手机需安装信任该证书"
+    err "托管客户端要求可信 CA 签发且匹配 IP 的证书；请按 hosted-access-operations.md 配置及续期。"
+    exit 1
     ;;
 
   uninstall)

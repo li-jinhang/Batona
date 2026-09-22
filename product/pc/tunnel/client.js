@@ -254,8 +254,7 @@ class TunnelClient extends EventEmitter {
       this.log(`[tunnel] 连接 ${url}`);
       const ws = new WebSocket(url, {
         headers: { authorization: `Bearer ${this.token}` },
-        // 自签证书场景：main.js 的 session.defaultSession 证书豁免对主进程 ws 无效，必须显式关闭校验
-        rejectUnauthorized: false,
+        rejectUnauthorized: true,
         handshakeTimeout: 8000,
       });
       this.ws = ws;

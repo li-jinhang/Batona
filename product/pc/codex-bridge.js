@@ -424,12 +424,11 @@ class CodexBridge {
   }
 
   async resumeThread(threadId, body) {
+    // Opening a conversation is a read, not a second writer. Desktop keeps
+    // ownership of its running threads; acquire a writer only when sending.
     const profileId = asString(body?.profileId);
     const profile = profileId ? await this.requireProfile(profileId) : null;
-    const result = await this.appServer.request('thread/resume', {
-      threadId,
-      ...(profile ? { sandbox: profile.sandbox, approvalPolicy: profile.approvalPolicy } : {}),
-    });
+    const result = await this.appServer.request('thread/read', { threadId, includeTurns: false });
     const thread = normalizeThread(result?.thread || { id: threadId });
     if (profile) this.threadOptions.set(threadId, { ...(this.threadOptions.get(threadId) || {}), profile });
     this.broadcast({ type: 'thread-status', thread });
@@ -443,6 +442,7 @@ class CodexBridge {
     const previous = this.threadOptions.get(threadId) || {};
     const profile = profileId ? await this.requireProfile(profileId) : previous.profile;
     const model = body?.model ? modelOptions(body.model) : modelOptions(previous);
+    await this.appServer.request('thread/resume', { threadId, excludeTurns: true });
     // App Server 的 turn/start 原生调度决定是否排队/steer；DSH Link 不另造队列。
     await this.appServer.request('turn/start', {
       threadId,
@@ -702,7 +702,12 @@ function contentText(content) {
 }
 function asString(value) { return typeof value === 'string' ? value : ''; }
 function toEpochMs(value) { const n = Number(value); return Number.isFinite(n) ? (n < 10_000_000_000 ? n * 1000 : n) : Date.now(); }
-function rpcError(error) { return Object.assign(new Error('Codex App Server 拒绝请求'), { code: `rpc-${String(error?.code ?? 'error')}` }); }
+function rpcError(error) {
+  if (/already has an active writer/i.test(asString(error?.message))) {
+    return Object.assign(new Error('此会话由 Codex 电脑端持有，历史仍可查看；当前独立桥无法代替电脑端发送，请在电脑端继续。'), { code: 'codex-desktop-owned' });
+  }
+  return Object.assign(new Error('Codex App Server 拒绝请求'), { code: `rpc-${String(error?.code ?? 'error')}` });
+}
 function safeErrorMessage(error) { return redactText(asString(error?.message) || 'Codex 本机桥请求失败').slice(0, 200); }
 
 /** 保守脱敏：规则命中时宁可少显示，也不能把连接串、认证头或常见凭据值发出电脑。 */

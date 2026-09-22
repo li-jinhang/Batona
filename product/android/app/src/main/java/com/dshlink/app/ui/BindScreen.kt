@@ -75,7 +75,7 @@ fun BindScreen(onBound: (Binding) -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text("DSH Link", style = MaterialTheme.typography.headlineMedium)
-        Text("手机远程操控 DeepSeek Harness", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("手机远程操控 DSH 与 Codex", color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         Card(modifier = Modifier.fillMaxWidth().padding(top = 24.dp)) {
             Column(Modifier.padding(16.dp)) {
@@ -125,7 +125,7 @@ fun BindScreen(onBound: (Binding) -> Unit) {
 
 /** CameraX + ZXing 二维码扫描器 */
 @Composable
-private fun CameraScanner(onDetected: (String) -> Unit, modifier: Modifier = Modifier) {
+internal fun CameraScanner(onDetected: (String) -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val reader = remember {
@@ -137,9 +137,11 @@ private fun CameraScanner(onDetected: (String) -> Unit, modifier: Modifier = Mod
         }
     }
     var analyzing by remember { mutableStateOf(true) }
+    val executor = remember { Executors.newSingleThreadExecutor() }
+    var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
 
     DisposableEffect(Unit) {
-        onDispose { analyzing = false }
+        onDispose { analyzing = false; cameraProvider?.unbindAll(); executor.shutdownNow() }
     }
 
     AndroidView(
@@ -148,13 +150,15 @@ private fun CameraScanner(onDetected: (String) -> Unit, modifier: Modifier = Mod
                 // 异步初始化 CameraProvider（避免主线程阻塞）
                 val providerFuture = ProcessCameraProvider.getInstance(ctx)
                 providerFuture.addListener({
+                    if (!analyzing) return@addListener
                     try {
                         val provider = providerFuture.get()
+                        cameraProvider = provider
                         val preview = Preview.Builder().build().also { it.setSurfaceProvider(surfaceProvider) }
                         val analysis = ImageAnalysis.Builder()
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .build()
-                        analysis.setAnalyzer(Executors.newSingleThreadExecutor()) { imageProxy: ImageProxy ->
+                        analysis.setAnalyzer(executor) { imageProxy: ImageProxy ->
                             if (!analyzing) { imageProxy.close(); return@setAnalyzer }
                             val text = decodeQr(imageProxy)
                             imageProxy.close()
@@ -186,7 +190,7 @@ private fun decodeQr(image: ImageProxy): String? {
     val data = ByteArray(buffer.remaining())
     buffer.get(data)
 
-    val yuv = if (pixelStride == 1) data else {
+    val yuv = if (pixelStride == 1 && rowStride == width) data else {
         val out = ByteArray(width * height)
         var i = 0
         var row = 0

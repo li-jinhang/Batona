@@ -10,6 +10,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
+import { createHash } from 'node:crypto';
 import type { AuthService } from '../auth/index.ts';
 import type { AdapterRegistry } from '../adapter/registry.ts';
 import type { SessionRouter } from '../session/router.ts';
@@ -23,19 +24,29 @@ interface PendingAnswer {
   gatewaySessionId: string;
   adapterRpcId: string;
 }
+export type WsAuth = Pick<AuthService, 'validateToken' | 'listDevices' | 'revokeDevice'>;
+export interface WsOptions {
+  dirUrl?: string;
+  hosted?: boolean;
+  accepted?: () => void;
+}
 
 export class GatewayWsServer {
   private wss!: WebSocketServer;
   private pending = new Map<string, PendingAnswer>(); // 网关侧 rpcId → 适配器应答信息
   private resolving = new Set<string>(); // 同一审批/提问多终端竞态：首个有效应答获胜
-  private auth: AuthService;
+  private auth: WsAuth;
+  private opts: WsOptions;
+  private states = new Map<WebSocket, { authed: boolean; deviceId: string; token: string }>();
+  private submissions = new Map<string, { until: number; fingerprint: string; result: Promise<RpcResult<unknown>> }>();
   private registry: AdapterRegistry;
   private router: SessionRouter;
 
-  constructor(auth: AuthService, registry: AdapterRegistry, router: SessionRouter) {
+  constructor(auth: WsAuth, registry: AdapterRegistry, router: SessionRouter, opts: WsOptions = {}) {
     this.auth = auth;
     this.registry = registry;
     this.router = router;
+    this.opts = opts;
   }
 
   /**
@@ -49,19 +60,20 @@ export class GatewayWsServer {
    * @param _server 仅为兼容既有调用点保留，不再使用
    */
   attach(_server: Server): void {
-    this.wss = new WebSocketServer({ noServer: true });
+    this.wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
 
     this.wss.on('connection', (ws, req) => {
-      const token = new URL(req.url ?? '/', 'http://x').searchParams.get('token') ?? '';
+      const token = this.opts.hosted ? '' : new URL(req.url ?? '/', 'http://x').searchParams.get('token') ?? '';
       const authInfo = token ? this.auth.validateToken(token) : null;
-      const state = { authed: authInfo !== null, deviceId: authInfo?.deviceId ?? '' };
+      const state = { authed: authInfo !== null, deviceId: authInfo?.deviceId ?? '', token };
+      this.states.set(ws, state);
 
       ws.on('message', (data) => {
-        void this.onMessage(ws, state, data);
+        void this.onMessage(ws, state, data).catch(() => ws.close(1011, 'request-failed'));
       });
 
       ws.on('close', () => {
-        // 骨架：会话与设备状态保留，仅断开推送
+        this.states.delete(ws);
       });
     });
 
@@ -75,8 +87,13 @@ export class GatewayWsServer {
   handleUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
     this.wss.handleUpgrade(req, socket, head, (ws) => this.wss.emit('connection', ws, req));
   };
+  accept(ws: WebSocket, req: IncomingMessage): void {
+    this.wss.clients.add(ws);
+    ws.once('close', () => this.wss.clients.delete(ws));
+    this.wss.emit('connection', ws, req);
+  }
 
-  private async onMessage(ws: WebSocket, state: { authed: boolean; deviceId: string }, data: unknown): Promise<void> {
+  private async onMessage(ws: WebSocket, state: { authed: boolean; deviceId: string; token: string }, data: unknown): Promise<void> {
     let msg: RpcMessage;
     try {
       msg = JSON.parse(String(data)) as RpcMessage;
@@ -84,11 +101,15 @@ export class GatewayWsServer {
       this.send(ws, { type: 'server-response', rpcId: RpcId(''), result: err('bad-request', 'malformed json') });
       return;
     }
-    if (msg.type !== 'client-request') return; // 只处理上行调用（push/应答为服务器内部使用）
+    if (!msg || typeof msg !== 'object' || msg.type !== 'client-request') return;
+    if (typeof msg.rpcId !== 'string' || msg.rpcId.length > 128 || typeof msg.method !== 'string' || msg.method.length > 128 || !msg.payload || typeof msg.payload !== 'object' || Array.isArray(msg.payload)) {
+      ws.close(1008, 'bad-request'); return;
+    }
 
     const { rpcId, method, payload } = msg;
 
     // 认证门
+    if (state.authed && !this.auth.validateToken(state.token)) { ws.close(1008, 'authorization-revoked'); return; }
     if (!state.authed) {
       if (method !== 'auth.hello') {
         this.send(ws, { type: 'server-response', rpcId, result: err('auth-required', 'please auth.hello first') });
@@ -102,14 +123,30 @@ export class GatewayWsServer {
       }
       state.authed = true;
       state.deviceId = info.deviceId;
+      state.token = t;
     }
 
-    const result = await this.dispatch(method, payload);
+    let result: RpcResult<unknown>;
+    if (this.opts.hosted && method === 'session.prompt') {
+      const now = Date.now();
+      for (const [key, entry] of this.submissions) if (entry.until < now) this.submissions.delete(key);
+      const key = state.deviceId + ':' + rpcId;
+      const fingerprint = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+      let entry = this.submissions.get(key);
+      if (entry && entry.fingerprint !== fingerprint) result = err('bad-request', 'rpcId reused with different content');
+      else if (!entry && this.submissions.size >= 1024) result = err('bad-request', 'submission limit reached; retry later');
+      else {
+        if (!entry) { entry = { until: now + 300000, fingerprint, result: this.dispatch(method, payload) }; this.submissions.set(key, entry); }
+        result = await entry.result;
+      }
+    } else result = await this.dispatch(method, payload);
+    if (!this.auth.validateToken(state.token)) { ws.close(1008, 'authorization-revoked'); return; }
     this.send(ws, { type: 'server-response', rpcId, result });
   }
 
   private async dispatch(method: string, payload: unknown): Promise<RpcResult<unknown>> {
     try {
+      if (this.opts.hosted && method.startsWith('device.')) return err('unauthorized', 'use PC device management');
       switch (method) {
         case 'auth.hello': return ok(this.hello());
         case 'session.list': return ok({ sessions: await this.router.list() });
@@ -132,6 +169,7 @@ export class GatewayWsServer {
         case 'session.prompt': {
           const p = payload as { sessionId: string; parts: unknown[]; queueAction?: 'prompt' | 'steer' | 'queue'; agentPreset?: string };
           await this.router.prompt(p.sessionId, p.parts as never, { queueAction: p.queueAction, agentPreset: p.agentPreset });
+          if (p.parts.some(part => typeof part === 'object' && part !== null && (part as {type?: string}).type === 'text')) this.opts.accepted?.();
           return ok({ accepted: true });
         }
         case 'session.cancel': {
@@ -151,7 +189,7 @@ export class GatewayWsServer {
         case 'fs.listDir': {
           // 目录浏览：经 frp 的 dir 代理访问 PC 本地目录服务（笔记本 127.0.0.1:3081 → 服务器 127.0.0.1:3081）
           const p = payload as { path?: string };
-          const r = await fetchDirList(p?.path ?? '');
+          const r = await fetchDirList(p?.path ?? '', this.opts.dirUrl);
           if (!r.ok) return err('bad-request', r.error ?? '');
           return ok(r.value);
         }
@@ -259,7 +297,8 @@ export class GatewayWsServer {
   private broadcast(frame: ServerRequest): void {
     if (!this.wss) return;
     for (const client of this.wss.clients) {
-      if (client.readyState === WebSocket.OPEN) {
+      const state = this.states.get(client);
+      if (client.readyState === WebSocket.OPEN && state?.authed && this.auth.validateToken(state.token)) {
         client.send(JSON.stringify(frame));
       }
     }
@@ -268,14 +307,21 @@ export class GatewayWsServer {
   private send(ws: WebSocket, msg: RpcMessage): void {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }
+  disconnectInvalid(): void {
+    for (const [ws, state] of this.states) if (state.authed && !this.auth.validateToken(state.token)) ws.close(1008, 'authorization-revoked');
+  }
+  onlineDevices(): Set<string> {
+    return new Set([...this.states.values()].filter(s => s.authed && this.auth.validateToken(s.token)).map(s => s.deviceId));
+  }
+  close(): void { for (const ws of this.wss.clients) ws.terminate(); this.wss.close(); }
 }
 
 /** 目录浏览：经隧道访问 PC 本地目录服务（网关侧 127.0.0.1:3081 → 笔记本目录服务；frp 时代经 frp dir 代理，内置隧道后经 /tunnel） */
 const DIR_LIST_URL = 'http://127.0.0.1:3081/list';
 
-async function fetchDirList(p: string): Promise<{ ok: boolean; value?: { path: string; dirs?: string[]; roots?: string[] }; error?: string }> {
+async function fetchDirList(p: string, base = DIR_LIST_URL): Promise<{ ok: boolean; value?: { path: string; dirs?: string[]; roots?: string[] }; error?: string }> {
   try {
-    const url = new URL(DIR_LIST_URL);
+    const url = new URL(base);
     url.searchParams.set('p', p);
     const res = await fetch(url.toString(), { signal: AbortSignal.timeout(5000) });
     const j = (await res.json()) as { ok: boolean; path?: string; dirs?: string[]; roots?: string[]; error?: string };

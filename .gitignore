@@ -64,3 +64,7 @@ Thumbs.db
 
 # 本机 Codex App Server schema 核验的临时输出（运行时生成，不入库）
 .tmp-codex-schema-verify/
+
+# Local operational backups and verification output must never be published.
+/server-backups/
+/output/

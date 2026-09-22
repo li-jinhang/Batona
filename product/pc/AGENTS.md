@@ -7,15 +7,19 @@
 ## 当前实现
 
 - Windows 桌面客户端：Electron 33，CommonJS；应用入口为 `main.js`，安全桥为 `preload.js`，渲染进程位于 `renderer/`。
-- 连接串导入、DSH 启动与生命周期、网关 API、配对二维码、窗口行为由 `main.js` 协调；渲染端经 preload 暴露的窄 API 与主进程交互。
+- 接入密钥登录（`access-client.js`）、DSH 启动与生命周期、网关 API、配对二维码、窗口行为由 `main.js` 协调；渲染端经 preload 暴露的窄 API 与主进程交互。
 - 自研 WSS 隧道客户端在 `tunnel/client.js`，帧协议在 `tunnel/protocol.js`；它连接到服务器内置隧道服务端，并将流量安全转发至本机 DSH。
 - Codex 桥在 `codex-bridge.js`：它以 stdio 启动本机 Codex App Server，且只监听 `127.0.0.1:3082`。该端口只能由既有隧道转发；桥必须在 PC 端脱敏事件，不能记录或转发认证资料、连接串、原始工具输出或私钥。
 - 依赖与打包配置在 `package.json`。`electron-builder` 的 `files` 白名单决定进安装包的文件：`main.js` 直接 `require` 的每个本地文件或目录（当前包括 `tunnel/**/*`）都必须列入。Windows 发布包只允许内置 WSS 隧道模块，不能打包或下载第三方隧道二进制。
 
+## 托管接入候选版
+
+生产尚未切换；候选版需要新版网关，旧网关返回“尚未升级”。当前入口固定 117.72.10.87:443；旧 `binding.json` 不再加载。Windows safeStorage 加密 `access.bin`，保留独立设备身份；原始接入密钥仅用于登录交换，不进 renderer 状态或磁盘。明确 401 清除授权回登录页，网络故障保留授权。配对页面关闭时通知撤销，窗口最小化保持续租（禁止后台节流）。退出账号/解绑/禁用只断远程链路，不停止 DSH/Codex 本地任务。发布或迁移先读 [运维边界](../server/hosted-access-operations.md)。
+
 ## 端内约束
 
 - DSH、Agent、LLM 与工具始终在 PC 执行；不要将 DSH API、launch token 或本地端口暴露到公网，也不要让渲染进程直接持有敏感凭据。
-- 连接串、配对二维码、launch-token 上报、网关 RPC 与隧道协议变更必须遵循 `../README.md` 的跨端契约，并与 Android/服务器一起做兼容评估。
+- 账号/设备授权、配对二维码、launch-token 上报、网关 RPC 与隧道协议变更必须遵循 `../README.md` 的跨端契约，并与 Android/服务器一起做兼容评估。
 - 保持 Electron 进程隔离：优先将特权操作放入主进程，通过 `preload.js` 暴露最小、显式的 IPC 接口；不要关闭 `contextIsolation` 或把 Node API 直接暴露给 renderer。
 - 隧道需保持 PC 出站连接和本地 DSH 回环转发的模型；不可改成服务器主动连接用户 PC，或将本地监听改为公网可达。
 - Codex 可用性须由本机 `app-server` 初始化、`thread/list`、`model/list` 与 `permissionProfile/list` 实测决定；不可在不可用时改用 `codex exec` 伪装成已有桌面会话控制。手机的三档权限只能使用 PC 校验为 allowed 的内建 profile。
@@ -30,7 +34,7 @@ npm run smoke
 npm run dist
 ```
 
-改动隧道连接/停止生命周期时，额外运行 `npm run test:tunnel-client`；它覆盖 TLS 握手未完成就停止时不得让 Electron 主进程崩溃。改动 Codex 桥时，先用本机只读探针验证会话/模型/profile 枚举，再验证桥 `/healthz`、`/v1/sessions`、`/v1/models`、`/v1/profiles`；根据改动范围补充实际验证：导入连接串/扫码、DSH 自动启动、隧道重连、launch-token 上报和手机配对。`dist/`、`node_modules/` 与临时下载的二进制均为构建/运行产物，不能作为源码修改的一部分。
+改动隧道连接/停止生命周期时，额外运行 `npm run test:tunnel-client`；它覆盖 TLS 握手未完成就停止时不得让 Electron 主进程崩溃。改动 Codex 桥时，先用本机只读探针验证会话/模型/profile 枚举，再验证桥 `/healthz`、`/v1/sessions`、`/v1/models`、`/v1/profiles`；根据改动范围补充实际验证：接入密钥登录、手机请求/PC 确认、DSH 自动启动、隧道重连、launch-token 上报和手机配对。`dist/`、`node_modules/` 与临时下载的二进制均为构建/运行产物，不能作为源码修改的一部分。
 
 ## 运行、打包与更新
 
@@ -47,6 +51,12 @@ $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
 
 ## 首次运行与隧道排障
 
-默认启动时，DSH 恢复与“目录/Codex 桥 + 隧道”并行执行：Codex 不应等待 DSH 取得 launch token 或排除遗留端口占用。隧道只经 `/tunnel` 发起出站 WSS 连接；服务器未启用内置隧道时，客户端保持离线并报告原因。`DSHLINK_INSECURE=1` 仅允许本机明文网关调试，绝不能用于生产。
+- 2026-09-22 定位并经用户授权恢复：3080 的 DSH 进程启动于当天 10:34，DSH Link 缓存仍是前一天 20:47 的令牌，`session/list` 返回 401。仅终止已验证的 DSH 进程，再由 DSH Link 托管启动，16:56 捕获新令牌后同一探针返回 200；Codex 本体未重启。复发时先核验缓存时间、端口所有者和认证结果，再取得重启许可。
 
-状态灯中 DSH 与隧道在线最关键；网关灯是乐观探测，不能单独用它判断手机端是否可用。隧道失败时检查连接串 `gwPort`/token、服务器内置隧道状态、PC 日志和 launch-token 上报；不要以关闭 TLS 校验或公开本地端口作为修复手段。
+- DSH 只有 `session/list` 认证成功才算就绪。旧进程占用端口且缓存 token 失效时，报告认证失败，不重复启动或自动终止未知进程。启动输出按完整行捕获 token；日志必须脱敏，禁止保存分片 token。
+- Codex 打开已有会话使用 `thread/read`，不能为了浏览历史就 `thread/resume` 抢占 Desktop writer。当前独立 stdio App Server 无法向 Desktop 已持有的会话发送；发送时延迟 resume，遇到 writer 冲突返回明确 `codex-desktop-owned`，保留手机草稿。完整的 Desktop 原会话控制仍待接入同一进程的受支持控制通道，不能以 fork、复制历史或抢锁替代。
+- `node test/live-backends.cjs` 只读探针检查缓存 token 的 DSH 列表、Codex 既有会话打开及历史；不发送 prompt、不输出凭据。PC 确实运行后再执行，401/空历史会让探针失败。
+
+默认启动时，DSH 恢复与“目录/Codex 桥 + 隧道”并行执行：Codex 不应等待 DSH 取得 launch token 或排除遗留端口占用。隧道只经 `/tunnel` 发起出站 WSS 连接；服务器未启用内置隧道时，客户端保持离线并报告原因。发布客户端始终使用系统 CA 校验的 WSS，不读取旧连接串，不接受环境变量关闭 TLS。
+
+状态灯中 DSH 与隧道在线最关键；网关灯是乐观探测，不能单独用它判断手机端是否可用。隧道失败时检查 PC 授权有效性、服务器内置隧道状态、PC 日志和 launch-token 上报；不要以关闭 TLS 校验或公开本地端口作为修复手段。

@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-gateway",
-  "version": "0.1.34",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "DeepSeek Harness 手机远程接入网关（Phase 1 MVP）",
@@ -14,8 +14,11 @@
     "typecheck": "tsc --noEmit",
     "smoke": "node test/smoke.ts",
     "codex-offline": "node test/codex-offline.ts",
+    "session-model": "node test/session-model.ts",
     "tunnel-protocol": "node test/tunnel-protocol.ts",
-    "tunnel": "node test/tunnel-e2e.ts"
+    "tunnel": "node test/tunnel-e2e.ts",
+    "test:hosted": "node test/hosted-access.ts && node test/hosted-isolation.ts && node test/hosted-provision.ts && node test/dsh-authority.ts",
+    "test:tls": "node test/hosted-tls.ts"
   },
   "dependencies": {
     "ws": "^8.18.0"

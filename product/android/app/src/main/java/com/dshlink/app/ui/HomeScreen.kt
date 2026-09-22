@@ -26,7 +26,10 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Chat
-import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
@@ -50,6 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -61,6 +65,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -76,8 +84,8 @@ import com.dshlink.app.data.AgentEvent
 import com.dshlink.app.data.AgentProfile
 import com.dshlink.app.data.Binding
 import com.dshlink.app.data.CodexMirrorCache
-import com.dshlink.app.data.DeviceInfo
 import com.dshlink.app.data.GatewayClient
+import com.dshlink.app.data.GatewayFailure
 import com.dshlink.app.data.GatewaySession
 import com.dshlink.app.data.ModelRef
 import com.dshlink.app.data.QuestionItem
@@ -85,6 +93,7 @@ import com.dshlink.app.data.ServerRequest
 import com.dshlink.app.data.SessionNode
 import com.dshlink.app.data.WorkspaceNode
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -94,21 +103,23 @@ import kotlinx.serialization.json.put
 
 private val json = Json { ignoreUnknownKeys = true }
 
-private data class ChatLine(val id: Long, val kind: String, val text: String = "", val toolName: String = "", val reasoning: String = "")
+internal data class ChatLine(val id: Long, val kind: String, val text: String = "", val toolName: String = "", val reasoning: String = "")
 
-private data class PendingFrame(
+internal data class PendingFrame(
     val kind: String, val rpcId: String, val toolName: String = "",
     val reason: String = "", val questions: List<QuestionItem> = emptyList(),
 )
 
-private class HomeState {
+internal class HomeState(val backend: String) {
+    val label: String get() = if (backend == "codex") "Codex" else "DSH"
+    // 网关推送没有 backend 字段；只接收此入口恢复/创建过的网关会话。
+    val gatewaySessionIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     val worktree = mutableStateListOf<WorkspaceNode>()
     val expanded = mutableStateMapOf<String, Boolean>()
     val lines = mutableStateListOf<ChatLine>()
     val models = mutableStateListOf<ModelRef>()
     val profiles = mutableStateListOf<AgentProfile>()
     val profileBySession = mutableStateMapOf<String, String>()
-    val devices = mutableStateListOf<DeviceInfo>()
 
     var currentId by mutableStateOf<String?>(null)          // gatewaySession.id（聊天视图）
     var currentBackendSessionId by mutableStateOf<String?>(null) // 用于 Codex 离线镜像键
@@ -118,8 +129,14 @@ private class HomeState {
     var entering by mutableStateOf(false)                    // 正在进入会话（切视图 + 加载历史）
     var pending by mutableStateOf<PendingFrame?>(null)
     var connected by mutableStateOf(false)
-    var backend by mutableStateOf("dsh")
     var selectedModel by mutableStateOf<ModelRef?>(null)
+    var showModels by mutableStateOf(false)
+    var showProfiles by mutableStateOf(false)
+    var loading by mutableStateOf(false)
+    var treeError by mutableStateOf<String?>(null)
+    var sessionError by mutableStateOf<String?>(null)
+    var requestedSessionId by mutableStateOf<String?>(null)
+    var historyRevision by mutableIntStateOf(0)
     var createAfterWorkspace by mutableStateOf(false)
     // 已读会话（DSH sessionId 集）：点进会话后取消"未读绿点"
     val readSessions = mutableStateListOf<String>()
@@ -141,6 +158,30 @@ private class HomeState {
     var codexCachedTree: List<WorkspaceNode> = emptyList()
     val codexCachedHistories = mutableStateMapOf<String, List<AgentEvent>>()
     private var streamingAsst = false              // 最后一条是否正被 assistant/chunk 流式累积
+
+    suspend fun openSession(id: String, resume: suspend (String, String) -> GatewaySession?) {
+        requestedSessionId = id
+        currentId = null
+        currentBackendSessionId = null
+        selectedModel = null
+        entering = true
+        sessionError = null
+        try {
+            val session = resume(backend, id) ?: throw GatewayFailure("invalid-response")
+            gatewaySessionIds.add(session.id)
+            currentId = session.id
+            currentBackendSessionId = session.backendSessionId
+            currentTitle = session.title ?: currentTitle
+            selectedModel = session.model
+            offlineMirror = false
+            entering = false
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            sessionError = if (failure is GatewayFailure) failure.message else "会话加载失败，请重试。"
+            // Keep the chat page open with retry/back instead of silently returning to the list.
+        }
+    }
 
     /** 更新工作区树中某会话的标题（session/title 事件触达时） */
     fun updateSessionTitle(sid: String?, title: String?) {
@@ -217,6 +258,8 @@ private class HomeState {
 
     fun handlePush(frame: ServerRequest) {
         try {
+            val sessionId = frame.payload.jsonObject["sessionId"]?.jsonPrimitive?.content ?: return
+            if (sessionId != currentId && sessionId !in gatewaySessionIds) return
             when (frame.method) {
                 "session/event" -> {
                     val o = frame.payload.jsonObject
@@ -268,22 +311,9 @@ private class HomeState {
 }
 
 @Composable
-fun HomeScreen(binding: Binding, token: String, store: SettingsStore, onLogout: () -> Unit) {
+private fun BackendEffects(state: HomeState, client: GatewayClient, store: SettingsStore) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val state = remember { HomeState() }
-    var tab by remember { mutableIntStateOf(0) }
-
-    val client = remember(binding, token) {
-        GatewayClient(
-            binding,
-            onPush = { state.handlePush(it) },
-            onConnChange = { state.connected = it },
-            onAuthFailed = { onLogout() },
-        ).apply { this.token = token }
-    }
-
-    DisposableEffect(client) { client.connect(); onDispose { client.disconnect() } }
     state.onAgentNotice = { kind -> AgentNotification.post(context, kind) }
 
     fun saveCodexMirror() {
@@ -294,61 +324,52 @@ fun HomeScreen(binding: Binding, token: String, store: SettingsStore, onLogout: 
 
     // 仅加载已绑定手机自己的本地副本。重新绑定或注销时 SettingsStore.clear() 会清除它。
     LaunchedEffect(Unit) {
+        if (state.backend != "codex") return@LaunchedEffect
         store.loadCodexMirror()?.let { cache ->
             state.codexCachedTree = cache.worktree
             state.codexCachedHistories.clear()
             state.codexCachedHistories.putAll(cache.histories.mapValues { (_, events) -> events.takeLast(200) })
+            if (!state.connected) state.worktree.addAll(cache.worktree)
         }
     }
 
     // 等 WebSocket 连上后再加载当前后端；Codex 与 DSH 的会话/工作区绝不混在同一树里。
     LaunchedEffect(state.connected, state.backend) {
         android.util.Log.w("DSHLINK", "connectedEffect backend=${state.backend} connected=${state.connected}")
-        if (!state.connected) return@LaunchedEffect
+        if (!state.connected) {
+            state.loading = false
+            return@LaunchedEffect
+        }
+        state.loading = true
+        state.refreshTree(client, store)
         runCatching {
-            state.worktree.clear()
-            state.worktree.addAll(client.workspaceTree(state.backend))
-            if (state.backend == "codex") {
-                state.codexCachedTree = state.worktree.map { node -> node.copy(sessions = node.sessions.take(5)) }
-                saveCodexMirror()
-            }
             android.util.Log.w("DSHLINK", "worktree loaded size=${state.worktree.size}")
             state.models.clear(); state.models.addAll(client.modelList(state.backend))
             state.profiles.clear()
             if (state.backend == "codex") state.profiles.addAll(client.agentProfileList("codex").filter { it.available })
-            if (state.devices.isEmpty()) state.devices.addAll(client.deviceList())
         }
+        state.loading = false
     }
 
-    fun refreshTree() = scope.launch {
-        runCatching {
-            val saved = state.worktree.map { it.workspace.workspaceId }.toSet()
-            state.worktree.clear()
-            state.worktree.addAll(client.workspaceTree(state.backend))
-            state.worktree.forEach { if (saved.contains(it.workspace.workspaceId)) state.expanded[it.workspace.workspaceId] = true }
-            if (state.backend == "codex") {
-                state.codexCachedTree = state.worktree.map { node -> node.copy(sessions = node.sessions.take(5)) }
-                saveCodexMirror()
-            }
-        }
-    }
+    fun refreshTree() = scope.launch { state.refreshTree(client, store) }
 
     // PC 桌面端已有 Codex 会话也会改动持久记录；定期取 PC 权威快照让手机状态追上。
     LaunchedEffect(state.connected, state.backend) {
         if (!state.connected) return@LaunchedEffect
         while (true) {
             kotlinx.coroutines.delay(5_000)
-            refreshTree()
+            state.refreshTree(client, store)
         }
     }
     // session/title 事件到达时刷新工作区树（网关已有标题缓存，拉取即得最新标题）
     state.onTitleChanged = { refreshTree() }
 
     // 当前会话历史（聊天会话变化时加载）
-    LaunchedEffect(state.currentId) {
-        runCatching {
+    LaunchedEffect(state.currentId, state.historyRevision) {
+        try {
             val id = state.currentId ?: return@LaunchedEffect
             if (state.offlineMirror) return@LaunchedEffect
+            state.sessionError = null
             state.lines.clear()
             val history = client.sessionHistory(id)
             android.util.Log.w("DSHLINK", "history sid=$id size=${history.size} first=${history.firstOrNull()?.type}")
@@ -359,39 +380,80 @@ fun HomeScreen(binding: Binding, token: String, store: SettingsStore, onLogout: 
                 state.codexCachedHistories[backendSessionId] = history.takeLast(200)
                 saveCodexMirror()
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            state.sessionError = if (failure is GatewayFailure) failure.message else "历史加载失败，请重试。"
         }
     }
+}
+
+private suspend fun HomeState.refreshTree(client: GatewayClient, store: SettingsStore) {
+    if (!connected) return
+    try {
+    val tree = client.workspaceTree(backend)
+    worktree.clear()
+    worktree.addAll(tree)
+    treeError = null
+    // PC 隧道恢复不一定触发手机 WebSocket 重连；补取初次离线时没拿到的能力。
+    if (models.isEmpty()) models.addAll(client.modelList(backend))
+    if (backend == "codex" && profiles.isEmpty()) profiles.addAll(client.agentProfileList(backend).filter { it.available })
+    // 刷新不改变用户的展开选择，也不修改另一入口的列表或缓存。
+    if (backend == "codex") {
+        codexCachedTree = tree.map { it.copy(sessions = it.sessions.take(5)) }
+        store.saveCodexMirror(CodexMirrorCache(codexCachedTree,
+            codexCachedHistories.mapValues { it.value.takeLast(200) }, System.currentTimeMillis()))
+    }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (failure: Exception) {
+        treeError = if (failure is GatewayFailure) failure.message else "工作区同步失败，请重试。"
+    }
+}
+
+@Composable
+fun HomeScreen(binding: Binding, token: String, store: SettingsStore, onLogout: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val dshState = remember(binding, token) { HomeState("dsh") }
+    val codexState = remember(binding, token) { HomeState("codex") }
+    var tab by remember { mutableIntStateOf(0) }
+    val state = if (tab == 1) codexState else dshState
+    val client = remember(binding, token) {
+        GatewayClient(binding,
+            onPush = { frame -> dshState.handlePush(frame); codexState.handlePush(frame) },
+            onConnChange = { connected -> dshState.connected = connected; codexState.connected = connected },
+            onAuthFailed = { onLogout() },
+        ).apply { this.token = token }
+    }
+    DisposableEffect(client) { client.connect(); onDispose { client.disconnect() } }
+    // 两个入口一直保留状态和事件订阅；切换导航不会重置会话、草稿或待审批内容。
+    key(dshState) { BackendEffects(dshState, client, store) }
+    key(codexState) { BackendEffects(codexState, client, store) }
+    fun refreshTree() = scope.launch { state.refreshTree(client, store) }
 
     Scaffold(
         bottomBar = {
             NavigationBar {
-                NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.Filled.Chat, null) }, label = { Text("会话") })
-                NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = { Icon(Icons.Filled.Memory, null) }, label = { Text("模型") })
-                NavigationBarItem(selected = tab == 2, onClick = { tab = 2 }, icon = { Icon(Icons.Filled.Devices, null) }, label = { Text("设备") })
+                NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.Filled.Chat, null) }, label = { Text("DSH") })
+                NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = { Icon(Icons.Filled.Code, null) }, label = { Text("Codex") })
+                NavigationBarItem(selected = tab == 2, onClick = { tab = 2 }, icon = { Icon(Icons.Filled.Terminal, null) }, label = { Text("Claude Code", maxLines = 1) })
                 NavigationBarItem(selected = tab == 3, onClick = { tab = 3 }, icon = { Icon(Icons.Filled.Settings, null) }, label = { Text("设置") })
             }
         },
     ) { pad ->
         Box(Modifier.padding(pad).fillMaxSize()) {
+          key(tab) {
             when (tab) {
-                0 -> ChatTab(state, client,
+                0, 1 -> ChatTab(state, client,
                     backend = state.backend,
-                    onBackend = { next ->
-                        if (next != state.backend) {
-                            state.backend = next
-                            state.currentId = null; state.currentBackendSessionId = null; state.entering = false; state.offlineMirror = false; state.lines.clear(); state.pending = null
-                            if (next == "codex" && !state.connected) {
-                                state.worktree.clear()
-                                state.worktree.addAll(state.codexCachedTree)
-                            }
-                        }
-                    },
                     onSelectSession = { sessionId, wsTitle ->
                         // 立即切入聊天视图（loading），历史异步加载，避免等网关往返
                         state.entering = true
                         state.currentWsTitle = wsTitle
+                        state.currentTitle = state.worktree.flatMap { it.sessions }.firstOrNull { it.sessionId == sessionId }?.title
                         state.lines.clear()
                         state.pending = null   // 切换会话：清掉上一会话的提问/审批
+                        state.selectedModel = null
                         state.readSessions.add(sessionId)   // 标记已读：取消未读绿点
                         if (state.backend == "codex" && !state.connected) {
                             val cached = state.codexCachedHistories[sessionId]
@@ -407,17 +469,19 @@ fun HomeScreen(binding: Binding, token: String, store: SettingsStore, onLogout: 
                             return@ChatTab
                         }
                         scope.launch {
-                            val gs = client.resumeSession(state.backend, sessionId)
-                            if (gs != null) {
-                                state.currentId = gs.id; state.currentBackendSessionId = gs.backendSessionId; state.currentTitle = gs.title; state.offlineMirror = false
-                                if (state.backend == "codex" && !state.profileBySession.containsKey(gs.id)) {
-                                    state.profiles.firstOrNull()?.let { state.profileBySession[gs.id] = it.id }
+                            state.openSession(sessionId, client::resumeSession)
+                            state.currentId?.let { id ->
+                                if (state.backend == "codex" && !state.profileBySession.containsKey(id)) {
+                                    state.profiles.firstOrNull()?.let { state.profileBySession[id] = it.id }
                                 }
                             }
-                            state.entering = false
                         }
                     },
-                    onBack = { state.currentId = null; state.currentBackendSessionId = null; state.entering = false; state.offlineMirror = false; state.lines.clear(); state.pending = null },
+                    onBack = { state.currentId = null; state.currentBackendSessionId = null; state.entering = false; state.offlineMirror = false; state.lines.clear(); state.pending = null; state.sessionError = null },
+                    onRetry = {
+                        if (state.currentId != null) state.historyRevision++
+                        else state.requestedSessionId?.let { id -> scope.launch { state.openSession(id, client::resumeSession) } }
+                    },
                     onToggle = { wsId -> state.expanded[wsId] = !(state.expanded[wsId] ?: false) },
                     onNewSession = { wsId, wsTitle, wsPath ->
                         if (state.backend == "codex" && wsPath == null) {
@@ -433,7 +497,9 @@ fun HomeScreen(binding: Binding, token: String, store: SettingsStore, onLogout: 
                             val profile = state.profiles.firstOrNull()?.id
                             val gs = client.sessionCreate(state.backend, "新会话", wsId, wsPath, state.selectedModel, profile)
                             if (gs != null) {
+                                state.gatewaySessionIds.add(gs.id)
                                 state.currentId = gs.id; state.currentBackendSessionId = gs.backendSessionId; state.currentTitle = gs.title; state.offlineMirror = false
+                                state.selectedModel = gs.model
                                 profile?.let { state.profileBySession[gs.id] = it }
                             }
                             state.entering = false
@@ -453,7 +519,9 @@ fun HomeScreen(binding: Binding, token: String, store: SettingsStore, onLogout: 
                                 val profile = state.profiles.firstOrNull()?.id
                                 val gs = client.sessionCreate(state.backend, "新会话", created.workspace.workspaceId, created.workspace.path, state.selectedModel, profile)
                                 if (gs != null) {
+                                    state.gatewaySessionIds.add(gs.id)
                                     state.currentId = gs.id; state.currentBackendSessionId = gs.backendSessionId; state.currentTitle = gs.title; state.offlineMirror = false
+                                    state.selectedModel = gs.model
                                     profile?.let { state.profileBySession[gs.id] = it }
                                 }
                                 state.entering = false
@@ -467,24 +535,20 @@ fun HomeScreen(binding: Binding, token: String, store: SettingsStore, onLogout: 
                     },
                     onWsChanged = { refreshTree() },
                 )
-                1 -> ModelsTab(state, onSelect = { m ->
-                    state.selectedModel = m
-                    scope.launch { state.currentId?.let { client.modelSelect(it, m) } }
-                })
-                2 -> DevicesTab(state, onRevoke = { d -> scope.launch { client.deviceRevoke(d.deviceId); state.devices.clear(); state.devices.addAll(client.deviceList()) } })
+                2 -> Box(Modifier.fillMaxSize().testTag("claude-code-placeholder")) // Reserved; no backend or controls yet.
                 3 -> SettingsTab(binding, state, onLogout)
             }
+          }
         }
     }
 }
 
 // ── 会话 Tab：工作区树 + 聊天 ─────────────────────────────────────────
 @Composable
-private fun ChatTab(
+internal fun ChatTab(
     state: HomeState,
     client: GatewayClient,
     backend: String,
-    onBackend: (String) -> Unit,
     onSelectSession: (sessionId: String, wsTitle: String) -> Unit,
     onBack: () -> Unit,
     onToggle: (String) -> Unit,
@@ -494,23 +558,48 @@ private fun ChatTab(
     onNewWorkspace: (String) -> Unit,
     onAnswer: (kotlinx.serialization.json.JsonObject) -> Unit,
     onWsChanged: () -> Unit,
+    onRetry: () -> Unit = {},
 ) {
+    val scope = rememberCoroutineScope()
+    if (state.showModels) {
+        AlertDialog(
+            onDismissRequest = { state.showModels = false },
+            title = { Text("${state.label} · 选择模型") },
+            text = { ModelsTab(state, onSelect = { model ->
+                scope.launch {
+                    val sessionId = state.currentId
+                    if (sessionId == null || client.modelSelect(sessionId, model).ok) {
+                        state.selectedModel = model
+                        state.showModels = false
+                    }
+                }
+            }) },
+            confirmButton = { TextButton(onClick = { state.showModels = false }) { Text("关闭") } },
+        )
+    }
     // 列表视图：未选会话且非进入中；否则聊天主视图
     if (state.currentId == null && !state.entering) {
         // ── 会话列表视图：工作区树占满（可上下滑动）──
         Column(Modifier.fillMaxSize().padding(12.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { onBackend("dsh") }, enabled = backend != "dsh") { Text("DSH") }
-                OutlinedButton(onClick = { onBackend("codex") }, enabled = backend != "codex") { Text("Codex") }
+            Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(state.label, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                    Text(if (backend == "codex") "电脑端 Codex · 工作区与会话" else "DSH · 工作区与会话", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text(if (state.connected) "网关在线" else "离线", style = MaterialTheme.typography.labelMedium,
+                    color = if (state.connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { onNewSession(null, null, null) }) { Text("新建会话") }
                 OutlinedButton(onClick = onWsChanged) { Text("刷新") }
                 OutlinedButton(onClick = { state.showNewWs = true }) { Text("新工作区") }
             }
-            if (backend == "codex" && state.profiles.isEmpty()) {
+            if (state.loading) {
+                Text("正在同步 ${state.label} 工作区…", modifier = Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall)
+            } else if (backend == "codex" && state.profiles.isEmpty()) {
                 Text("Codex 当前不可用：请确认电脑端 DSH Link 已升级、Codex Desktop 已登录，且服务器已开启 Codex 适配器。", modifier = Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
+            state.treeError?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp)) }
             // 创建工作区弹窗：路径输入 + 目录浏览 + 创建 都在弹窗内
             if (state.showNewWs) {
                 NewWorkspaceDialog(
@@ -523,6 +612,9 @@ private fun ChatTab(
             val treeState = rememberLazyListState()
             // 工作区/会话多时可上下滑动
             LazyColumn(state = treeState, modifier = Modifier.weight(1f).padding(top = 8.dp)) {
+                if (state.worktree.isEmpty() && !state.loading && state.treeError == null) {
+                    item { Text("暂无 ${state.label} 工作区与会话。可新建会话或添加电脑上的工作区。", modifier = Modifier.padding(vertical = 24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
                 items(state.worktree, key = { it.workspace.workspaceId }) { node ->
                     val wsId = node.workspace.workspaceId
                     val open = state.expanded[wsId] ?: false
@@ -595,7 +687,7 @@ private fun ChatTab(
                 AlertDialog(
                     onDismissRequest = { state.archiving = null },
                     title = { Text("归档会话") },
-                    text = { Text("归档后该会话将从工作区隐藏（笔记本端仍保留，可在 DSH 侧找回）。确定归档？") },
+                    text = { Text("归档后该会话将从工作区隐藏（电脑端仍保留，可在 ${state.label} 侧找回）。确定归档？") },
                     confirmButton = {
                         TextButton(onClick = {
                             val sid = state.archiving
@@ -617,7 +709,7 @@ private fun ChatTab(
                 AlertDialog(
                     onDismissRequest = { state.deletingWs = null },
                     title = { Text("删除工作区") },
-                    text = { Text("删除工作区会将其从列表中移除（目录与数据仍保留在笔记本端，可在 DSH 侧找回）。确定删除？") },
+                    text = { Text("删除工作区会将其从列表中移除（目录与数据仍保留在电脑端）。确定删除 ${state.label} 工作区？") },
                     confirmButton = {
                         TextButton(onClick = {
                             val wsId = state.deletingWs
@@ -642,16 +734,24 @@ private fun ChatTab(
                 TextButton(onClick = onBack) { Text("←", style = MaterialTheme.typography.titleMedium) }
                 Column(Modifier.weight(1f)) {
                     (state.currentWsTitle ?: "").takeIf { it.isNotBlank() }?.let {
-                        Text("📁 $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${state.label} · 📁 $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Text(state.currentTitle ?: "会话", style = MaterialTheme.typography.bodyMedium)
+                    Text(state.currentTitle ?: "${state.label} 会话", style = MaterialTheme.typography.bodyMedium)
                 }
                 TextButton(onClick = { onNewSession(null, state.currentWsTitle, null) }) { Text("+会话") }
             }
 
             // 历史加载中提示
-            if (state.currentId == null) {
+            if (state.currentId == null && state.sessionError == null) {
                 Text("正在加载会话…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(8.dp))
+            }
+            state.sessionError?.let { message ->
+                Card(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(message, color = MaterialTheme.colorScheme.error)
+                        TextButton(onClick = onRetry) { Text("重试加载") }
+                    }
+                }
             }
 
             val listState = rememberLazyListState()
@@ -676,38 +776,96 @@ private fun ChatTab(
                 }
             }
 
-            if (backend == "codex" && state.profiles.isNotEmpty()) {
-                val selected = state.currentId?.let { state.profileBySession[it] } ?: state.profiles.first().id
-                Card(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-                    Column(Modifier.padding(10.dp)) {
-                        Text("本次请求的 Codex 权限", style = MaterialTheme.typography.bodySmall)
-                        state.profiles.forEach { profile ->
-                            OutlinedButton(
-                                onClick = { state.currentId?.let { state.profileBySession[it] = profile.id } },
-                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                                enabled = state.currentId != null && selected != profile.id,
-                            ) { Text("${if (selected == profile.id) "✓ " else ""}${profile.label}") }
-                        }
-                    }
-                }
-            }
+            ConversationControls(state)
 
             // 底部输入框（仅聊天视图）
             ChatComposer(
                 input = state.input,
                 onInput = { state.input = it },
-                enabled = state.currentId != null && !state.offlineMirror && !state.busy,
+                enabled = state.connected && state.currentId != null && !state.offlineMirror && !state.busy,
                 onSend = {
                     val id = state.currentId ?: return@ChatComposer
                     state.busy = true
                     scope.launch {
-                        state.lines.add(ChatLine(System.nanoTime(), "user", state.input))
-                        client.sessionPrompt(id, state.input, state.profileBySession[id] ?: state.profiles.firstOrNull()?.id)
-                        state.input = ""
-                        state.busy = false
+                        val prompt = state.input
+                        try {
+                            val result = client.sessionPrompt(id, prompt, state.profileBySession[id] ?: state.profiles.firstOrNull()?.id)
+                            if (!result.ok) throw GatewayFailure(result.error?.code ?: "request-failed")
+                            state.lines.add(ChatLine(System.nanoTime(), "user", prompt))
+                            state.input = ""
+                            state.sessionError = null
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            state.sessionError = if (failure is GatewayFailure) failure.message else "发送失败，输入已保留，请重试。"
+                        } finally { state.busy = false }
                     }
                 },
             )
+        }
+    }
+}
+
+/** Compact controls keep the conversation visible; choices only appear on demand. */
+@Composable
+internal fun ConversationControls(state: HomeState) {
+    val selectedId = state.currentId?.let { state.profileBySession[it] } ?: state.profiles.firstOrNull()?.id
+    val selectedProfile = state.profiles.firstOrNull { it.id == selectedId }
+    val enabled = state.currentId != null && state.connected && !state.offlineMirror && !state.busy
+    if (state.showProfiles) {
+        AlertDialog(
+            onDismissRequest = { state.showProfiles = false },
+            title = { Text("Codex · 权限") },
+            text = {
+                Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+                    state.profiles.forEach { profile ->
+                        TextButton(
+                            onClick = {
+                                state.currentId?.let { state.profileBySession[it] = profile.id }
+                                state.showProfiles = false
+                            },
+                            enabled = enabled && profile.available,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(profile.label, fontWeight = FontWeight.Medium)
+                                if (profile.description.isNotBlank()) Text(profile.description,
+                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            if (selectedId == profile.id) Text("✓", modifier = Modifier.padding(start = 8.dp))
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { state.showProfiles = false }) { Text("取消") } },
+        )
+    }
+    Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (state.backend == "codex") {
+            TextButton(
+                onClick = { state.showProfiles = true },
+                enabled = enabled && state.profiles.isNotEmpty(),
+                modifier = Modifier.weight(1f).semantics { contentDescription = "选择权限" },
+            ) {
+                val tint = if (selectedId == "full-access") Color(0xFFE87932) else MaterialTheme.colorScheme.primary
+                Icon(Icons.Filled.Security, null, Modifier.size(16.dp), tint = if (enabled) tint else MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(6.dp))
+                Text(selectedProfile?.label ?: "权限未就绪", maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    color = if (enabled) tint else MaterialTheme.colorScheme.onSurfaceVariant)
+                Icon(Icons.Filled.ArrowDropDown, null, Modifier.size(16.dp))
+            }
+        } else Spacer(Modifier.weight(1f))
+        TextButton(
+            onClick = { state.showModels = true }, enabled = enabled,
+            modifier = Modifier.weight(1f).semantics { contentDescription = "选择模型" },
+        ) {
+            Icon(Icons.Filled.Memory, null, Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            val model = state.selectedModel
+            val displayModel = model?.displayName ?: state.models.firstOrNull { it.provider == model?.provider && it.model == model.model }?.displayName ?: model?.model
+            Text((displayModel ?: "模型未同步") + (model?.reasoningEffort?.let { " · $it" } ?: ""),
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            Icon(Icons.Filled.ArrowDropDown, null, Modifier.size(16.dp))
         }
     }
 }
@@ -955,8 +1113,9 @@ private fun ChatComposer(input: String, onInput: (String) -> Unit, enabled: Bool
 
 @Composable
 private fun ModelsTab(state: HomeState, onSelect: (ModelRef) -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
+    Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
         Text("模型目录（应用于当前会话）", style = MaterialTheme.typography.titleSmall)
+        if (state.models.isEmpty()) Text("暂未获取到模型，请确认电脑端 ${state.label} 可用后重试。", modifier = Modifier.padding(top = 12.dp))
         state.models.forEach { m ->
             Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                 Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -964,25 +1123,7 @@ private fun ModelsTab(state: HomeState, onSelect: (ModelRef) -> Unit) {
                         Text(m.displayName ?: m.model)
                         Text("${m.provider} / ${m.model}${m.reasoningEffort?.let { " · 推理 $it" } ?: ""}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    TextButton(onClick = { onSelect(m) }, enabled = state.currentId != null) { Text("应用") }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DevicesTab(state: HomeState, onRevoke: (DeviceInfo) -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
-        Text("已注册设备（吊销后立即失效）", style = MaterialTheme.typography.titleSmall)
-        state.devices.forEach { d ->
-            Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(d.name)
-                        Text("${d.deviceId} · ${if (d.revoked) "已吊销" else "正常"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    if (!d.revoked) TextButton(onClick = { onRevoke(d) }) { Text("吊销", color = MaterialTheme.colorScheme.error) }
+                    TextButton(onClick = { onSelect(m) }, enabled = state.connected && !state.offlineMirror) { Text(if (state.selectedModel == m) "已选" else "应用") }
                 }
             }
         }
@@ -996,7 +1137,7 @@ private fun SettingsTab(binding: Binding, state: HomeState, onLogout: () -> Unit
             Column(Modifier.padding(12.dp)) {
                 Text("服务器：${binding.serverIp}")
                 Text("连接：${if (state.connected) "在线" else "离线"}", color = if (state.connected) Color(0xFF2ECC71) else Color(0xFFE74C3C))
-                Text("frp 端口：${binding.frpPort}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("传输：HTTPS / WSS", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("当前版本：${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Button(onClick = onLogout, modifier = Modifier.padding(top = 10.dp)) { Text("退出登录") }
             }

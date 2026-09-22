@@ -24,6 +24,8 @@
 import type {
   DshClientRequest, DshRemoteArgs, DshRemoteEventResultArgs, DshRpcError, DshRpcResult, DshServerResponse,
 } from './types.ts';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 
 export interface DshApiClientOptions {
   /** DSH Host 基址，如 http://127.0.0.1:3080 */
@@ -32,18 +34,21 @@ export interface DshApiClientOptions {
   timeoutMs?: number;
   /** DSH 进程的 launch token（启动时打印；提供则自动模拟 cookie 认证） */
   authToken?: string;
+  authority?: string;
 }
 
 export class DshApiClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly authToken?: string;
+  private readonly authority?: string;
   private cookie: string | null = null;
 
   constructor(opts: DshApiClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.timeoutMs = opts.timeoutMs ?? 60_000;
     this.authToken = opts.authToken;
+    this.authority = opts.authority;
   }
 
   /** 当前 baseUrl（供 WebSocket 下行流复用同一 authority） */
@@ -58,8 +63,9 @@ export class DshApiClient {
   async ensureAuthenticated(): Promise<void> {
     if (!this.authToken) return;      // 未提供 token：按无认证直连（仅 0.1.1 或已放行的部署）
     if (this.cookie) return;          // 已换到 cookie，复用
-    const res = await fetch(`${this.baseUrl}/?token=${encodeURIComponent(this.authToken)}`, {
+    const res = await this.fetch(`${this.baseUrl}/?token=${encodeURIComponent(this.authToken)}`, {
       method: 'GET',
+      headers: this.authority ? { host: this.authority } : undefined,
       redirect: 'manual',             // DSH 返回 303 + Set-Cookie；需读 header
       signal: AbortSignal.timeout(this.timeoutMs),
     });
@@ -105,11 +111,12 @@ export class DshApiClient {
       payload,
     };
     const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (this.authority) headers.host = this.authority;
     if (this.cookie) headers.cookie = this.cookie;
 
     let res: Response;
     try {
-      res = await fetch(`${this.baseUrl}${path}`, {
+      res = await this.fetch(`${this.baseUrl}${path}`, {
         method: 'POST',
         headers,
         body: JSON.stringify(req),
@@ -142,6 +149,29 @@ export class DshApiClient {
       return fail('transport-error', 'DSH 响应缺少 result 字段');
     }
     return body.result;
+  }
+
+  /** Node fetch rewrites Host; tunnel requests must preserve the PC cookie authority. */
+  private async fetch(url: string, init: RequestInit): Promise<Response> {
+    if (!this.authority) return fetch(url, init);
+    return new Promise((resolve, reject) => {
+      const headers = Object.fromEntries(new Headers(init.headers).entries());
+      headers.host = this.authority!;
+      const request = url.startsWith('https:') ? httpsRequest : httpRequest;
+      const req = request(url, { method: init.method, headers, signal: init.signal ?? undefined }, res => {
+        const chunks: Buffer[] = []; let size = 0;
+        res.on('data', chunk => { size += chunk.length; if (size > 16 * 1024 * 1024) req.destroy(new Error('DSH response too large')); else chunks.push(chunk); });
+        res.on('error', reject);
+        res.on('end', () => {
+          const out = new Headers();
+          for (const [name, value] of Object.entries(res.headers)) if (value !== undefined) out.set(name, Array.isArray(value) ? value.join(', ') : value);
+          const status = res.statusCode ?? 502;
+          resolve(new Response([204, 205, 304].includes(status) ? null : Buffer.concat(chunks), { status, headers: out }));
+        });
+      });
+      req.on('error', reject);
+      req.end(typeof init.body === 'string' ? init.body : undefined);
+    });
   }
 }
 

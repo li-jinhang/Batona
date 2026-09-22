@@ -9,14 +9,18 @@
 - 原生 Android：Kotlin、Jetpack Compose、单模块 `app`；包名 `com.dshlink.app`。
 - 环境基线：`compileSdk` / `targetSdk` 34，`minSdk` 26，Java/Kotlin 17；版本号在 `app/build.gradle.kts` 中维护。
 - 网络层使用 OkHttp：REST 登录和 WebSocket RPC 都集中在 `app/src/main/java/com/dshlink/app/data/GatewayClient.kt`。
-- 主页按 backend 显示独立工作区树：DSH 与 Codex 会话不混用。Codex 的权限档、模型与状态都来自网关/PC 的能力查询，手机不构造底层 permission profile 或直连 Codex。
-- 连接串与二维码解析在 `data/ConnectionParser.kt`；持久化设置与凭据在 `SettingsStore.kt`；数据模型在 `data/Models.kt`。
-- UI 入口为 `MainActivity.kt` 与 `ui/App.kt`；绑定、登录、主页分别位于 `ui/BindScreen.kt`、`ui/LoginScreen.kt`、`ui/HomeScreen.kt`。
+- 底部导航固定为「DSH / Codex / Claude Code / 设置」：DSH、Codex 各自保留工作区树、当前会话、输入草稿、模型与待审批状态；模型选择位于各自聊天页内。Claude Code 仅为空白占位页，不初始化后端或复用 DSH/Codex 内容；设备管理页面及其自动列表请求已移除，绑定与认证保留。共享网关推送按已恢复/创建的网关会话 ID 路由到所属入口。Codex 的权限档、模型与状态都来自网关/PC 的能力查询，手机不构造底层 permission profile 或直连 Codex。
+- 历史连接串与二维码解析在 `data/ConnectionParser.kt`；持久化设置与凭据在 `SettingsStore.kt`；数据模型在 `data/Models.kt`。
+- UI 入口为 `MainActivity.kt` 与 `ui/App.kt`；手机配对使用 `ui/PairScreen.kt`，主页为 `ui/HomeScreen.kt`；旧 Bind/Login 页面不再由 App 挂载。
+
+## 托管接入候选版
+
+候选 APK 需托管新版服务器，当前生产仍是旧认证。手机不输入 admin 密码/TOTP，也不读取旧绑定资料；服务器确认配对后写入新授权并清理旧缓存。普通断网/重启保留授权；明确失效才清除。退出需服务端撤销确认（或明确 401），网络错误保留当前状态并提示；设备身份在退出后保留，支持原手机再次审批配对。TLS 使用系统 CA/身份校验，不能 TrustAll。测试可经构造参数注入专用 CA 的 OkHttpClient，正式 App 使用默认安全客户端且无用户可变入口。
 
 ## 端内约束
 
 - 连接串、配对二维码、认证字段、RPC 信封或事件名称以 `../README.md` 的跨端契约为准；不得只改客户端来“兼容”未定义的新字段。
-- 不在客户端硬编码网关地址、账号、密码、TOTP 秘钥、设备令牌或 PC 的 DSH launch token；敏感值应走现有绑定/安全存储流程，并避免写入日志。
+- 托管版固定预设网关 117.72.10.87:443（非秘密）；账号/管理员密钥不进入手机。设备授权与设备身份使用 AndroidKeyStore 加密保存，关闭备份；敏感值不进入源码/日志。
 - Android 只能连接网关的 HTTPS/WSS 入口，不能假设手机可访问 PC 的 `localhost:3080` 或服务器内部端口。
 - Codex 仅发送文本请求；工具调用、结果与审批/提问由 PC 脱敏后经网关镜像。每个工作区默认显示最近 5 个会话，展开后才显示更早记录。
 - Codex 手机镜像缓存仅保存最近 5 个会话/工作区和已脱敏的最近 200 条历史事件/会话；它只支持断网浏览、绝不排队发送，并由 `SettingsStore.clear()` 在注销或重新绑定时清除。
@@ -32,18 +36,20 @@
 .\gradlew.bat :app:assembleDebug
 ```
 
-若改动了扫码、绑定、登录、WebSocket 或会话 UI，按下方的 **Android Studio 模拟器基线** 验证：首次绑定、TOTP 登录、断网重连、流式对话和审批/提问应答。Codex 还要验证三档权限、目录选取、缓存离线浏览、通知权限拒绝后的可恢复状态。构建产生的 APK 是发布物，不要把新的 APK、`build/`、`.gradle/` 或 IDE 状态作为源码提交。
+若改动了扫码、绑定、登录、WebSocket 或会话 UI，按下方的 **Android Studio 模拟器基线** 验证：首次配对与 PC 确认、断网重连、流式对话和审批/提问应答。Codex 还要验证三档权限、目录选取、缓存离线浏览、通知权限拒绝后的可恢复状态。构建产生的 APK 是发布物，不要把新的 APK、`build/`、`.gradle/` 或 IDE 状态作为源码提交。
 
 ## Android Studio 模拟器基线
 
 - 当前完整功能验收固定在 Android Studio Emulator 上进行；不要将真机开发者模式、USB 调试或物理相机作为验收前提。
 - 用 Android Studio 打开 `product/android/`，选择模拟器并运行 Debug 变体。模拟器联网后应通过服务器的 HTTPS/WSS 公网入口联调，不应访问 PC 或服务器的回环地址。
-- 绑定页使用“粘贴连接串 → 解析并绑定”路径；扫码是独立的相机 UI 验收，不阻塞模拟器端到端测试。连接串只通过受控渠道输入模拟器，绝不硬编码、提交、输出到日志或发送到聊天。
-- 模拟器验收覆盖：首次绑定和 TOTP、会话/工作区读取、新建会话、流式回复、审批与提问应答，以及关闭/恢复模拟器网络后的重连。完成条件是恢复网络后仍可继续发送消息。
+- 配对页使用“输入电脑配对码 → 请求配对 → 电脑确认”路径；扫码单独验收，拒绝相机权限仍可输码。授权由服务器发给请求方，不由二维码携带。
+- 模拟器验收覆盖：首次配对与 PC 确认、会话/工作区读取、新建会话、流式回复、审批与提问应答，以及关闭/恢复模拟器网络后的重连。完成条件是恢复网络后仍可继续发送消息。
 
 ## 产品 UI 与历史决策
 
 ### 会话列表与聊天视图
+
+聊天输入区右侧模型按钮显示恢复响应 `GatewaySession.model`，用同 provider/model 的目录名称补足显示名。进入另一会话先清空旧模型；未知值显示“模型未同步”。模型选择成功才更新按钮。回归覆盖打开已有会话、切换到未知模型会话及两后端隔离。
 
 目标交互是两级视图：未选择会话时，工作区/会话列表占满主体；选择会话后，进入独立聊天视图，顶部持续显示“工作区 · 会话标题”，底部固定输入框，对话流独立滚动，返回按钮清除当前会话并回列表。不要继续维护“树和聊天上下并排、下半空白”的布局。
 
@@ -57,6 +63,8 @@ DSH 的权威关联是 `workspace.list` 返回的 `WorkspaceView.sessionIds`；`
 
 ### 已解决的历史回放问题
 
+列表、恢复和历史 RPC 失败必须区别于正常空列表：`GatewayFailure` 映射为安全错误提示，列表刷新失败保留旧树，恢复失败留在聊天页提供重试，发送失败保留草稿。不得用 `emptyList()` / `null` 吞掉这三条链路的失败。模拟器已登录时只做 `adb install -r` 覆盖安装；Gradle `connectedDebugAndroidTest` 默认可能在收尾卸载应用，真实绑定回归应使用独立测试 AVD，避免清掉用户登录数据。
+
 历史消息为空曾有两个根因，二者都在网关而非 Compose：DSH `session.history` 的返回字段是 `events`，不是 `entries`；大量 `assistant/chunk` 原始事件会让 2GB 服务器的网关 OOM。当前约束是网关只回放受限、聚合后的历史（忽略重复 chunk，保留 user/assistant message 和工具调用/结果），systemd 的 Node 堆上限为 512MB。若问题复发，优先在服务器检查网关版本、`events` 映射、聚合/上限及 systemd，而不是修改 App 的历史渲染。
 
 会话标题由 DSH `session/title` 事件产生，`session.list` 未必带标题；UI 必须保留 `title ?: sessionId` 的兜底。标题缺失时由网关缓存/历史提取修复，不能在客户端编造标题。
@@ -69,4 +77,4 @@ DSH 的权威关联是 `workspace.list` 返回的 `WorkspaceView.sessionIds`；`
 
 ## 构建、安装与更新
 
-用 Android Studio 打开 `product/android/`，完成 Gradle Sync 后在模拟器运行 Debug 变体；命令行构建使用本文件的 `assembleDebug`。版本号仅在 `app/build.gradle.kts` 的 `versionCode` / `versionName` 递增。模拟器重装后仍须回归首次绑定、TOTP、断网重连和真实会话流；Camera 权限拒绝仅在单独验证扫码 UI 时检查。
+用 Android Studio 打开 `product/android/`，完成 Gradle Sync 后在模拟器运行 Debug 变体；命令行构建使用本文件的 `assembleDebug`。版本号仅在 `app/build.gradle.kts` 的 `versionCode` / `versionName` 递增。模拟器重装后仍须回归首次配对、断网重连和真实会话流；Camera 权限拒绝仅在单独验证扫码 UI 时检查。

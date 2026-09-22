@@ -7,21 +7,33 @@
 ## 当前实现
 
 - 网关核心位于 `gateway/`：Node.js ESM + 原生 TypeScript 源码，生产构建为 `gateway/dist/app.mjs`；Node 基线为 18+。
-- HTTP/WS 入口在 `gateway/src/server/`，认证/TOTP/设备管理在 `gateway/src/auth/`，会话路由在 `gateway/src/session/`，DSH、Codex 与 mock 适配器在 `gateway/src/adapter/`。
+- 托管入口/加密账号库/按 PC 隔离运行时在 `gateway/src/hosted/`，共享 WS 在 `gateway/src/server/`；旧 `gateway/src/auth/` 仅供旧基线测试，生产 App 不挂载它，会话路由在 `gateway/src/session/`，DSH、Codex 与 mock 适配器在 `gateway/src/adapter/`。
 - 内置 WSS 隧道服务端在 `gateway/src/tunnel/`；它是 PC 出站隧道的对端，不依赖对公网开放 DSH 端口。
 - `install.sh` 负责首次安装与运行时配置，`deploy.sh` 负责 Git 拉取、构建、健康检查、失败回滚；两者必须来自同一提交。
 - 持久配置在 `/etc/dsh-gateway`，数据与部署状态在 `/var/lib/dsh-gateway`，运行应用在 `/opt/dsh-gateway/app`；更新时不得误删配置或数据。
 
+## 托管接入发布边界
+
+工作树已实现候选版；下方生产登记仍描述切换前状态。部署、密钥恢复或旧版迁移时必须先读 [hosted-access-operations.md](hosted-access-operations.md)。管理员密钥与 AES-GCM 主密钥分开保存在配置目录的受保护文件，账号库 `access.vault` 保存在数据目录。损坏/缺少主密钥时停止，不创建空库或替代密钥。每个 PC 的隧道、动态回环端口、适配器、SessionRouter 和推送域独立；任何 token、launch token、会话或审批都不能跨账号。失效授权在 HTTP、WS 输入/输出及隧道重新连接时检查。
+
 ## 已登记生产服务器（脱敏）
 
-最近核验：2026-09-21（网关 v0.1.31，仓库 commit `bdf8c4b`）。这是当前 DSH Link 生产入口；此段只记录运维定位信息，**不得**加入私钥、连接串、FRP token、账号密码、设备令牌或证书私钥。
+最近核验：2026-09-22（网关 v0.1.34，服务器仓库 commit `cede58c`）。这是当前 DSH Link 生产入口；此段只记录运维定位信息，**不得**加入私钥、连接串、令牌、账号密码、设备令牌或证书私钥。
 
 - SSH 目标：本机 SSH 别名 `dsh-server`，对应 `root@117.72.10.87`。认证依赖本机已有的专用部署密钥；不得将其复制至仓库或服务器工作树。
 - 代码：工作树为 `/www/wwwroot/117.72.10.87/26-009DSHlink`，远程为 `git@gitee.com:li-jinhang7/26-010-dshplugin.git`，跟踪 `main`，并且只稀疏检出 `product/server`。
-- 运行时：应用 `/opt/dsh-gateway/app`；配置与服务器登记 `/etc/dsh-gateway`；持久数据与部署回滚状态 `/var/lib/dsh-gateway`；systemd 服务 `dsh-gateway`、`frps`，以及 Nginx。
-- HTTPS：宝塔主虚拟主机 `/www/server/panel/vhost/nginx/117.72.10.87.conf`；DSH 反代 include `/www/server/panel/vhost/nginx/proxy/117.72.10.87/dsh-gateway.conf`，将根路径转发至 `127.0.0.1:3090` 并保留 WebSocket 升级头。80 端口仅重定向至 HTTPS。
-- 网络：443 是网关公网 TLS 入口；当前处于 frps 兼容模式，7000 必须保持放行。frps 的 `proxyBindAddr` 必须为 `127.0.0.1`，使 3080/3081/3082 只供本机网关使用；7500、3090、3080、3081、3082 不得对公网开放。确认所有 PC 客户端支持内置隧道前，不得关闭 frps 或 7000。
-- 日常只读核验：`dsh-deploy --status`、`curl -k https://127.0.0.1/healthz`、`systemctl is-active dsh-gateway frps nginx`。日常更新用 `dsh-deploy`，代码回退用 `dsh-deploy --rollback`。
+- 运行时：应用 `/opt/dsh-gateway/app`；配置与服务器登记 `/etc/dsh-gateway`；持久数据与部署回滚状态 `/var/lib/dsh-gateway`；systemd 服务为 `dsh-gateway` 与 Nginx。历史 `frps` 服务已停用，不是当前链路依赖。
+- HTTPS：宝塔主虚拟主机 `/www/server/panel/vhost/nginx/117.72.10.87.conf`；首页静态根目录为 `/www/wwwroot/117.72.10.87/00-001WebMainIndex`，对应本机 `D:\_Projects\00-001WebMainIndex`。DSH 反代 include `/www/server/panel/vhost/nginx/proxy/117.72.10.87/dsh-gateway.conf` 使用 [nginx-dsh-gateway-routes.conf](nginx-dsh-gateway-routes.conf)：`/api/`、`/ws`、`/tunnel`、`/healthz` 保持原地址并转发至 `127.0.0.1:3090`，旧浏览器客户端位于 `/remote/`。80 端口仅重定向至 HTTPS；`/pair.html` 保持 404。
+- 网络：443 是唯一网关公网 TLS 入口；内置 WSS 隧道经 `/tunnel` 连接。3080、3081、3082 与 3090 仅供服务器回环使用，7500 与 7000 不得对公网开放；`frps` 已停用。云安全组中遗留的 7000 规则应在下次云控制台维护时关闭。
+- 日常只读核验：`dsh-deploy --status`、`curl -k https://127.0.0.1/healthz`、`systemctl is-active dsh-gateway nginx`。日常更新用 `dsh-deploy`，代码回退用 `dsh-deploy --rollback`。
+
+### 首页与下载站点
+
+WebMainIndex 负责面向用户的首页及后续 PC/Android 下载入口；后台网关继续承担认证、RPC 和隧道。更新首页时保留客户端接口的路径、端口、WebSocket 升级头以及既有其他项目的反代规则。DSH 全站 `location /` 反代会遮住首页，应使用上述分流配置。
+
+2026-09-22 已恢复首页，并同步本机 WebMainIndex 的 `index.html`、`scripts/index.js`、`data/updates.json`。切换前备份在服务器 `/var/backups/dsh-homepage/20260922-134152/`，包括原 DSH include 和这三个静态文件。此次仅平滑重载 Nginx，网关与 frps 的 PID 均保持不变；已核验首页文件哈希、静态依赖、HTTP→HTTPS、未授权接口响应、`/ws` 101 握手以及 `/remote/`。未进行真实手机登录或模型调用。既有 `/Easyplay/` 和 `/RateConverter/` 在切换前后均为 502，应作为独立上游问题排查。
+
+修改 Nginx 后先运行 `nginx -t`，再平滑重载并复核首页和上述客户端接口。首页/路由回退使用该备份；`dsh-deploy --rollback` 只回退网关应用，不恢复站点配置。
 
 ## 服务器获取与更新代码
 
@@ -49,49 +61,49 @@ git checkout main
 
 ```bash
 bash product/server/deploy.sh --status
-bash product/server/install.sh --install --ip <公网IP> --admin <管理员> --password <强密码>
+bash product/server/install.sh --install
 ```
 
-安装完成后创建 `/usr/local/bin/dsh-deploy` 包装命令，内容只执行固定工作树中的 `bash product/server/deploy.sh "$@"`。它不是软链接，避免切换旧 commit 时失效。安装会保留/生成权限为 `600` 的 `/etc/dsh-gateway/server-info.json`；日常安装与更新绝不回显连接串。只有在 root 的受控终端明确运行 `bash product/server/install.sh --show-binding` 时才导出，不能贴入 issue、日志或 Git。
+安装完成后创建 `/usr/local/bin/dsh-deploy` 包装命令，内容只执行固定工作树中的 `bash product/server/deploy.sh "$@"`。它不是软链接，避免切换旧 commit 时失效。托管首次安装会生成权限为 600 的 `access-admin.key` 与 `access-vault.key`，不输出值。管理员从受控终端读取管理员密钥并进入 `/access-admin`；手机通过 PC 配对。旧版迁移不能直接重跑首次安装。
 
 ### 发布、版本与回滚
 
 发布网关前，本地在 `product/server/gateway/` 至少运行 `npm run typecheck`、`npm run smoke`、`npm run tunnel-protocol`、`npm run tunnel`；改隧道时还运行 PC 的 `test/tunnel-protocol.test.js`。递增 `gateway/package.json` 的 `version`，提交并推送，建议为可回退版本打 tag。服务器运行 `dsh-deploy` 后，它会将 Git 目标版本与 `/healthz` 返回的版本比对；版本不一致、服务不活动、健康检查或堆上限检查失败都会自动回滚。
 
-`dsh-deploy --tag <tag-or-commit>` 部署指定版本；`dsh-deploy --rollback` 根据 `/var/lib/dsh-gateway/.deploy-state` 回到上次成功部署。代码回滚和隧道模式回滚彼此独立：前者用 `dsh-deploy --rollback`，后者必须显式用 `install.sh --tunnel off`。
+`dsh-deploy --tag <tag-or-commit>` 部署指定版本；`dsh-deploy --rollback` 根据 `/var/lib/dsh-gateway/.deploy-state` 回到上次成功部署。同一托管版本的代码回退使用 `dsh-deploy --rollback`，保留当前账号库，防止恢复已经撤销的授权。认证代际变化要联合回退程序、配置、数据与 Nginx，不能只退代码；新版无 FRP 模式。
 
 ### 内置隧道与宝塔/Nginx
 
-默认优先内置隧道，切换前先确认 PC 已升级：
+生产已确认 Windows PC 使用内置隧道；日常仅核验状态：
 
 ```bash
-bash product/server/install.sh --tunnel on
 bash product/server/install.sh --tunnel status
-bash product/server/install.sh --tunnel off
 ```
 
-启用内置隧道后，PC 通过 443 的 `/tunnel` 出站连接，服务器 3080/3081/3082 只绑定回环，7000 可以关闭；切到 frp 回退模式才需要 7000。无论哪种模式，3080、3081、3082、3090 都不能对公网放行。
+PC 通过 443 的 `/tunnel` 出站连接，服务器 3080/3081/3082 只绑定回环；7000 不参与当前链路。3080、3081、3082、3090 均不能对公网放行。
 
-在宝塔或 Nginx 中，HTTPS 站点反代目标为 `http://127.0.0.1:3090`，并必须保留 WebSocket 头：
+在宝塔或 Nginx 中，按 [nginx-dsh-gateway-routes.conf](nginx-dsh-gateway-routes.conf) 将客户端接口分流到 `http://127.0.0.1:3090`；首页由 WebMainIndex 提供。接口反代必须保留 WebSocket 头：
 
 ```nginx
 proxy_set_header Upgrade $http_upgrade;
 proxy_set_header Connection "upgrade";
 ```
 
-防火墙和云安全组两层均应：放行 443；有域名签发 Let's Encrypt 时放行 80；仅在 frp 回退时放行 7000。纯 IP 不能签发 Let's Encrypt，可执行 `install.sh --selfsigned <公网IP>` 生成含 IP SAN 的自签证书，并让手机显式信任。反代或证书变更后用 `curl -k https://127.0.0.1/healthz` 验证。
+防火墙与云安全组放行 443，保留证书验证/HTTP 跳转所需 80；关闭 7000。2026-09-22 只读实测：生产 IP SAN 证书由 Let's Encrypt YR1 签发，标准 Node HTTPS 校验成功；因此无需自签或 TrustAll。该证书 2026-09-26 到期，生产发布前必须核验自动续期及重载，不能固定叶证书指纹。使用 `curl https://117.72.10.87/healthz` 验证真实身份；`curl -k` 只能诊断，不能作为 TLS 验收。
 
 ### 运行排错与仓库卫生
 
-常用只读排查：`dsh-deploy --status`、`journalctl -u dsh-gateway -n 50 --no-pager`、`journalctl -u frps -n 30`。`git fetch` 失败先检查部署公钥和网络；工作区脏或无法快进时先确认服务器没有需要保留的热修，再按脚本提示处理，`--force` 只用于明确接受覆盖时。`npm ci` 失败通常是本地 `package.json` 与 lock 不同步，应在本机更新 lock 后提交，不要把临时依赖状态留在线上。
+常用只读排查：`dsh-deploy --status`、`journalctl -u dsh-gateway -n 50 --no-pager`、`bash product/server/install.sh --tunnel status`。`git fetch` 失败先检查部署公钥和网络；工作区脏或无法快进时先确认服务器没有需要保留的热修，再按脚本提示处理，`--force` 只用于明确接受覆盖时。`npm ci` 失败通常是本地 `package.json` 与 lock 不同步，应在本机更新 lock 后提交，不要把临时依赖状态留在线上。
 
 Git 永不提交 `frpc.toml`、frpc/exe、APK、PC `dist/`、`node_modules/`、网关 `dist/` 或 Android `local.properties`；发布二进制与凭据都不属于源码。历史回放异常或服务器 OOM 时，检查网关是否读取 DSH 返回的 `events`、是否聚合/限制历史，以及 systemd 是否仍带 `--max-old-space-size=512`。
 
 ## 端内约束
 
+- 会话模型须经 `AgentSessionRef.model` → `GatewaySession.model` 透传；Codex 取 PC `thread/read` 的模型，DSH 取公开 `modelSelection.next/lastUsed` 投影，只复制模型字段。模型缺失时清除旧快照，不用模型目录猜测。`node test/session-model.ts` 覆盖桥→适配器→路由及投影白名单。
+
 - 服务器只做 TLS 后的认证、会话路由、协议适配和隧道转发。不得把 Agent、LLM 或工具执行迁到服务器，也不能令服务器主动接入用户内网 PC。
-- Codex adapter 的 `baseUrl` 只能是服务器回环的 `http://127.0.0.1:3082`，并且仅在 PC 已升级、桥健康且 App Server 能枚举会话/模型/profile 后才在生产配置显式启用。不能把 3082 加入公网监听或安全组，也不能用 `codex exec` 代替桌面会话控制。
-- 公网入口只应为反向代理后的 TLS；网关服务监听 `127.0.0.1:3090`，内置隧道的 3080/3081/3082 仅绑定回环。`trustedHosts` 不是认证，认证由账号密码、TOTP 和设备令牌承担。
+- 托管 Codex adapter 的 `baseUrl` 由该 PC 运行时分配为服务器动态回环端口，隧道目标仍是 PC 的 3082；PC 需具备桥和可枚举的 App Server。不能把 3082 加入公网监听或安全组，也不能用 `codex exec` 代替桌面会话控制。
+- 公网入口只应为反向代理后的 TLS；网关服务监听 `127.0.0.1:3090`，各 PC 的动态隧道端口只绑定回环。`trustedHosts` 不是认证；管理员、账号与设备授权严格分域。
 - 不记录或回显账号密码、连接串、`agentKey`、launch token、TOTP 秘钥或设备令牌。更改认证、限速、吊销或数据结构时要考虑已有数据的迁移与失效策略。
 - 跨端 RPC、连接串、二维码、launch-token 上报和隧道帧以 `../README.md` 的跨端契约为准。修改协议须同步检查 Android 与 PC 的兼容性，并保持旧客户端的明确行为。
 - 部署更改必须维持：从同一 Git commit 安装 `install.sh` 与 `gateway/`、健康检查版本一致、失败自动回滚、配置/数据保留。不要用手工 tar 覆盖流程替代 `deploy.sh`。

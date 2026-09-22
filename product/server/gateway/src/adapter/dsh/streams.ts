@@ -22,6 +22,7 @@ import type { DshRpcError, DshStreamClientMessage, DshStreamServerMessage } from
 
 /** 逻辑流认证来源（由 DshApiClient 提供） */
 export interface DshMuxAuth {
+  authority?: string;
   /** 当前认证 cookie（未认证为 null） */
   getCookie(): string | null;
   /** 载体被拒（401）时调用：重新用 launch token 交换 cookie */
@@ -116,7 +117,10 @@ export class DshRemoteMux {
     this.generation += 1;
 
     const cookie = this.auth.getCookie();
-    const wsOpts = cookie ? { headers: { cookie } } : undefined;
+    const headers: Record<string, string> = {};
+    if (cookie) headers.cookie = cookie;
+    if (this.auth.authority) headers.host = this.auth.authority;
+    const wsOpts = { headers };
     const socket = new WebSocket(this.wsUrl, wsOpts);
     this.socket = socket;
 
