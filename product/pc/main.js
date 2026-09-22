@@ -330,7 +330,9 @@ function attemptBuiltin(timeoutMs = 12000) {
 /**
  * 启动隧道（对外保持原函数名与签名——IPC/托盘/生命周期等调用点全部不变）。
  * 模式：DSHLINK_TUNNEL=auto（默认）| builtin | frp。
- *   auto：先试内置，不可用则回退 frpc 并在本会话黏滞（例外：frpc 连续崩溃 ≥3 次时再试一次内置）
+ *   auto：读取网关健康状态后优先内置；网关明确未启用内置隧道时直接走 frpc。
+ *         探测失败时仍会尝试内置，且不可用后回退 frpc 并在本会话黏滞
+ *         （例外：frpc 连续崩溃 ≥3 次时再试一次内置）。
  */
 function startFrpc() {
   if (tunnelStartPromise) return tunnelStartPromise;
@@ -346,7 +348,15 @@ async function startFrpcOnce() {
   if (!(await startCodexBridge())) return false;
 
   const mode = process.env.DSHLINK_TUNNEL || 'auto';
-  if (mode !== 'frp') {
+  // 健康检查是一个不含凭据的兼容性提示：当前服务器仍在 frps 兼容模式时，
+  // 不能白等一次 WSS 握手超时。若网关不可达或返回旧版 health，则保留原先
+  // 的“先试内置、失败回退”行为，避免把临时网络故障误判成兼容模式。
+  const builtinEnabled = mode === 'auto' ? await gatewayBuiltinTunnelEnabled() : null;
+  const shouldTryBuiltin = mode === 'builtin' || (mode === 'auto' && builtinEnabled !== false);
+  if (mode === 'auto' && builtinEnabled === false) {
+    log('网关未启用内置隧道，直接使用 frpc 兼容通道');
+  }
+  if (shouldTryBuiltin) {
     if (!TunnelClient) {
       log(`内置隧道不可用（加载失败：${tunnelRequireError || '未知'}）`);
     } else if (!builtinBlocked) {
@@ -361,6 +371,24 @@ async function startFrpcOnce() {
   }
   state.tunnelKind = 'frp';
   return startFrpcLegacy();
+}
+
+/**
+ * 返回 true / false（网关已明确声明隧道状态）或 null（旧版/临时不可达）。
+ * 只读取公开 health 字段，绝不记录请求头、连接串或响应全文。
+ */
+async function gatewayBuiltinTunnelEnabled() {
+  const b = state.binding;
+  if (!b) return null;
+  try {
+    const url = `https://${b.serverIp}:${b.gwPort || 443}/healthz`;
+    const res = await jsonRequest(url, 'GET', {}, null, 5000);
+    if (res.status !== 200) return null;
+    const health = JSON.parse(res.body);
+    return typeof health?.tunnel?.enabled === 'boolean' ? health.tunnel.enabled : null;
+  } catch {
+    return null;
+  }
 }
 
 /** frpc 回退路径（灰度期保留；服务器切到内置隧道后本路径会稳定失败，由崩溃计数触发再探测） */
