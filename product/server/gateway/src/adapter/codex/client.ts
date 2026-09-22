@@ -43,8 +43,9 @@ export class CodexBridgeClient {
   }
 
   async connect(): Promise<boolean> {
-    const health = await this.get<{ ok?: boolean; appServer?: boolean }>('/healthz');
-    if (!health.ok || !health.appServer) return false;
+    // PC 是可随时休眠、断网或尚未启动 DSH Link 的本地 Agent Host。网关启动时
+    // 不能因为它暂时离线而退出；事件 WS 会在连接可用后自行重连，具体操作则
+    // 返回 codex-offline 供手机明确展示，而不是把服务端伪装成健康的 Codex 会话。
     this.stopped = false;
     this.openEvents();
     return true;
@@ -56,14 +57,14 @@ export class CodexBridgeClient {
   }
 
   async get<T>(pathname: string): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${pathname}`, { signal: AbortSignal.timeout(30_000) });
+    const res = await this.request(`${this.baseUrl}${pathname}`, { signal: AbortSignal.timeout(8_000) });
     const body = await readBody(res);
     if (!res.ok) throw bridgeError(body);
     return body as T;
   }
 
   async post<T>(pathname: string, value: unknown = {}): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${pathname}`, {
+    const res = await this.request(`${this.baseUrl}${pathname}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(value),
@@ -75,7 +76,7 @@ export class CodexBridgeClient {
   }
 
   async delete<T>(pathname: string): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${pathname}`, { method: 'DELETE', signal: AbortSignal.timeout(30_000) });
+    const res = await this.request(`${this.baseUrl}${pathname}`, { method: 'DELETE', signal: AbortSignal.timeout(8_000) });
     const body = await readBody(res);
     if (!res.ok) throw bridgeError(body);
     return body as T;
@@ -116,6 +117,14 @@ export class CodexBridgeClient {
     };
     ws.on('close', reconnect);
     ws.on('error', () => {});
+  }
+
+  private async request(url: string, init: RequestInit): Promise<Response> {
+    try {
+      return await fetch(url, init);
+    } catch {
+      throw Object.assign(new Error('Codex PC 当前不在线'), { code: 'codex-offline' });
+    }
   }
 }
 

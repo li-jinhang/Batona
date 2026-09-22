@@ -470,6 +470,19 @@ rollback_to_frps() {
   if wait_gateway_health; then err "已回退，线上服务恢复（frps 模式）"; else err "回退后网关仍未就绪，请 journalctl -u dsh-gateway -n 50 排查"; fi
 }
 
+# frps 的 unit 使用 Restart=always；普通 `systemctl stop` 在部分机器会一直等待
+# TimeoutStopSec，远超过远程运维命令的反馈窗口。无阻塞提交 stop job 后，明确轮询
+# inactive 状态再继续，既不假设端口已释放，也让失败路径仍能走原有回滚。
+stop_frps_for_builtin() {
+  systemctl stop --no-block frps 2>/dev/null || return 1
+  local i
+  for i in $(seq 1 15); do
+    if ! systemctl is-active --quiet frps 2>/dev/null; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+
 set_tunnel_mode() {
   local mode="$1"
   case "$mode" in
@@ -480,7 +493,11 @@ set_tunnel_mode() {
       # 顺序是刻意的：先写 config 再停 frps。反过来的话，中间窗口内网关（启动时读一次 config）
       # 不会绑端口，隧道彻底不可用且无自动恢复。
       set_gateway_tunnel_flag true || { err "写入 tunnel.enabled=true 失败，未做任何改动"; exit 1; }
-      systemctl stop frps 2>/dev/null || true
+      if ! stop_frps_for_builtin; then
+        err "frps 未能在 15 秒内停止"
+        rollback_to_frps
+        exit 1
+      fi
       systemctl disable frps 2>/dev/null || true
       sleep 1
       if [ -n "$(ports_in_use_tunnel)" ]; then
