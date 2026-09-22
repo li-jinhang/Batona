@@ -14,16 +14,16 @@
 
 ## 托管接入发布边界
 
-工作树已实现候选版；下方生产登记仍描述切换前状态。部署、密钥恢复或旧版迁移时必须先读 [hosted-access-operations.md](hosted-access-operations.md)。管理员密钥与 AES-GCM 主密钥分开保存在配置目录的受保护文件，账号库 `access.vault` 保存在数据目录。损坏/缺少主密钥时停止，不创建空库或替代密钥。每个 PC 的隧道、动态回环端口、适配器、SessionRouter 和推送域独立；任何 token、launch token、会话或审批都不能跨账号。失效授权在 HTTP、WS 输入/输出及隧道重新连接时检查。
+托管 v0.2.0 已于 2026-09-22 获准切换生产；完整 PC/手机配对及真实任务回归尚未完成。部署、密钥恢复或回退时必须先读 [hosted-access-operations.md](hosted-access-operations.md)。管理员密钥与 AES-GCM 主密钥分开保存在配置目录的受保护文件，账号库 `access.vault` 在首次持久化变更后保存至数据目录（空账号时可能尚无文件）。损坏/缺少主密钥时停止，不创建空库或替代密钥。每个 PC 的隧道、适配器、路由与推送域独立；失效授权在 HTTP、WS 输入/输出及隧道连接时检查。
 
 ## 已登记生产服务器（脱敏）
 
-最近核验：2026-09-22（网关 v0.1.34，服务器仓库 commit `cede58c`）。这是当前 DSH Link 生产入口；此段只记录运维定位信息，**不得**加入私钥、连接串、令牌、账号密码、设备令牌或证书私钥。
+最近核验：2026-09-22 20:04（网关 v0.2.0，部署 commit `793af05`，由 `dsh-deploy --tag` 固定版本，工作树为 detached HEAD）。这是当前 DSH Link 生产入口；此段只记录运维定位信息，**不得**加入私钥、连接串、令牌、账号密码、设备令牌或证书私钥。
 
 - SSH 目标：本机 SSH 别名 `dsh-server`，对应 `root@117.72.10.87`。认证依赖本机已有的专用部署密钥；不得将其复制至仓库或服务器工作树。
 - 代码：工作树为 `/www/wwwroot/117.72.10.87/26-009DSHlink`，远程为 `git@gitee.com:li-jinhang7/26-010-dshplugin.git`，跟踪 `main`，并且只稀疏检出 `product/server`。
 - 运行时：应用 `/opt/dsh-gateway/app`；配置与服务器登记 `/etc/dsh-gateway`；持久数据与部署回滚状态 `/var/lib/dsh-gateway`；systemd 服务为 `dsh-gateway` 与 Nginx。历史 `frps` 服务已停用，不是当前链路依赖。
-- HTTPS：宝塔主虚拟主机 `/www/server/panel/vhost/nginx/117.72.10.87.conf`；首页静态根目录为 `/www/wwwroot/117.72.10.87/00-001WebMainIndex`，对应本机 `D:\_Projects\00-001WebMainIndex`。DSH 反代 include `/www/server/panel/vhost/nginx/proxy/117.72.10.87/dsh-gateway.conf` 使用 [nginx-dsh-gateway-routes.conf](nginx-dsh-gateway-routes.conf)：`/api/`、`/ws`、`/tunnel`、`/healthz` 保持原地址并转发至 `127.0.0.1:3090`，旧浏览器客户端位于 `/remote/`。80 端口仅重定向至 HTTPS；`/pair.html` 保持 404。
+- HTTPS：宝塔主虚拟主机 `/www/server/panel/vhost/nginx/117.72.10.87.conf`；首页静态根目录为 `/www/wwwroot/117.72.10.87/00-001WebMainIndex`，对应本机 `D:\_Projects\00-001WebMainIndex`。DSH 反代 include `/www/server/panel/vhost/nginx/proxy/117.72.10.87/dsh-gateway.conf` 使用 [nginx-dsh-gateway-routes.conf](nginx-dsh-gateway-routes.conf)：`/api/`、`/ws`、`/tunnel`、`/healthz` 及 `/access-admin`（含 JS/CSS）转发至 `127.0.0.1:3090`；旧 `/remote/` 返回 410。80 端口仅重定向至 HTTPS；`/pair.html` 保持 404。
 - 网络：443 是唯一网关公网 TLS 入口；内置 WSS 隧道经 `/tunnel` 连接。3080、3081、3082 与 3090 仅供服务器回环使用，7500 与 7000 不得对公网开放；`frps` 已停用。云安全组中遗留的 7000 规则应在下次云控制台维护时关闭。
 - 日常只读核验：`dsh-deploy --status`、`curl -k https://127.0.0.1/healthz`、`systemctl is-active dsh-gateway nginx`。日常更新用 `dsh-deploy`，代码回退用 `dsh-deploy --rollback`。
 
@@ -89,7 +89,7 @@ proxy_set_header Upgrade $http_upgrade;
 proxy_set_header Connection "upgrade";
 ```
 
-防火墙与云安全组放行 443，保留证书验证/HTTP 跳转所需 80；关闭 7000。2026-09-22 只读实测：生产 IP SAN 证书由 Let's Encrypt YR1 签发，标准 Node HTTPS 校验成功；因此无需自签或 TrustAll。该证书 2026-09-26 到期，生产发布前必须核验自动续期及重载，不能固定叶证书指纹。使用 `curl https://117.72.10.87/healthz` 验证真实身份；`curl -k` 只能诊断，不能作为 TLS 验收。
+防火墙与云安全组放行 443，保留证书验证/HTTP 跳转所需 80；关闭 7000。2026-09-22 实测续签已生效：IP SAN 匹配，Let's Encrypt YR2，至 2026-09-29 02:44:20 UTC 有效；Node 与 Android 默认 CA 校验通过。用户负责本次续签，自动续期仍未独立核验。不能固定叶证书指纹；`curl -k` 只能诊断，不能作为 TLS 验收。
 
 ### 运行排错与仓库卫生
 

@@ -1,6 +1,6 @@
 # DSH Link — 三端工程导航与共享契约
 
-当前工作树为邀请制托管接入候选版；生产切换另行批准。迁移与回退先读 [托管接入运维](server/hosted-access-operations.md)，验收记录见 [实施证据](../docs/plans/hosted-access/evidence.md)。
+邀请制托管网关 v0.2.0 已于 2026-09-22 获准部署；PC 0.4.0 / Android 0.2.0 需重新登录配对，完整真实任务流仍待验收。迁移与回退先读 [托管接入运维](server/hosted-access-operations.md)，验收记录见 [实施证据](../docs/plans/hosted-access/evidence.md)。
 
 DSH Link 让 Android 手机通过公网网关远程操控笔记本上的 DeepSeek Harness（DSH）或 Codex。
 Agent、LLM 与工具执行始终留在 PC；服务器只提供认证、会话路由和 PC 的出站隧道。
