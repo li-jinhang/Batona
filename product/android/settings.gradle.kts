@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "DSHLink"
+rootProject.name = "Batona Mobile"
 include(":app")

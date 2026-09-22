@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# DSH Link — 服务器端一键安装 / 升级脚本（Ubuntu/Debian，宝塔环境）
+# Batona — 服务器端一键安装 / 升级脚本（Ubuntu/Debian，宝塔环境）
 #
 # 用法：
 #   bash install.sh --install                 # 全新托管接入安装
@@ -15,19 +15,19 @@
 #
 # 设计目标（用户硬性要求）：
 #   - 宝塔终端一条命令安装；之后全部 GUI 操作
-#   - 支持频繁更新：--update 幂等重部署，保留数据(/var/lib/dsh-gateway)与配置(/etc/dsh-gateway)
+#   - 支持频繁更新：--update 幂等重部署，保留数据(/var/lib/batona-gateway)与配置(/etc/batona-gateway)
 #   - 绑定凭据仅保存在 root 可读配置；日常安装/更新日志绝不输出连接串
 #
 # 目录布局：
-#   /opt/dsh-gateway/app     网关代码（每次更新整体替换）
-#   /etc/dsh-gateway/        config.json + 独立管理员/账号库保护密钥（保留）
-#   /var/lib/dsh-gateway     加密账号库及部署状态（保留）
+#   /opt/batona-gateway/app     网关代码（每次更新整体替换）
+#   /etc/batona-gateway/        config.json + 独立管理员/账号库保护密钥（保留）
+#   /var/lib/batona-gateway     加密账号库及部署状态（保留）
 # ============================================================================
 set -euo pipefail
 
-APP_DIR="/opt/dsh-gateway/app"
-CONF_DIR="/etc/dsh-gateway"
-DATA_DIR="/var/lib/dsh-gateway"
+APP_DIR="/opt/batona-gateway/app"
+CONF_DIR="/etc/batona-gateway"
+DATA_DIR="/var/lib/batona-gateway"
 FRP_DIR="/usr/local/frp"
 FRP_VERSION="${FRP_VERSION:-0.68.0}"
 GATEWAY_DEFAULT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gateway"
@@ -170,7 +170,7 @@ EOF
 
   cat > /etc/systemd/system/frps.service <<'EOF'
 [Unit]
-Description=frp server (DSH Link)
+Description=frp server (Batona)
 After=network.target
 [Service]
 Type=simple
@@ -362,17 +362,17 @@ ensure_gateway_tunnel_key() {
 }
 
 ensure_gateway_service() {
-  cat > /etc/systemd/system/dsh-gateway.service <<'EOF'
+  cat > /etc/systemd/system/batona-gateway.service <<'EOF'
 [Unit]
-Description=DSH Link Gateway
+Description=Batona Gateway
 After=network.target
 [Service]
 Type=simple
-WorkingDirectory=/opt/dsh-gateway/app
+WorkingDirectory=/opt/batona-gateway/app
 # 2GB 机器：限制 Node 堆，避免 DSH 大 history 回放时 OOM（默认堆约 1GB 会超）
 Environment=NODE_OPTIONS=--max-old-space-size=512
 ExecStart=/usr/bin/node --max-old-space-size=512 dist/app.mjs
-Environment=GATEWAY_CONFIG=/etc/dsh-gateway/config.json
+Environment=GATEWAY_CONFIG=/etc/batona-gateway/config.json
 Restart=always
 RestartSec=3
 NoNewPrivileges=true
@@ -380,8 +380,8 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable dsh-gateway
-  systemctl restart dsh-gateway
+  systemctl enable batona-gateway
+  systemctl restart batona-gateway
 
   # 等待网关就绪后再判定。
   # 不能只 sleep 2 探一次：网关在绑定 HTTP 端口之前会先建立 DSH 事件流连接
@@ -399,10 +399,10 @@ EOF
 
   if [ "$ready" = "1" ]; then
     local gw_ver
-    gw_ver="$(node -p "try{require('/opt/dsh-gateway/app/package.json').version}catch(e){'unknown'}" 2>/dev/null || echo unknown)"
+    gw_ver="$(node -p "try{require('/opt/batona-gateway/app/package.json').version}catch(e){'unknown'}" 2>/dev/null || echo unknown)"
     log "网关健康检查 OK（网关版本 v${gw_ver}）"
   else
-    err "网关未通过健康检查（已等待 30 秒）：journalctl -u dsh-gateway -n 30"
+    err "网关未通过健康检查（已等待 30 秒）：journalctl -u batona-gateway -n 30"
     exit 1
   fi
 }
@@ -416,11 +416,11 @@ print_binding() {
   # 网关 HTTPS 端口（宝塔反代端口；默认 443，非标准的如 8443 用 GW_PORT 或 server-info.gwPort）
   local gwPort; gwPort="${GW_PORT:-$(info_get gwPort)}"; [ -z "$gwPort" ] && gwPort="443"
 
-  local conn="dsh-gw://${ip}?frpPort=7000&gwPort=${gwPort}&frpToken=${token}&gwUser=${admin}&gwPass=${pass}&pair=${pair}"
+  local conn="batona-gw://${ip}?frpPort=7000&gwPort=${gwPort}&frpToken=${token}&gwUser=${admin}&gwPass=${pass}&pair=${pair}"
 
   echo ""
   echo "════════════════════════════════════════════════════════════"
-  echo "  DSH Link 绑定连接串（PC 软件 / 手机 App 扫码或粘贴）"
+  echo "  Batona 绑定连接串（PC 软件 / 手机 App 扫码或粘贴）"
   echo "════════════════════════════════════════════════════════════"
   echo "  ${conn}"
   echo ""
@@ -471,8 +471,8 @@ rollback_to_frps() {
   err "→ 自动回退到 frps 模式…"
   set_gateway_tunnel_flag false || true
   systemctl enable --now frps 2>/dev/null || true
-  systemctl restart dsh-gateway 2>/dev/null || true
-  if wait_gateway_health; then err "已回退，线上服务恢复（frps 模式）"; else err "回退后网关仍未就绪，请 journalctl -u dsh-gateway -n 50 排查"; fi
+  systemctl restart batona-gateway 2>/dev/null || true
+  if wait_gateway_health; then err "已回退，线上服务恢复（frps 模式）"; else err "回退后网关仍未就绪，请 journalctl -u batona-gateway -n 50 排查"; fi
 }
 
 # frps 的 unit 使用 Restart=always；普通 `systemctl stop` 在部分机器会一直等待
@@ -493,7 +493,7 @@ set_tunnel_mode() {
   case "$mode" in
     on)
       log "切换内置隧道：启用（将停用 frps）"
-      log "  前置确认：PC 端 DSH Link 须已升级到含内置隧道的版本——旧版只会 frpc，frps 停用后无法连接。"
+      log "  前置确认：Batona PC 须已升级到含内置隧道的版本——旧版只会 frpc，frps 停用后无法连接。"
       cp -f "$CONFIG_FILE" "$CONFIG_FILE.bak" 2>/dev/null || true
       # 顺序是刻意的：先写 config 再停 frps。反过来的话，中间窗口内网关（启动时读一次 config）
       # 不会绑端口，隧道彻底不可用且无自动恢复。
@@ -510,7 +510,7 @@ set_tunnel_mode() {
         rollback_to_frps
         exit 1
       fi
-      systemctl restart dsh-gateway
+      systemctl restart batona-gateway
       if ! wait_gateway_health; then
         err "网关健康检查失败"
         rollback_to_frps
@@ -534,8 +534,8 @@ set_tunnel_mode() {
       log "切换内置隧道：关闭（恢复 frps）"
       set_gateway_tunnel_flag false || { err "写入 tunnel.enabled=false 失败，未做任何改动"; exit 1; }
       systemctl enable --now frps 2>/dev/null || err "frps 启动失败，请检查 /etc/frp/frps.toml"
-      systemctl restart dsh-gateway
-      if ! wait_gateway_health; then err "网关健康检查失败，请 journalctl -u dsh-gateway -n 50 排查"; exit 1; fi
+      systemctl restart batona-gateway
+      if ! wait_gateway_health; then err "网关健康检查失败，请 journalctl -u batona-gateway -n 50 排查"; exit 1; fi
       local en; en="$(healthz_tunnel_enabled)"
       if [ "$en" != "false" ]; then err "网关未退出内置隧道模式（tunnel.enabled=${en}）"; exit 1; fi
       log "已恢复 frps 模式；PC 端会自动回退 frpc（无需操作）。"
@@ -544,7 +544,7 @@ set_tunnel_mode() {
       echo "── 隧道模式 ──"
       echo "  config.tunnel.enabled : $(gateway_tunnel_enabled)"
       echo "  /healthz tunnel.enabled: $(healthz_tunnel_enabled)"
-      for svc in dsh-gateway frps; do
+      for svc in batona-gateway frps; do
         systemctl is-active --quiet "$svc" 2>/dev/null && echo "  [OK] $svc 运行中" || echo "  [--] $svc 未运行"
       done
       if [ -n "$(ports_in_use_tunnel)" ]; then
@@ -600,7 +600,7 @@ case "$ACTION" in
 
   status)
     echo "── 服务状态 ──"
-    for svc in dsh-gateway; do
+    for svc in batona-gateway; do
       systemctl is-active --quiet "$svc" && echo "  [OK] $svc" || echo "  [FAIL] $svc"
     done
     echo "── 网关健康 ──"
@@ -641,8 +641,8 @@ case "$ACTION" in
 
   uninstall)
     log "卸载（保留 $DATA_DIR 与 $CONF_DIR）"
-    systemctl disable --now dsh-gateway frps 2>/dev/null || true
-    rm -f /etc/systemd/system/dsh-gateway.service /etc/systemd/system/frps.service
+    systemctl disable --now batona-gateway frps 2>/dev/null || true
+    rm -f /etc/systemd/system/batona-gateway.service /etc/systemd/system/frps.service
     systemctl daemon-reload
     log "已停止并移除服务"
     ;;

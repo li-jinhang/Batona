@@ -5,7 +5,7 @@ const path = require('node:path');
 async function main() {
   let failed = false;
   const check = (name, ok, detail) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${name} ${JSON.stringify(detail)}`); failed ||= !ok; };
-  const cached = JSON.parse(fs.readFileSync(path.join(process.env.APPDATA, 'DSH Link', 'dsh-token.json'), 'utf8'));
+  const cached = JSON.parse(fs.readFileSync(path.join(process.env.APPDATA, 'Batona PC', 'dsh-token.json'), 'utf8'));
   const base = `http://127.0.0.1:${cached.port || 3080}`;
   const login = await fetch(`${base}/?token=${encodeURIComponent(cached.token)}`, { redirect: 'manual', signal: AbortSignal.timeout(10000) });
   const cookie = login.headers.get('set-cookie')?.split(';')[0] || '';

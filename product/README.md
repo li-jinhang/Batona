@@ -1,8 +1,10 @@
-# DSH Link — 三端工程导航与共享契约
+# Batona — 三端工程导航与共享契约
 
-邀请制托管网关 v0.2.0 已于 2026-09-22 获准部署；PC 0.4.0 / Android 0.2.0 需重新登录配对，完整真实任务流仍待验收。迁移与回退先读 [托管接入运维](server/hosted-access-operations.md)，验收记录见 [实施证据](../docs/plans/hosted-access/evidence.md)。
+当前品牌迁移目标版本为 Batona Gateway 0.3.0、Batona PC 0.5.0 与 Batona Mobile 0.3.0。生产发布、迁移与回退先读 [托管接入运维](server/hosted-access-operations.md)，验收记录见 [实施证据](../docs/plans/hosted-access/evidence.md)。
 
-DSH Link 让 Android 手机通过公网网关远程操控笔记本上的 DeepSeek Harness（DSH）或 Codex。
+本次改名同时更新了 PC appId、Android applicationId、本地安全存储别名、配对 URI、账号密钥前缀和服务器运行标识。Batona PC 与 Batona Mobile 会建立新的本地数据空间，需要重新登录和配对；现有生产网关仍处于改名前的已登记状态，完成受控服务器迁移前不得把源码中的 Batona 运行路径当成线上现状。
+
+Batona 让 Android 手机通过公网网关远程操控笔记本上的 DeepSeek Harness（DSH）或 Codex。
 Agent、LLM 与工具执行始终留在 PC；服务器只提供认证、会话路由和 PC 的出站隧道。
 
 ## 文档边界
@@ -10,7 +12,7 @@ Agent、LLM 与工具执行始终留在 PC；服务器只提供认证、会话�
 `docs/` 只保留项目的外部研究和需求依据：
 
 - [调查-DSH手机远程操控插件.md](docs/调查-DSH手机远程操控插件.md)
-- [需求-DSH远程接入网关.md](docs/需求-DSH远程接入网关.md)
+- [需求-Batona远程接入网关.md](docs/需求-Batona远程接入网关.md)
 
 实现记忆、端内操作、发布、排错与历史决策不再放入 `docs/`：端内信息进入各目录的 `AGENTS.md`，本文件保留跨端架构、契约与联调规则。
 
@@ -33,12 +35,12 @@ Agent、LLM 与工具执行始终留在 PC；服务器只提供认证、会话�
 | Android 客户端 | [android/](android/) | [android/AGENTS.md](android/AGENTS.md) |
 | Windows PC 客户端 | [pc/](pc/) | [pc/AGENTS.md](pc/AGENTS.md) |
 | 网关与服务器部署 | [server/](server/) | [server/AGENTS.md](server/AGENTS.md) |
-| 调查与需求依据 | [docs/](docs/) | [调查](docs/调查-DSH手机远程操控插件.md) · [需求](docs/需求-DSH远程接入网关.md) |
+| 调查与需求依据 | [docs/](docs/) | [调查](docs/调查-DSH手机远程操控插件.md) · [需求](docs/需求-Batona远程接入网关.md) |
 
 ## 跨端架构与职责
 
 ```
-Android 手机 App ── HTTPS / WSS ──▶ 服务器网关 ◀── WSS 隧道 ── PC Electron（本地 DSH）
+Batona Mobile ── HTTPS / WSS ──▶ Batona Gateway ◀── WSS 隧道 ── Batona PC（本地 Agent）
 ```
 
 | 端 | 负责 | 不负责 |
@@ -57,7 +59,7 @@ Android 手机 App ── HTTPS / WSS ──▶ 服务器网关 ◀── WSS �
 
 管理员在 `/access-admin` 用单独管理员密钥登录，创建、查看、备注、永久禁用、重置或删除账号；仅显示滚动 24 小时手机请求受理数。测试用户在 PC 输入账号接入密钥，不输入用户名密码。PC 保存 Windows safeStorage 加密后的设备授权与设备身份，不持久保存账号原始接入密钥。
 
-PC 登录并连通隧道后打开手机配对页，显示随机手动码和 `dsh-pair://<code>` 二维码；它不包含账号密钥。手机输入/扫描后必须由 PC 明确批准。PC 页面维持 20 秒可续期租约，4 秒轮询续租；最小化继续，关闭、断线、拒绝或成功后旧码不可再次使用。成功结果允许原请求凭证明文在内存保留 60 秒供手机安全领取；不写日志/数据库。
+PC 登录并连通隧道后打开手机配对页，显示随机手动码和 `batona-pair://<code>` 二维码；它不包含账号密钥。手机输入/扫描后必须由 PC 明确批准。PC 页面维持 20 秒可续期租约，4 秒轮询续租；最小化继续，关闭、断线、拒绝或成功后旧码不可再次使用。成功结果允许原请求凭证明文在内存保留 60 秒供手机安全领取；不写日志/数据库。
 
 每账号暂限一台 PC、一部手机，以独立设备 ID 和账号所有权关联；设备授权不能跨角色、账号或 PC 路由。换电脑必须确认替换并让手机重新配对；换手机须先在 PC 解绑旧手机。PC 退出保留手机绑定和授权，同机同密钥登录后恢复；手机退出只撤销授权并保留名额，原手机重新配对仍需 PC 批准。管理员禁用不可恢复，重置创建新身份，删除清除登记；上述操作只终止远程访问，不取消 PC 本地任务。
 
@@ -95,7 +97,7 @@ PC 以 `wss://117.72.10.87/tunnel` 建立出站隧道，使用 `Authorization: B
 | Windows 运行、打包与更新 | PC | [pc/AGENTS.md](pc/AGENTS.md) |
 | APK 构建、安装、UI/真机验证 | Android 工程 | [android/AGENTS.md](android/AGENTS.md) |
 
-跨端发布遵循：先改动并验证受影响端 → 服务器网关版本递增并部署 → 确认 PC 隧道/launch-token 上报 → 用手机完成登录、会话流式消息、审批和提问测试。服务器更新不会删除 `/etc/dsh-gateway` 或 `/var/lib/dsh-gateway`，因此同一托管模式正常更新后 PC/手机无需重新绑定；从旧认证升级则必须执行单独迁移和重新接入。
+跨端发布遵循：先改动并验证受影响端 → 服务器网关版本递增并部署 → 确认 PC 隧道/launch-token 上报 → 用手机完成登录、会话流式消息、审批和提问测试。服务器更新不会删除 `/etc/batona-gateway` 或 `/var/lib/batona-gateway`，因此同一托管模式正常更新后 PC/手机无需重新绑定；从旧认证升级则必须执行单独迁移和重新接入。
 
 最小端到端验收：
 
@@ -104,7 +106,7 @@ PC 以 `wss://117.72.10.87/tunnel` 建立出站隧道，使用 `Authorization: B
 3. 新建/恢复会话、流式消息、审批与提问可往返；
 4. Codex Desktop 已登录时，手机能查看现有 Codex 工作区/会话、创建或恢复会话、选择真实模型和固定权限档，并从 PC/手机任一端看到状态变化；
 5. 手机断网后恢复，PC 隧道可重连；
-6. 服务器 `dsh-deploy --status` 显示健康检查、版本和端口安全检查均正常。
+6. 服务器 `batona-deploy --status` 显示健康检查、版本和端口安全检查均正常。
 
 ## 设计边界与演进
 

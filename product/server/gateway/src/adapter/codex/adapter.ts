@@ -22,7 +22,7 @@ export class CodexAdapter implements AgentAdapter {
     workspace: true,
     models: true,
     permissionProfiles: true,
-    concurrency: 'parallel', // Codex 原生线程/回合调度；DSH Link 不额外排队。
+    concurrency: 'parallel', // Codex 原生线程/回合调度；Batona 不额外排队。
     voice: 'none',
   };
 

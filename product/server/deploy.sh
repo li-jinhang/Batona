@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# DSH Link — 服务器端一键部署（git 拉取 + 更新）
+# Batona — 服务器端一键部署（git 拉取 + 更新）
 #
 # 用法（服务器上以 root 执行）：
 #   bash product/server/deploy.sh                 # 拉取当前分支最新并部署
@@ -21,9 +21,9 @@
 #
 # 目录布局：
 #   本文件所在仓库          git 工作区（本脚本只在此 fetch/checkout）
-#   /opt/dsh-gateway/app    运行时（install.sh 每次整体替换）
-#   /etc/dsh-gateway        配置/连接串（保留）
-#   /var/lib/dsh-gateway    数据 + 本脚本的部署状态文件（保留）
+#   /opt/batona-gateway/app    运行时（install.sh 每次整体替换）
+#   /etc/batona-gateway        配置/连接串（保留）
+#   /var/lib/batona-gateway    数据 + 本脚本的部署状态文件（保留）
 # ============================================================================
 set -euo pipefail
 
@@ -32,13 +32,13 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GATEWAY_REL="product/server/gateway"
 INSTALL_SH="$REPO_ROOT/product/server/install.sh"
 
-STATE_DIR="/var/lib/dsh-gateway"
+STATE_DIR="/var/lib/batona-gateway"
 STATE_FILE="$STATE_DIR/.deploy-state"
 
 BRANCH="${DEPLOY_BRANCH:-main}"
-SERVICE="dsh-gateway"
+SERVICE="batona-gateway"
 HEALTH_URL="http://127.0.0.1:3090/healthz"
-SERVICE_UNIT="/etc/systemd/system/dsh-gateway.service"
+SERVICE_UNIT="/etc/systemd/system/batona-gateway.service"
 
 # 回滚递归保护：回滚路径自身不再触发回滚
 ROLLED_BACK=0
@@ -51,7 +51,7 @@ die()  { err "$*"; exit 1; }
 
 usage() {
   cat <<'EOF'
-DSH Link — 服务器端一键部署（git 拉取 + 更新）
+Batona — 服务器端一键部署（git 拉取 + 更新）
 
 用法（服务器上以 root 执行）：
   bash product/server/deploy.sh                拉取当前分支最新并部署
@@ -65,7 +65,7 @@ DSH Link — 服务器端一键部署（git 拉取 + 更新）
   SKIP_HEAP_CHECK=1        跳过 systemd 堆上限复核（默认必须命中）
   NPM_REGISTRY=...         传给 install.sh 的 npm 镜像
 
-部署成功后回滚点记录在 /var/lib/dsh-gateway/.deploy-state
+部署成功后回滚点记录在 /var/lib/batona-gateway/.deploy-state
 EOF
 }
 
@@ -406,7 +406,7 @@ if [ -z "$NEW_PREV" ]; then
 fi
 if [ "$NEW_PREV" = "$TARGET_REV" ]; then
   # 重复部署同一版本（没有新提交）时，回滚点会等于目标版本 —— 此时必须沿用
-  # 原有回滚点，否则"再跑一次 dsh-deploy"就会把回滚能力悄悄清空。
+  # 原有回滚点，否则"再跑一次 batona-deploy"就会把回滚能力悄悄清空。
   NEW_PREV="$(state_get previousCommit)"
 fi
 state_write "$TARGET_REV" "$NEW_PREV" "$TARGET_VER"
@@ -427,7 +427,7 @@ echo "  [OK] /healthz 版本 = v$ACTUAL_VER"
 if [ "$HEAP_OK" = "1" ]; then
   echo "  [OK] systemd 堆上限 --max-old-space-size=512"
 fi
-echo "  [OK] 配置与数据保留（/etc/dsh-gateway、/var/lib/dsh-gateway）→ PC/手机无需重新绑定"
+echo "  [OK] 配置与数据保留（/etc/batona-gateway、/var/lib/batona-gateway）→ PC/手机无需重新绑定"
 echo "════════════════════════════════════════════════════════════"
 echo ""
 if [ -n "$NEW_PREV" ]; then

@@ -3,7 +3,7 @@
  *
  * 用法：node test/probe-live.ts <launch-token> [baseUrl] [mode]
  *   mode = basic（默认）| approval | question
- * 例：node test/probe-live.ts dsh_xxx http://127.0.0.1:3080 basic
+ * 例：node test/probe-live.ts batona_xxx http://127.0.0.1:3080 basic
  *
  * 注意：必须显式传 token（DSH 0.1.2+ 的 /api 强制会话认证），会真实调用模型，故不进 CI。
  */

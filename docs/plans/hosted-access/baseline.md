@@ -24,13 +24,13 @@
 
 - [网关 mock 冒烟](../../../product/server/gateway/test/smoke.ts)：真实 HTTP/WS 装配，假 Adapter，登录、请求、推送和审批往返。
 - [隧道端到端](../../../product/server/gateway/test/tunnel-e2e.ts)：临时端口、假上游与真实隧道服务，可扩展多 PC 场景。
-- [Android UI 回归](../../../product/android/app/src/androidTest/java/com/dshlink/app/ui/BackendNavigationTest.kt)：DSH/Codex/Claude 导航与模型/权限状态；并非登录端到端证明。
+- [Android UI 回归](../../../product/android/app/src/androidTest/java/com/batona/mobile/ui/BackendNavigationTest.kt)：DSH/Codex/Claude 导航与模型/权限状态；并非登录端到端证明。
 - [PC 生命周期约束](../../../product/pc/AGENTS.md)、[Android 验收约束](../../../product/android/AGENTS.md)、[服务器运维约束](../../../product/server/AGENTS.md) 是后续任务的必读入口。
 - 构建/测试命令以各端 package/Gradle 配置和记忆为准；本轮只做文档结构、链接、依赖和 Git 差异检查。
 
 ## 既有变更指纹
 
-用途：后续实施前比对，发现新的并行改动时重新协调。指纹不是恢复数据；需要恢复能力时须另行安排受控备份或获准提交，不能用此表替代。
+用途：后续实施前比对，发现新的并行改动时重新协调。表内路径已按 Batona 当前命名归一化，哈希仍表示采集时的改名前内容，因此品牌迁移后不应与当前文件直接比对。指纹不是恢复数据；需要恢复能力时须另行安排受控备份或获准提交，不能用此表替代。
 
 | 相对仓库路径 | SHA-256（写入本轮草案前） |
 |---|---|
@@ -38,14 +38,14 @@
 | docs/adr/0002-hosted-invite-only-accounts.md | 15b75b2f8ddb8abdf977d508c8e10fd0d458614e3741b64fac5e1276d7d9b1dd |
 | product/android/AGENTS.md | d75caf1e2ece7a98d7f27e7448a449fdcd1224778082ca5b4ff761130244fb3b |
 | product/android/app/build.gradle.kts | ab37a2d8909fa219fb1bcf1487cc69d0983cfcc6e6792ef0527d34c4ed4bfccf |
-| product/android/app/src/androidTest/java/com/dshlink/app/ui/BackendNavigationTest.kt | c3ca09a4c5c8410d93c5ebd0bf94cb7675f585143b8c70dde2d4f91639a731c6 |
-| product/android/app/src/main/java/com/dshlink/app/data/GatewayClient.kt | 01a1e16431905a2c1c6b3984c423ac61ff006e65f843631fa6c354d5d6cc2f3b |
-| product/android/app/src/main/java/com/dshlink/app/data/GatewayFailure.kt | 8fdb4b5504e94cf9ab606a8389bf106f726d7ad05896006dbdb478e6e3988b3f |
-| product/android/app/src/main/java/com/dshlink/app/data/Models.kt | f7785133f79b72c86dca5672f0849224ec84358e9f1b9a6bc376d78c69687c41 |
-| product/android/app/src/main/java/com/dshlink/app/ui/BindScreen.kt | 601c892f15a4d1cd6cd5e3fa93c592c061ee4ca359b42e16c435e53f93e8e9a8 |
-| product/android/app/src/main/java/com/dshlink/app/ui/HomeScreen.kt | 03b07ab7a2917aa3a7c3d5ed1e3c19a207cbeb506eeac96e4d21f1eda333eb61 |
-| product/android/app/src/test/java/com/dshlink/app/ui/HomeStateTest.kt | e6eebf29bf14f80d6bf06045bae26d5d52580d3f933028a891fc68175d2d7f38 |
-| product/docs/需求-DSH远程接入网关.md | 22d91c32cc1a8e933339b3fe0eff220ec033d064ac8f4de4e9b3b916bb394916 |
+| product/android/app/src/androidTest/java/com/batona/mobile/ui/BackendNavigationTest.kt | c3ca09a4c5c8410d93c5ebd0bf94cb7675f585143b8c70dde2d4f91639a731c6 |
+| product/android/app/src/main/java/com/batona/mobile/data/GatewayClient.kt | 01a1e16431905a2c1c6b3984c423ac61ff006e65f843631fa6c354d5d6cc2f3b |
+| product/android/app/src/main/java/com/batona/mobile/data/GatewayFailure.kt | 8fdb4b5504e94cf9ab606a8389bf106f726d7ad05896006dbdb478e6e3988b3f |
+| product/android/app/src/main/java/com/batona/mobile/data/Models.kt | f7785133f79b72c86dca5672f0849224ec84358e9f1b9a6bc376d78c69687c41 |
+| product/android/app/src/main/java/com/batona/mobile/ui/BindScreen.kt | 601c892f15a4d1cd6cd5e3fa93c592c061ee4ca359b42e16c435e53f93e8e9a8 |
+| product/android/app/src/main/java/com/batona/mobile/ui/HomeScreen.kt | 03b07ab7a2917aa3a7c3d5ed1e3c19a207cbeb506eeac96e4d21f1eda333eb61 |
+| product/android/app/src/test/java/com/batona/mobile/ui/HomeStateTest.kt | e6eebf29bf14f80d6bf06045bae26d5d52580d3f933028a891fc68175d2d7f38 |
+| product/docs/需求-Batona远程接入网关.md | 22d91c32cc1a8e933339b3fe0eff220ec033d064ac8f4de4e9b3b916bb394916 |
 | product/pc/AGENTS.md | 4883d85f140f0d03e18d21058d7afe4c1ad45a1cedace1bf7addf1e234ba4779 |
 | product/pc/codex-bridge.js | 2f12e188eca056be456c55376e00e94cb6ae41e7a1aa771ecc2e1e8d3d3d4336 |
 | product/pc/dsh-launcher.js | 33c32b09a0cfe5edb984e5f0fe5eb7ca9899ee43070bca2037af00061fcda350 |
@@ -70,5 +70,5 @@
 | product/server/gateway/src/adapter/dsh/adapter.ts | 01e1f7f7fceebfee65dbfcf68a27aa9c1461e05a7e7220c5d0a3233154e9d18a |
 | product/server/gateway/src/session/router.ts | cae64790a2fb82462b369229da619b7d360a070b2a4e9b089bba7f523e324e3b |
 | product/server/gateway/test/session-model.ts | 86328c67341d76c32d1326731e8215c1bed4f08e5acc538942d65be65db7dbcd |
-| product/server/nginx-dsh-gateway-routes.conf | 47806fb513ae2c9221f39f1c959c1b499befd2abe1f1166d5ab34cb1a0a4c0d9 |
-| product/server/nginx-dsh-gateway.conf | e897f846513a61f0afe83f312142872a7dcb093d189ed5b8af10682d3426c414 |
+| product/server/nginx-batona-gateway-routes.conf | 47806fb513ae2c9221f39f1c959c1b499befd2abe1f1166d5ab34cb1a0a4c0d9 |
+| product/server/nginx-batona-gateway.conf | e897f846513a61f0afe83f312142872a7dcb093d189ed5b8af10682d3426c414 |

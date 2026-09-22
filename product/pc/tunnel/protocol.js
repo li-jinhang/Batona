@@ -1,5 +1,5 @@
 /**
- * tunnel/protocol.js — DSH Link Tunnel v1 线格式（PC 端 CJS 实现）
+ * tunnel/protocol.js — Batona PC Tunnel v1 线格式（PC 端 CJS 实现）
  *
  * ⚠️ 与 `product/server/gateway/src/tunnel/protocol.ts` 是**同一线格式的两份实现**。
  *    改常量或帧形状必须两处同改；两侧一致性由 `test/tunnel-vectors.json` 黄金向量把关

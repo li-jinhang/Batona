@@ -1,5 +1,5 @@
 {
-  "_comment": "DSH Link Tunnel v1 黄金向量 —— 网关 protocol.ts 与 PC protocol.js 两份实现共同消费，保证线格式一致。改协议必须同时更新本文件与两份实现。",
+  "_comment": "Batona Tunnel v1 黄金向量 —— 网关 protocol.ts 与 PC protocol.js 两份实现共同消费，保证线格式一致。改协议必须同时更新本文件与两份实现。",
   "constants": {
     "TUNNEL_PATH": "/tunnel",
     "PROTO_VERSION": 1,
@@ -56,11 +56,11 @@
     {
       "dir": "c2s",
       "why": "hello 完整形态",
-      "text": "{\"t\":\"hello\",\"v\":1,\"client\":{\"app\":\"DSH Link\",\"appVersion\":\"0.2.0\",\"os\":\"win32\"},\"services\":[{\"name\":\"dsh\",\"localPort\":3080},{\"name\":\"dir\",\"localPort\":3081}]}",
+      "text": "{\"t\":\"hello\",\"v\":1,\"client\":{\"app\":\"Batona PC\",\"appVersion\":\"0.5.0\",\"os\":\"win32\"},\"services\":[{\"name\":\"dsh\",\"localPort\":3080},{\"name\":\"dir\",\"localPort\":3081}]}",
       "expect": {
         "t": "hello",
         "v": 1,
-        "client": { "app": "DSH Link", "appVersion": "0.2.0", "os": "win32" },
+        "client": { "app": "Batona PC", "appVersion": "0.5.0", "os": "win32" },
         "services": [{ "name": "dsh", "localPort": 3080 }, { "name": "dir", "localPort": 3081 }]
       }
     },

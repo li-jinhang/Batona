@@ -59,7 +59,7 @@ export class AccountStore {
     return a;
   }
   create(remark: string): Account {
-    const a: Account = { id: randomUUID(), key: 'dsh_' + secret(), remark, disabled: false, createdAt: this.now(), counts: [] };
+    const a: Account = { id: randomUUID(), key: 'batona_' + secret(), remark, disabled: false, createdAt: this.now(), counts: [] };
     this.data.accounts.push(a); return a;
   }
   revoke(a: Account, kind?: Token['kind']) {

@@ -151,7 +151,7 @@ export class AuthService {
     const result: LoginResult = { ok: true, token, deviceId };
     if (!user.totpSecret && totpCode) {
       // 本次绑定后仍返回 URI 供重录
-      result.otpauthUri = otpauthUri(user.totpSecret!, 'dsh-gateway', username);
+      result.otpauthUri = otpauthUri(user.totpSecret!, 'batona-gateway', username);
     }
     return result;
   }

@@ -33,7 +33,7 @@ function check(name: string, cond: boolean, detail = ''): void {
 }
 
 async function main(): Promise<void> {
-  const dataDir = mkdtempSync(join(tmpdir(), 'dsh-gw-smoke-'));
+  const dataDir = mkdtempSync(join(tmpdir(), 'batona-gw-smoke-'));
   const auth = new AuthService(dataDir, { initialUser: { username: 'admin', password: 'pass' } });
   const registry = await AdapterRegistry.assemble({ mock: createMockAdapter }, { mock: { enabled: true } });
   const router = new SessionRouter(registry);

@@ -44,7 +44,7 @@ function check(name: string, cond: boolean, detail = ''): void {
   else { fail++; console.log(`  !!  ${name} ${detail}`); }
 }
 
-const dataDir = mkdtempSync(join(tmpdir(), 'dsh-gw-e2e-'));
+const dataDir = mkdtempSync(join(tmpdir(), 'batona-gw-e2e-'));
 const auth = new AuthService(dataDir, { initialUser: { username: 'admin', password: 'pass' } });
 // 故意不配 authToken：验证"上报后自愈"这条路径本身
 const registry = await AdapterRegistry.assemble({ dsh: createDshAdapter }, { dsh: { enabled: true, cfg: { baseUrl: dshBaseUrl } } });

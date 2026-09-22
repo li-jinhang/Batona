@@ -1,9 +1,9 @@
 {
-  "name": "dsh-remote-gateway",
-  "version": "0.2.0",
+  "name": "batona-gateway",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "DeepSeek Harness 手机远程接入网关（Phase 1 MVP）",
+  "description": "Batona 多 Agent 远程接入网关",
   "engines": {
     "node": ">=18"
   },

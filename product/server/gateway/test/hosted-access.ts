@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { HostedGateway } from '../src/hosted/gateway.ts';
 
-const dataDir = mkdtempSync(join(tmpdir(), 'dsh-hosted-test-'));
+const dataDir = mkdtempSync(join(tmpdir(), 'batona-hosted-test-'));
 const adminKey = randomBytes(32).toString('hex');
 const gateway = new HostedGateway({ dataDir, adminKey, vaultKey: randomBytes(32), webDir: './web', mock: true });
 await new Promise<void>(r => gateway.server.listen(0, '127.0.0.1', r));
@@ -23,6 +23,7 @@ try {
   assert.equal(created.status, 200);
   const key = created.body.key;
   assert.equal(typeof key, 'string');
+  assert.match(key, /^batona_/);
   const pc = await call('/api/access/login', { key, deviceSecret: 'fixture-pc-secret-00000000000000000000', name: 'PC A' });
   assert.equal(pc.status, 200);
   assert.equal(typeof pc.body.token, 'string');

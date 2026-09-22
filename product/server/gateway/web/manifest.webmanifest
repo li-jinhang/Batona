@@ -1,6 +1,6 @@
 {
-  "name": "DSH Remote Gateway",
-  "short_name": "DSH Remote",
+  "name": "Batona Gateway",
+  "short_name": "Batona",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0f1115",

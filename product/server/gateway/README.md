@@ -1,10 +1,10 @@
-# DSH Remote Gateway（Phase 1 MVP）
+# Batona Gateway（Phase 1 MVP）
 
 DeepSeek Harness 手机远程接入网关 —— 手机通过**公网服务器上的网关**远程操控**笔记本上的 DSH**。
 服务器只做转发（认证 / 会话路由 / 协议翻译），**agent、LLM 调用、工具执行全部留在笔记本**。
 
 关联文档：
-- [`../../docs/需求-DSH远程接入网关.md`](../../docs/需求-DSH远程接入网关.md) — 需求（PRD）
+- [`../../docs/需求-Batona远程接入网关.md`](../../docs/需求-Batona远程接入网关.md) — 需求（PRD）
 - [`../../README.md`](../../README.md) — 跨端架构、绑定与协议契约
 - [`../../docs/调查-DSH手机远程操控插件.md`](../../docs/调查-DSH手机远程操控插件.md) — 开源方案盘点
 
@@ -57,7 +57,7 @@ npm run start:prod                    # node dist/app.mjs
    ```
    或环境变量：`DSH_BASE_URL=http://127.0.0.1:3080 DSH_AGENT_KEY=<key> npm start`；
 4. **DSH 0.1.2+ 的 launch token**：`/api` 与 `/api/remote.mux` 强制浏览器会话认证，token 每个进程随机生成且不落盘。
-   PC 端（DSH Link）会在 DSH 启动时抓取并上报：`POST /api/dsh/launch-token`，头 `x-dsh-agent-key: <agentKey>`，体 `{"token":"…"}`；
+   Batona PC 会在 DSH 启动时抓取并上报：`POST /api/dsh/launch-token`，头 `x-dsh-agent-key: <agentKey>`，体 `{"token":"…"}`；
    网关热更新 token 并重建连接。未配 `agentKey` 时该端点返回 404（通道关闭）。云上部署由 `install.sh` 自动用 frp token 填充 `agentKey`，无需手工配置；
    无法自动上报时可用配置项 `cfg.authToken` 写死一个静态 token（DSH 重启即失效，仅作兜底）。
 5. 生产部署：网关置于 **Caddy/Nginx TLS 之后**，仅暴露 443；`--trusted-host`/`trustedHosts` 只是防重绑栅栏，**认证由网关完成**（账号密码 + TOTP + 设备注册 + 限速）。

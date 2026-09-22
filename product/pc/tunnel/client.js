@@ -1,5 +1,5 @@
 /**
- * tunnel/client.js — DSH Link 内置隧道客户端（跑在 Electron 主进程内）
+ * tunnel/client.js — Batona PC 内置隧道客户端（跑在 Electron 主进程内）
  *
  * 与服务端 src/tunnel/{protocol,server,session,stream}.ts 对端。设计要点：
  *   - wss://<serverIp>:<gwPort>/tunnel，Authorization: Bearer <frpToken>（= 网关 agentKey）
@@ -265,7 +265,7 @@ class TunnelClient extends EventEmitter {
         ws.send(P.encodeControl({
           t: 'hello',
           v: P.PROTO_VERSION,
-          client: { app: 'DSH Link', appVersion: this.appVersion, os: process.platform },
+          client: { app: 'Batona PC', appVersion: this.appVersion, os: process.platform },
           services: this.servicesFn().map((s) => ({ name: s.name, localPort: s.localPort })),
         }));
       });

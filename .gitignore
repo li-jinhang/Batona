@@ -1,5 +1,5 @@
 # ============================================================================
-# DSH Link — Git 忽略规则
+# Batona — Git 忽略规则
 #
 # 原则：只提交源码与文档。
 #   1) 依赖与构建产物不入库（本机 node_modules/dist/build 合计约 1.8GB）；
@@ -27,7 +27,7 @@ product/android/.idea/
 # ── 发布用二进制：一律不入库 ────────────────────────────────────────────
 # 这些是"要分发给用户"的产物，由服务器静态目录托管（见 docs/服务器部署-git.md §6）。
 # 体积与数量都远超 git 的适用范围：
-#   product/android/DSHLink-v0.1.*-debug.apk   共 32 个，约 620MB
+#   product/android/Batona-Mobile-v0.1.*-debug.apk   共 32 个，约 620MB
 #   product/pc/dist/*.exe                      安装包/便携版各 83MB
 #   product/pc/frpc-bin/frpc.exe               16MB，运行时自动下载
 *.apk

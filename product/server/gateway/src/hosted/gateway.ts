@@ -33,7 +33,7 @@ export class HostedGateway {
         if (path === '/healthz' && req.method === 'GET') {
           let version = 'unknown';
           for (const relative of ['../package.json', '../../package.json']) {
-            try { const pkg = JSON.parse(readFileSync(new URL(relative, import.meta.url), 'utf8')); if (pkg.name === 'dsh-remote-gateway') version = pkg.version; } catch {}
+            try { const pkg = JSON.parse(readFileSync(new URL(relative, import.meta.url), 'utf8')); if (pkg.name === 'batona-gateway') version = pkg.version; } catch {}
           }
           res.end(JSON.stringify({ version, ok: true, accessMode: 'hosted', tunnel: { enabled: true } })); return;
         }
@@ -198,7 +198,7 @@ export class HostedGateway {
       this.clearPairs(a.id);
       const id = secret(), code = secret().slice(0, 12).toUpperCase().replace(/[-_]/g, 'Z');
       this.pairs.set(id, { accountId: a.id, pcId: info.device.id, pcToken: token, code, expires: this.store.now() + 20000 });
-      return { pairId: id, code, qr: 'dsh-pair://' + code };
+      return { pairId: id, code, qr: 'batona-pair://' + code };
     }
     const p = this.pairs.get(String(b.pairId ?? ''));
     if (!p || p.accountId !== a.id || p.pcId !== info.device.id || p.pcToken !== token || (p.expires && p.expires < this.store.now())) throw new AccessError('pair-invalid', 404);

@@ -43,7 +43,7 @@ export class CodexBridgeClient {
   }
 
   async connect(): Promise<boolean> {
-    // PC 是可随时休眠、断网或尚未启动 DSH Link 的本地 Agent Host。网关启动时
+    // PC 是可随时休眠、断网或尚未启动 Batona 的本地 Agent Host。网关启动时
     // 不能因为它暂时离线而退出；事件 WS 会在连接可用后自行重连，具体操作则
     // 返回 codex-offline 供手机明确展示，而不是把服务端伪装成健康的 Codex 会话。
     this.stopped = false;

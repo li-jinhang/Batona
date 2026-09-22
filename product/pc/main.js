@@ -1,5 +1,5 @@
 /**
- * DSH Link — Electron 主进程
+ * Batona PC — Electron 主进程
  *
  * 职责：
  *  1. 托管账号：接入密钥登录、安全存储设备授权、手机配对确认
@@ -7,7 +7,7 @@
  *  3. 隧道管理：仅使用内置 WSS 隧道（tunnel/client.js，跑在本进程内）
  *  4. 托盘常驻 + 开机自启 + 日志
  *
- * 渲染进程通过 preload 暴露的 window.dshLink（contextBridge + IPC）与主进程通信。
+ * 渲染进程通过 preload 暴露的 window.batona（contextBridge + IPC）与主进程通信。
  */
 'use strict';
 
@@ -190,7 +190,7 @@ function dshTokenPath() {
 
 /** 载入上次捕获的 launch token（仅用于"重启前先探测"，DSH 重启后 token 会变） */
 function loadDshToken() {
-  state.dshToken = process.env.DSHLINK_DSH_TOKEN || null;
+  state.dshToken = process.env.BATONA_DSH_TOKEN || null;
   try {
     const j = JSON.parse(fs.readFileSync(dshTokenPath(), 'utf8'));
     if (!state.dshToken) state.dshToken = j.token || null;
@@ -303,13 +303,13 @@ async function startDsh() {
   }
   const launcher = resolveDshLauncher();
   if (!launcher) {
-    log('DSH 启动失败：未找到 dsh 或 npx；请安装 DSH，或设置 DSHLINK_DSH_CMD');
+    log('DSH 启动失败：未找到 dsh 或 npx；请安装 DSH，或设置 BATONA_DSH_CMD');
     return false;
   }
   // DSH 0.1.2+ 的 /api 有 browser-trust fence：默认只信任 loopback/LAN。
   // 网关经 frp 隧道从服务器访问（Host 为 127.0.0.1:3080），需显式声明 trusted-host 才放行。
   const defaultArgs = '--profile web --no-open --trusted-host 127.0.0.1:3080';
-  const args = [...launcher.prefixArgs, ...(process.env.DSHLINK_DSH_ARGS || defaultArgs).split(/\s+/)];
+  const args = [...launcher.prefixArgs, ...(process.env.BATONA_DSH_ARGS || defaultArgs).split(/\s+/)];
   log(`starting DSH (${launcher.source}): ${launcher.command} ${args.join(' ')}`);
   try {
     // dsh 是 .cmd（npm 全局 bin），经 cmd 启动；Windows cmd 默认代码页 GBK，
@@ -329,7 +329,7 @@ async function startDsh() {
     log('DSH web 启动超时（可手动运行 dsh web）');
     return false;
   } catch (e) {
-    log(`dsh start failed: ${e.message}（可用 DSHLINK_DSH_CMD 指定命令）`);
+    log(`dsh start failed: ${e.message}（可用 BATONA_DSH_CMD 指定命令）`);
     return false;
   }
 }
@@ -493,9 +493,9 @@ let tray = null;
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 960, height: 680,
+    width: 1180, height: 800,
     minWidth: 480, minHeight: 560,
-    title: 'DSH Link PC',
+    title: 'Batona PC',
     icon: appIcon(),   // 任务栏/窗口图标
     autoHideMenuBar: true,
     webPreferences: {
@@ -526,9 +526,9 @@ function trayIcon() {
 
 function createTray() {
   tray = new Tray(trayIcon());
-  tray.setToolTip('DSH Link');
+  tray.setToolTip('Batona PC');
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '打开 DSH Link', click: () => { if (win) win.show(); else createWindow(); } },
+    { label: '打开 Batona PC', click: () => { if (win) win.show(); else createWindow(); } },
     { label: '状态', click: () => { if (win) win.show(); } },
     { type: 'separator' },
     { label: '退出', click: () => { stopFrpc(); stopDsh(); app.quit(); } },
@@ -538,7 +538,7 @@ function createTray() {
 
 // ── IPC ───────────────────────────────────────────────────────────────
 function registerIpc() {
-  ipcMain.handle('binding:get', () => access.publicState());
+  ipcMain.handle('binding:get', () => ({ ...access.publicState(), appVersion: app.getVersion() }));
   ipcMain.handle('access:login', async (_e, key, replace) => {
     try { const r = await access.login(String(key), replace === true); stopFrpc(); loadBinding(); return r; }
     catch(e) { return {ok:false,error:e.code || e.message}; }
@@ -592,13 +592,13 @@ if (ownsSingleInstanceLock) app.whenReady().then(async () => {
     if (tunnelClient) tunnelClient.reconnectNow();
   });
 
-  log('DSH Link ready');
+  log('Batona PC ready');
   if (tunnelRequireError) log('提示：自研隧道模块加载失败，远程服务不可用');
 
   // 冒烟模式：启动 2 秒后退出（用于 CI/验证）
-  if (process.env.DSHLINK_SMOKE) {
-    console.log('[smoke] DSH Link main OK, binding=' + (state.binding ? 'configured' : 'absent')
-      + ', tunnelMode=' + (process.env.DSHLINK_TUNNEL || 'auto')
+  if (process.env.BATONA_SMOKE) {
+    console.log('[smoke] Batona PC main OK, binding=' + (state.binding ? 'configured' : 'absent')
+      + ', tunnelMode=' + (process.env.BATONA_TUNNEL || 'auto')
       + ', tunnelClient=' + (TunnelClient ? 'loaded' : 'UNAVAILABLE'));
     setTimeout(() => app.quit(), 2000);
     return;

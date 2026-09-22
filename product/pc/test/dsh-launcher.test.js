@@ -13,7 +13,7 @@ assert.deepEqual(
   { command: 'dsh', prefixArgs: [], source: 'global' },
 );
 assert.deepEqual(
-  resolveDshLauncher({ DSHLINK_DSH_CMD: 'custom-dsh' }, () => false),
+  resolveDshLauncher({ BATONA_DSH_CMD: 'custom-dsh' }, () => false),
   { command: 'custom-dsh', prefixArgs: [], source: 'override' },
 );
 console.log('✔ DSH 启动器会在缺少全局命令时回退到 npx');

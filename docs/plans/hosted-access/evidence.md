@@ -8,7 +8,7 @@
 
 主模拟器已启动配对页并通过 Android 官方截图检查：标题、手动码输入、请求配对和扫码按钮可见，不再显示旧 admin 登录。截图 `output/dsh-hosted-deployed.png` 不含凭据；这不是扫码或完整聊天验收。
 
-Android Studio API 34 独立 AVD：BackendNavigationTest 2 项通过（13.39s），新增显式启用的 ProductionEntryTest 1 项通过（10.29s），后者使用默认 OkHttp 信任链连接实际生产、验证健康及无效配对码可恢复，不含凭据、不调用 Agent。主 AVD emulator-5554 以 `adb install -r` 覆盖安装 0.2.0 并启动，未清应用数据。PC 只读确认用户安装于 D:\DSHLink\DSH Link 的版本为 0.4.0，未运行本地 PC 测试。
+Android Studio API 34 独立 AVD：BackendNavigationTest 2 项通过（13.39s），新增显式启用的 ProductionEntryTest 1 项通过（10.29s），后者使用默认 OkHttp 信任链连接实际生产、验证健康及无效配对码可恢复，不含凭据、不调用 Agent。主 AVD emulator-5554 以 `adb install -r` 覆盖安装 0.2.0 并启动，未清应用数据。改名前 PC 0.4.0 安装已只读核对，未运行本地 PC 测试。
 
 尚未完成：生产 PC 登录/手机审批配对与真实任务流（需用户 PC 操作）；扫码权限全流程；Windows/后台完整 GUI 验收；Linux 联合恢复演练；自动续期独立核验。这些未通过项没有被标记为通过。Windows 界面控制技能缺少启动模块，未绕过控制限制，手机验证使用 Android 官方 AVD/仪器测试。
 
@@ -63,7 +63,7 @@ npm run codex-offline
 
 真实后端只读探针 `node test/hosted-live-readonly.ts` 要求本机既有 DSH/Codex 正常运行；它不发送模型请求，不应为了测试启动/重启用户 Agent。
 
-模拟器联调用 `node test/android-fixture.ts` 启动本地临时 TLS 网关，其输出只有端口、PID 和公开测试 CA 路径。把公开 CA 文件 Base64 作为 `fixtureCA` 参数传给独立 AVD 的 `am instrument -w -e fixtureCA ... com.dshlink.app.test/androidx.test.runner.AndroidJUnitRunner`。每轮重启 fixture 以清零测试计数。PC 原生凭据测试以该 CA 路径设置 `DSH_FIXTURE_CA`，在 `product/pc` 运行 `node node_modules/electron/cli.js test/access-client.test.cjs`。结束调用同一 fixture 的 `/_fixture/stop`，以该 CA 正常校验 HTTPS；不使用生产凭据。
+模拟器联调用 `node test/android-fixture.ts` 启动本地临时 TLS 网关，其输出只有端口、PID 和公开测试 CA 路径。把公开 CA 文件 Base64 作为 `fixtureCA` 参数传给独立 AVD 的 `am instrument -w -e fixtureCA ... com.batona.mobile.test/androidx.test.runner.AndroidJUnitRunner`。每轮重启 fixture 以清零测试计数。PC 原生凭据测试以该 CA 路径设置 `DSH_FIXTURE_CA`，在 `product/pc` 运行 `node node_modules/electron/cli.js test/access-client.test.cjs`。结束调用同一 fixture 的 `/_fixture/stop`，以该 CA 正常校验 HTTPS；不使用生产凭据。
 
 Android 构建命令：在 `product/android` 设置 `JAVA_HOME=D:\_Programmes\Java21` 后运行 `./gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest :app:testDebugUnitTest`。PC 在 `product/pc` 运行 `npm run dist`。
 
@@ -93,8 +93,8 @@ AC01–AC10 已有实现与上述不同层次的证据，但未声称每个 UI/�
 
 | 文件 | SHA256 |
 |---|---|
-| product/pc/dist/DSH Link Setup 0.4.0.exe | 5D59D8D89AF1A7555F0DBCE27EA2AB04FCBEA975F701C0B0F32F4A57A969867E |
-| product/pc/dist/DSH Link 0.4.0.exe | BB9908998CA0604840C45FD62BE0BB988E4EEBFE962C19B65A7EFFFD7F85758F |
+| 改名前 PC 0.4.0 安装包 | 5D59D8D89AF1A7555F0DBCE27EA2AB04FCBEA975F701C0B0F32F4A57A969867E |
+| 改名前 PC 0.4.0 便携版 | BB9908998CA0604840C45FD62BE0BB988E4EEBFE962C19B65A7EFFFD7F85758F |
 | product/android/app/build/outputs/apk/debug/app-debug.apk | 2E56B0877979D92BBE8AB806B186F3CBD60C768CEFDD0E7F4C777569CF8DF026 |
 
 Windows 打包后的 main.js、access-client.js、tunnel/startup.js、renderer/app.js 与当前源码一致；包内未包含 frpc 可执行文件。

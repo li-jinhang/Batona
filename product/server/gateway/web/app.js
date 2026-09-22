@@ -1,4 +1,4 @@
-/* DSH Remote — 手机壳（vanilla JS，零依赖） */
+/* Batona — 手机壳（vanilla JS，零依赖） */
 'use strict';
 
 const $ = (id) => document.getElementById(id);

@@ -1,110 +1,240 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DSH Link</title>
-<link rel="stylesheet" href="style.css">
-</head>
-<body>
-
-<!-- 引导页：未绑定 -->
-<section id="view-bind" class="view hidden">
-  <div class="card hero">
-    <h1>DSH Link</h1>
-    <p class="sub">手机远程操控 DSH 与 Codex</p>
-  </div>
-  <div class="card">
-    <h2>登录测试账号</h2>
-    <p class="hint">输入管理员发给你的账号访问密钥。服务器已预设，无需账号密码或旧连接串。</p>
-    <input id="account-key" type="password" autocomplete="off" placeholder="dsh_…" aria-label="账号访问密钥">
-    <div class="row"><button id="btn-login">登录</button></div>
-    <p id="bind-msg" class="msg" role="status"></p>
-  </div>
-</section>
-
-<!-- 主界面：已绑定 -->
-<section id="view-main" class="view hidden">
-  <div class="card hero">
-    <div class="hero-row">
-      <h1>DSH Link PC</h1>
-      <button id="btn-unbind" class="danger">退出登录</button>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'none'"
+    />
+    <title>Batona PC</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <section id="view-bind" class="login hidden">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <div>Batona PC<small>连接你的电脑与手机</small></div>
+      </div>
+      <form id="login-form" class="panel login-panel">
+        <h1>登录电脑端</h1>
+        <p class="muted">使用管理员提供的接入密钥，开始远程连接。</p>
+        <label for="account-key">接入密钥</label
+        ><input
+          id="account-key"
+          type="password"
+          autocomplete="off"
+          placeholder="输入接入密钥"
+          required
+        /><button id="btn-login" type="submit" class="primary wide">登录</button>
+        <p id="bind-msg" class="error" role="status"></p>
+        <p class="caption">手机在此电脑确认后即可接入。</p>
+      </form>
+    </section>
+    <div id="view-main" class="app-shell hidden">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <div>Batona PC<small>电脑端</small></div>
+        </div>
+        <nav aria-label="主导航">
+          <button
+            class="nav-item active"
+            data-page="overview"
+            aria-current="page"
+            aria-label="连接总览"
+          >
+            <span data-icon="home"></span><span>连接总览</span></button
+          ><button class="nav-item" data-page="logs" aria-label="运行日志">
+            <span data-icon="file"></span><span>运行日志</span></button
+          ><button class="nav-item" data-page="settings" aria-label="设置">
+            <span data-icon="settings"></span><span>设置</span>
+          </button>
+        </nav>
+        <footer><span class="dot on"></span>后台运行中<small id="app-version"></small></footer>
+      </aside>
+      <main>
+        <section id="page-overview" class="page">
+          <section class="panel service-panel" aria-labelledby="service-title">
+            <h2 id="service-title">服务状态</h2>
+            <div class="connection-chain">
+              <div class="connection-node">
+                <span data-icon="lock" class="large-icon"></span><strong>加密隧道</strong
+                ><span id="tunnel-status" class="status">检测中</span>
+              </div>
+              <span class="connection-line" aria-hidden="true"></span>
+              <div class="connection-node">
+                <span data-icon="server" class="large-icon"></span><strong>服务器网关</strong
+                ><span id="gateway-status" class="status">检测中</span>
+              </div>
+            </div>
+            <div class="service-actions">
+              <button id="btn-refresh" class="secondary">
+                <span data-icon="refresh"></span>刷新状态</button
+              ><button id="btn-service" class="secondary">
+                <span data-icon="play"></span><span id="service-action-label">启动服务</span>
+              </button>
+            </div>
+          </section>
+          <div class="overview-grid">
+            <section class="panel backends" aria-labelledby="backend-title">
+              <h2 id="backend-title">本机后端</h2>
+              <article class="backend-card">
+                <div class="backend-logo dsh">D</div>
+                <div class="backend-content">
+                  <div class="backend-heading">
+                    <h3>DSH</h3>
+                    <span id="dsh-badge" class="badge neutral">检测中</span
+                    ><button class="text-button" data-detail="dsh">
+                      查看详情<span data-icon="chevron"></span>
+                    </button>
+                  </div>
+                  <div class="backend-properties">
+                    <div>
+                      <span>本体运行</span><strong id="dsh-process" class="status">检测中</strong>
+                    </div>
+                    <div>
+                      <span>本地认证</span><strong id="dsh-auth" class="status">检测中</strong>
+                    </div>
+                  </div>
+                  <p id="dsh-hint" class="caption">正在读取本地服务状态…</p>
+                </div>
+              </article>
+              <article class="backend-card">
+                <div class="backend-logo"><span data-icon="terminal"></span></div>
+                <div class="backend-content">
+                  <div class="backend-heading">
+                    <h3>Codex</h3>
+                    <span id="codex-badge" class="badge neutral">检测中</span
+                    ><button class="text-button" data-detail="codex">
+                      查看详情<span data-icon="chevron"></span>
+                    </button>
+                  </div>
+                  <div class="backend-properties">
+                    <div>
+                      <span>桌面应用</span><strong id="codex-process" class="status">检测中</strong>
+                    </div>
+                    <div>
+                      <span>本地认证</span><strong id="codex-auth" class="status">待验证</strong>
+                    </div>
+                  </div>
+                  <p id="codex-hint" class="notice">正在读取 Codex 状态…</p>
+                  <button class="text-button compact" data-detail="codex">查看限制说明</button>
+                </div>
+              </article>
+            </section>
+            <section class="panel pairing">
+              <div class="pair-heading">
+                <span data-icon="phone" class="large-icon"></span>
+                <div>
+                  <h2>连接手机</h2>
+                  <p class="muted">用手机接入这台电脑</p>
+                </div>
+              </div>
+              <ol class="pair-steps">
+                <li>打开手机 App</li>
+                <li>扫码或输入配对码</li>
+                <li>在本电脑确认连接</li>
+              </ol>
+              <button id="btn-pair-open" class="primary wide">显示配对二维码</button
+              ><button id="btn-pair-copy" class="secondary wide">复制配对码</button>
+              <p class="pair-note"><span data-icon="lock"></span>配对信息默认隐藏</p>
+            </section>
+            <section class="panel recent">
+              <div class="section-heading">
+                <h2>最近运行记录</h2>
+                <button class="text-button" data-page="logs">
+                  查看全部<span data-icon="chevron"></span>
+                </button>
+              </div>
+              <div id="recent-logs" aria-live="polite"><p class="muted">暂无运行记录</p></div>
+            </section>
+          </div>
+          <section class="panel autostart-strip">
+            <label class="switch-label"
+              ><strong>开机自动启动</strong
+              ><input type="checkbox" id="autostart" role="switch" /><span
+                class="switch-track"
+                aria-hidden="true"
+              ></span></label
+            ><span class="caption">登录 Windows 后保持连接</span
+            ><button class="text-button" data-page="settings">
+              管理设置<span data-icon="chevron"></span>
+            </button>
+          </section>
+        </section>
+        <section id="page-logs" class="page hidden">
+          <div class="page-heading">
+            <h1>运行日志</h1>
+            <button id="btn-refresh-logs" class="secondary">
+              <span data-icon="refresh"></span>刷新
+            </button>
+          </div>
+          <div class="panel">
+            <label class="search-label" for="log-filter">筛选记录</label
+            ><input id="log-filter" type="search" placeholder="搜索服务名称或错误信息" />
+            <p class="caption">最近 200 条记录 · 凭据已脱敏</p>
+            <div id="full-logs" class="full-logs"></div>
+          </div>
+        </section>
+        <section id="page-settings" class="page hidden">
+          <h1>设置</h1>
+          <section class="panel settings-card">
+            <h2>连接信息</h2>
+            <dl>
+              <dt>服务器网关</dt>
+              <dd id="server-address">—</dd>
+              <dt>传输方式</dt>
+              <dd>HTTPS / 加密 WSS</dd>
+              <dt>当前版本</dt>
+              <dd id="settings-version">—</dd>
+            </dl>
+            <p class="caption">本地任务在电脑运行，服务器负责远程连接。</p>
+          </section>
+          <section class="panel settings-card">
+            <h2>已绑定手机</h2>
+            <p id="phone-state" class="muted">读取中</p>
+            <div class="row">
+              <button id="btn-phone-rename" class="secondary">修改名称</button
+              ><button id="btn-phone-unbind" class="danger">解除手机绑定</button>
+            </div>
+            <p class="caption">更换手机前请先解除绑定。本地任务继续运行。</p>
+          </section>
+          <section class="panel settings-card">
+            <h2>账号</h2>
+            <p class="muted">退出后停止远程访问，保留设备绑定和本地任务。</p>
+            <button id="btn-unbind" class="danger">退出登录</button>
+          </section>
+        </section>
+      </main>
     </div>
-  </div>
-
-  <div class="card">
-    <div class="mod-head">
-      <h2>服务状态</h2>
-      <span class="status-label" id="all-status">检测中</span>
-      <span class="dot" id="dot-all"></span>
-    </div>
-    <div class="row">
-      <button id="btn-start">一键启动</button>
-      <button id="btn-stop" class="secondary">停止</button>
-    </div>
-  </div>
-
-  <div class="software-grid">
-  <div class="card">
-    <div class="mod-head">
-      <h2>DSH 本体</h2>
-      <span class="dot" id="dot-dsh"></span>
-    </div>
-    <p class="software-state" id="dsh-status">检测中</p>
-    <p id="dsh-hint" class="hint"></p>
-    <button id="btn-pc-settings" class="secondary">电脑设置</button>
-  </div>
-  <div class="card">
-    <div class="mod-head">
-      <h2>Codex 本体</h2>
-      <span class="dot" id="dot-codex"></span>
-    </div>
-    <p class="software-state" id="codex-status">检测中</p>
-    <p id="codex-hint" class="hint"></p>
-    <p class="hint">独立检测 Codex Desktop，不以桥接进程代替本体。</p>
-  </div>
-  </div>
-
-  <div class="card">
-    <div class="mod-head">
-      <h2>隧道</h2>
-      <span class="dot" id="dot-frpc"></span>
-    </div>
-    <button id="btn-frpc" class="primary">启动隧道</button>
-  </div>
-
-  <div class="card">
-    <div class="mod-head">
-      <h2>服务器（网关）</h2>
-      <span class="dot" id="dot-gw"></span>
-    </div>
-    <button id="btn-cloud-info" class="primary">云端信息</button>
-  </div>
-
-  <div class="card">
-    <h2>手机配对</h2>
-    <p class="hint">打开配对页，手机扫码或输入配对码，再由本电脑确认。关闭或断线后，未完成的配对码作废。</p>
-    <button id="btn-pair-open">打开配对页</button>
-    <div id="pair-panel" hidden>
-      <div id="qr-box"><img id="qr-img" alt="临时配对二维码"></div>
-      <p id="pair-code" class="conn"></p>
+    <dialog id="pair-dialog" aria-labelledby="pair-title">
+      <div class="dialog-heading">
+        <h2 id="pair-title">连接手机</h2>
+        <button id="btn-pair-close" class="icon-button" aria-label="关闭配对">
+          <span data-icon="close"></span>
+        </button>
+      </div>
+      <p class="muted">用手机扫码或输入下方配对码，再在此电脑确认。</p>
+      <div id="qr-box"><img id="qr-img" alt="临时配对二维码" /></div>
+      <p id="pair-code" class="pair-code"></p>
       <p id="pair-pending" role="status">等待手机发起配对</p>
-      <div class="row"><button id="btn-pair-allow" hidden>允许此手机</button><button id="btn-pair-deny" class="danger" hidden>拒绝</button><button id="btn-pair-close" class="secondary">关闭配对页</button></div>
-    </div>
-  </div>
-  <div class="card">
-    <h2>设备管理</h2>
-    <p id="phone-state">读取中</p>
-    <div class="row"><button id="btn-phone-rename" class="secondary">修改名称</button><button id="btn-phone-unbind" class="danger">解除手机绑定</button></div>
-    <p class="hint">退出登录仍保留名额；换手机时请先解绑。解绑不停止电脑上的本地任务。</p>
-  </div>
-  <div class="card">
-    <h2>设置</h2>
-    <label class="toggle"><input type="checkbox" id="autostart"> 开机自启（保持隧道在线）</label>
-    <p class="hint">仅使用内置加密隧道，无需下载或运行额外隧道程序。若隧道未连接，请确认服务器已启用内置隧道。</p>
-  </div>
-</section>
-
-<script src="app.js"></script>
-</body>
+      <div class="row">
+        <button id="btn-pair-allow" class="primary" hidden>允许此手机</button
+        ><button id="btn-pair-deny" class="danger" hidden>拒绝</button>
+      </div>
+      <p class="caption">关闭窗口后，此配对码失效。</p>
+    </dialog>
+    <dialog id="detail-dialog" aria-labelledby="detail-title">
+      <div class="dialog-heading">
+        <h2 id="detail-title"></h2>
+        <button id="btn-detail-close" class="icon-button" aria-label="关闭详情">
+          <span data-icon="close"></span>
+        </button>
+      </div>
+      <div id="detail-body"></div>
+    </dialog>
+    <div id="toast" class="toast" role="status" hidden></div>
+    <script src="app.js"></script>
+  </body>
 </html>

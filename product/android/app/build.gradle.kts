@@ -6,15 +6,15 @@ plugins {
 }
 
 android {
-    namespace = "com.dshlink.app"
+    namespace = "com.batona.mobile"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.dshlink.app"
+        applicationId = "com.batona.mobile"
         minSdk = 26
         targetSdk = 34
-        versionCode = 34
-        versionName = "0.2.0"
+        versionCode = 36
+        versionName = "0.3.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

@@ -3,7 +3,7 @@
 /**
  * 本机 Codex App Server 桥。
  *
- * 此模块只监听 127.0.0.1。服务器只能经既有 DSH Link 出站隧道访问它；
+ * 此模块只监听 127.0.0.1。服务器只能经既有 Batona PC 出站隧道访问它；
  * 绝不启动公网监听，也不把 Codex 的认证材料、原始 App Server 帧或敏感工具输出写日志。
  */
 
@@ -55,7 +55,7 @@ class AppServerClient extends EventEmitter {
     proc.on('exit', () => this.onStopped('stopped'));
     try {
       await this.request('initialize', {
-        clientInfo: { name: 'dsh_link', title: 'DSH Link', version: '0.3.0' },
+        clientInfo: { name: 'batona', title: 'Batona PC', version: '0.3.0' },
         capabilities: { experimentalApi: true },
       }, 20_000);
       this.send({ method: 'initialized', params: {} });
@@ -397,7 +397,7 @@ class CodexBridge {
   async listProfiles() {
     const result = await this.appServer.request('permissionProfile/list', { limit: 20 });
     const allowed = new Map((Array.isArray(result?.data) ? result.data : []).map((p) => [asString(p?.id), p?.allowed === true]));
-    // 手机上的三种名称是 DSH Link 的固定交互；底层仅使用 App Server 声明 allowed 的内建配置档。
+    // 手机上的三种名称是 Batona PC 的固定交互；底层仅使用 App Server 声明 allowed 的内建配置档。
     return [
       { id: 'request-approval', label: '请求批准', description: '仅在当前工作区内操作；需要越界时请求你的确认。', permissions: ':workspace', approvalPolicy: 'untrusted' },
       { id: 'assist-approval', label: '帮我审批', description: '允许当前工作区内常规操作；需要额外权限时再询问。', permissions: ':workspace', approvalPolicy: 'on-request' },
@@ -412,7 +412,7 @@ class CodexBridge {
     const model = modelOptions(body?.model);
     const result = await this.appServer.request('thread/start', {
       cwd,
-      serviceName: 'dsh_link',
+      serviceName: 'batona',
       sandbox: profile.sandbox,
       approvalPolicy: profile.approvalPolicy,
       ...model,
@@ -443,7 +443,7 @@ class CodexBridge {
     const profile = profileId ? await this.requireProfile(profileId) : previous.profile;
     const model = body?.model ? modelOptions(body.model) : modelOptions(previous);
     await this.appServer.request('thread/resume', { threadId, excludeTurns: true });
-    // App Server 的 turn/start 原生调度决定是否排队/steer；DSH Link 不另造队列。
+    // App Server 的 turn/start 原生调度决定是否排队/steer；Batona PC 不另造队列。
     await this.appServer.request('turn/start', {
       threadId,
       input: [{ type: 'text', text }],
@@ -530,7 +530,7 @@ class CodexBridge {
 }
 
 function resolveCodexExecutable() {
-  const override = process.env.DSHLINK_CODEX_PATH;
+  const override = process.env.BATONA_CODEX_PATH;
   if (override && fs.existsSync(override)) return override;
   const root = process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin');
   if (!root || !fs.existsSync(root)) return null;
@@ -713,7 +713,7 @@ function safeErrorMessage(error) { return redactText(asString(error?.message) ||
 /** 保守脱敏：规则命中时宁可少显示，也不能把连接串、认证头或常见凭据值发出电脑。 */
 function redactText(value) {
   return asString(value)
-    .replace(/dsh-gw:\/\/\S+/gi, '[已隐藏连接串]')
+    .replace(/batona-gw:\/\/\S+/gi, '[已隐藏连接串]')
     .replace(/\bbearer\s+[^\s,;"']+/gi, 'Bearer [已隐藏]')
     .replace(/(["']?(?:[a-z0-9_-]*token|api[_-]?key|password|passwd|secret|authorization|cookie)["']?\s*[:=]\s*["']?)[^\s,;"']+/gi, '$1[已隐藏]')
     .replace(/-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/g, '[已隐藏私钥]');

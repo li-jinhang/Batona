@@ -13,7 +13,7 @@ function commandExists(command) {
  * 已验证的开发机路径；不能因为没全局安装而把“端口未监听”误标为 DSH 已启动。
  */
 function resolveDshLauncher(env = process.env, hasCommand = commandExists) {
-  const explicit = String(env.DSHLINK_DSH_CMD || '').trim();
+  const explicit = String(env.BATONA_DSH_CMD || '').trim();
   if (explicit) return { command: explicit, prefixArgs: [], source: 'override' };
   if (hasCommand('dsh')) return { command: 'dsh', prefixArgs: [], source: 'global' };
   if (hasCommand('npx')) return { command: 'npx', prefixArgs: ['--yes', '@deepseek-ai/dsh'], source: 'npx' };

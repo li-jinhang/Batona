@@ -1,5 +1,5 @@
 /**
- * tunnel/protocol.ts — DSH Link Tunnel v1 线格式（编解码 + 常量 + 校验）
+ * tunnel/protocol.ts — Batona Tunnel v1 线格式（编解码 + 常量 + 校验）
  *
  * 与 `product/pc/tunnel/protocol.js` 是**同一线格式的两份实现**（此处 TS、PC 端 CJS）。
  * 改常量或帧形状必须两处同改，由 test/tunnel-vectors.json 黄金向量双向把关。

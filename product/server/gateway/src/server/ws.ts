@@ -328,6 +328,6 @@ async function fetchDirList(p: string, base = DIR_LIST_URL): Promise<{ ok: boole
     if (!j.ok) return { ok: false, error: j.error ?? '目录服务返回错误' };
     return { ok: true, value: { path: j.path ?? '', dirs: j.dirs, roots: j.roots } };
   } catch (e) {
-    return { ok: false, error: `目录服务不可达: ${e instanceof Error ? e.message : String(e)}（请确认 PC 端 DSH Link 已启动，且隧道已连通）` };
+    return { ok: false, error: `目录服务不可达: ${e instanceof Error ? e.message : String(e)}（请确认 Batona PC 已启动，且隧道已连通）` };
   }
 }

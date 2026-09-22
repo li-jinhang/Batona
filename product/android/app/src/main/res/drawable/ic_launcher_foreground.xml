@@ -4,7 +4,7 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- 中心圆环：DSH Link 标识 -->
+    <!-- 中心圆环：Batona Mobile 标识 -->
     <path
         android:fillColor="#FFFFFF"
         android:pathData="M54,30 a24,24 0 1,0 0.01,0 z" />

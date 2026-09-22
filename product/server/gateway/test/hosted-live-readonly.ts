@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import { WebSocket } from 'ws';
 import { HostedGateway } from '../src/hosted/gateway.ts';
 const { TunnelClient }=createRequire(import.meta.url)('../../../pc/tunnel/client.js');
-const dir=mkdtempSync(join(tmpdir(),'dsh-hosted-readonly-'));
+const dir=mkdtempSync(join(tmpdir(),'batona-hosted-readonly-'));
 const adminKey=randomBytes(32).toString('hex');
 const gateway=new HostedGateway({dataDir:dir,adminKey,vaultKey:randomBytes(32),webDir:'./web'});
 let tunnel:any,mobile:WebSocket|undefined;
@@ -21,7 +21,7 @@ try{
   };
   const account=await api('admin/create',{remark:'read-only temporary fixture'},adminKey);
   const pc=await api('access/login',{key:account.key,deviceSecret:randomBytes(32).toString('hex')});
-  const cached=JSON.parse(readFileSync(join(process.env.APPDATA!,'DSH Link','dsh-token.json'),'utf8'));
+  const cached=JSON.parse(readFileSync(join(process.env.APPDATA!,'Batona PC','dsh-token.json'),'utf8'));
   tunnel=new TunnelClient({host:'127.0.0.1',gwPort:addr.port,token:pc.token,tls:false,services:()=>[{name:'dsh',localPort:cached.port||3080},{name:'dir',localPort:3081},{name:'codex',localPort:3082}]});
   await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('tunnel-timeout')),10000);tunnel.once('connected',()=>{clearTimeout(timer);resolve();});tunnel.start();});
   await api('access/launch-token',{token:cached.token},pc.token);

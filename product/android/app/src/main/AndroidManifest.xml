@@ -12,7 +12,7 @@
         android:allowBackup="false"
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
-        android:theme="@style/Theme.DSHLink"
+        android:theme="@style/Theme.Batona"
         android:usesCleartextTraffic="false"
         android:supportsRtl="true">
 
@@ -24,12 +24,12 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- dsh-gw:// 连接串深链 -->
+            <!-- batona-gw:// 连接串深链 -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="dsh-gw" android:host="*" />
+                <data android:scheme="batona-gw" android:host="*" />
             </intent-filter>
         </activity>
     </application>
