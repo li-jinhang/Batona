@@ -10,7 +10,7 @@
 - 连接串导入、DSH 启动与生命周期、网关 API、配对二维码、窗口行为由 `main.js` 协调；渲染端经 preload 暴露的窄 API 与主进程交互。
 - 自研 WSS 隧道客户端在 `tunnel/client.js`，帧协议在 `tunnel/protocol.js`；它连接到服务器内置隧道服务端，并将流量安全转发至本机 DSH。
 - Codex 桥在 `codex-bridge.js`：它以 stdio 启动本机 Codex App Server，且只监听 `127.0.0.1:3082`。该端口只能由既有隧道转发；桥必须在 PC 端脱敏事件，不能记录或转发认证资料、连接串、原始工具输出或私钥。
-- 依赖与打包配置在 `package.json`。`electron-builder` 的 `files` 白名单决定进安装包的文件：`main.js` 直接 `require` 的每个本地文件或目录（当前包括 `tunnel/**/*`）都必须列入；任何需由 Windows 直接执行的二进制（当前为 `frpc-bin/frpc.exe`）还必须在 `asarUnpack` 中。
+- 依赖与打包配置在 `package.json`。`electron-builder` 的 `files` 白名单决定进安装包的文件：`main.js` 直接 `require` 的每个本地文件或目录（当前包括 `tunnel/**/*`）都必须列入。Windows 发布包只允许内置 WSS 隧道模块，不能打包或下载第三方隧道二进制。
 
 ## 端内约束
 
@@ -43,10 +43,10 @@ $env:ELECTRON_BUILDER_BINARIES_MIRROR = "https://npmmirror.com/mirrors/electron-
 $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
 ```
 
-绑定、日志和本地运行数据在 `%APPDATA%\DSH Link`；卸载/覆盖安装不应主动删除它。`frpc.exe` 在正式包里必须由 `asarUnpack` 提供真实可执行路径，而 `frpc.toml` 始终写入 `%APPDATA%\DSH Link\frpc`，不能写回安装目录或 `app.asar`。出现 `EPERM`、打包工具下载失败或便携版打不开时，先检查 Defender/杀毒拦截、`dist/` 目录锁定和该数据目录日志。内置隧道不依赖 frpc；只有服务器尚未启用内置隧道或明确回退时，才使用 `npm run fetch-frpc` 获取回退二进制。
+绑定、日志和本地运行数据在 `%APPDATA%\DSH Link`；卸载/覆盖安装不应主动删除它。正式发布不含外部隧道可执行文件：出现安全软件拦截或隧道离线时，应检查服务器内置隧道状态、443/TLS 与该数据目录日志，而不是下载或运行第三方隧道程序。
 
 ## 首次运行与隧道排障
 
-默认启动时，DSH 恢复与“目录/Codex 桥 + 隧道”并行执行：Codex 不应等待 DSH 取得 launch token 或排除遗留端口占用。隧道会读取网关 `/healthz` 的内置隧道状态，再选择内置 WSS 或 frpc。健康状态明确为未启用内置隧道时，`auto` 会直接走 frpc；健康状态不可读时才保留“先试内置、失败回退”的兼容逻辑。内置隧道经 `/tunnel` 出站连服务器；`DSHLINK_TUNNEL=auto|builtin|frp` 可用于定位问题，默认 `auto`。`DSHLINK_INSECURE=1` 仅允许本机明文网关调试，绝不能用于生产。
+默认启动时，DSH 恢复与“目录/Codex 桥 + 隧道”并行执行：Codex 不应等待 DSH 取得 launch token 或排除遗留端口占用。隧道只经 `/tunnel` 发起出站 WSS 连接；服务器未启用内置隧道时，客户端保持离线并报告原因。`DSHLINK_INSECURE=1` 仅允许本机明文网关调试，绝不能用于生产。
 
 状态灯中 DSH 与隧道在线最关键；网关灯是乐观探测，不能单独用它判断手机端是否可用。隧道失败时检查连接串 `gwPort`/token、服务器内置隧道状态、PC 日志和 launch-token 上报；不要以关闭 TLS 校验或公开本地端口作为修复手段。

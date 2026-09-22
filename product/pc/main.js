@@ -4,7 +4,7 @@
  * 职责：
  *  1. 绑定管理：dsh-gw:// 连接串解析/存储、手机配对二维码
  *  2. 服务编排：检测/启动 DSH web(3080) → 启动隧道 → 在线状态机
- *  3. 隧道管理：内置隧道（tunnel/client.js，跑在本进程内）为主；灰度期保留 frpc 回退
+ *  3. 隧道管理：仅使用内置 WSS 隧道（tunnel/client.js，跑在本进程内）
  *  4. 托盘常驻 + 开机自启 + 日志
  *
  * 渲染进程通过 preload 暴露的 window.dshLink（contextBridge + IPC）与主进程通信。
@@ -19,7 +19,6 @@ const net = require('node:net');
 const https = require('node:https');
 const http = require('node:http');
 const QRCode = require('qrcode');
-const AdmZip = require('adm-zip');
 const { DirectoryService } = require('./dir-service.js');
 const { resolveDshLauncher } = require('./dsh-launcher.js');
 const { CodexBridge } = require('./codex-bridge.js');
@@ -29,7 +28,7 @@ const { CodexBridge } = require('./codex-bridge.js');
 const ownsSingleInstanceLock = app.requestSingleInstanceLock();
 if (!ownsSingleInstanceLock) app.quit();
 
-// 内置隧道客户端（依赖 ws；缺失时静默降级到 frpc，不阻断启动）
+// 内置隧道客户端（依赖 ws；缺失时明确报告，不下载或启动外部隧道程序）
 let TunnelClient = null;
 let tunnelRequireError = null;
 try {
@@ -38,14 +37,10 @@ try {
   tunnelRequireError = e.message;
 }
 
-const FRP_VERSION = '0.68.0';
 const DSH_HOST = '127.0.0.1';
 const DSH_PORT_DEFAULT = 3080;   // DSH web 默认端口；实际端口从 stdout 的 dsh web: URL 捕获
-const FRP_REMOTE_PORT = 3080;
-const DIR_SERVICE_PORT = 3081;   // 目录浏览服务（读笔记本本地目录），经隧道映射到服务器供网关代理
-const DIR_REMOTE_PORT = 3081;    // frpc 把该服务映射到服务器的端口（仅 frp 回退路径使用）
+const DIR_SERVICE_PORT = 3081;   // 目录浏览服务（读笔记本本地目录），经自研隧道映射到服务器供网关代理
 const CODEX_SERVICE_PORT = 3082; // Codex App Server 本机桥；只经既有隧道转发
-const CODEX_REMOTE_PORT = 3082;
 
 // ── 状态 ──────────────────────────────────────────────────────────────
 const state = {
@@ -55,9 +50,7 @@ const state = {
   dshToken: null,         // DSH launch token（0.1.2+ 的 /api 认证凭据，DSH 重启即变）
   dshCookie: null,        // { key, value } 用 token 换到的浏览器会话 cookie 缓存
   dshAuthed: false,       // 最近一次认证探测结果
-  frpcRunning: false,
-  frpcConnected: false,   // frpc 是否登录服务器成功（仅 frp 回退路径）
-  tunnelKind: null,       // 'builtin' | 'frp' — 当前实际使用的隧道类型
+  tunnelKind: null,       // 'builtin' | null
   tunnelConnected: false, // 内置隧道是否已连通
   tunnelLastError: null,
   logs: [],
@@ -256,9 +249,9 @@ let frpcCrashTimes = [];
 /** 同一时刻只允许一次隧道启动：主进程自动启动、渲染 IPC 与重连回调会并发到达。 */
 let tunnelStartPromise = null;
 
-/** 隧道是否已连通（内置或 frpc 任一） */
+/** 隧道是否已连通（仅内置 WSS）。 */
 function tunnelUp() {
-  return state.tunnelKind === 'builtin' ? state.tunnelConnected : (!!frpcProc && state.frpcConnected);
+  return state.tunnelConnected;
 }
 
 /** 本机可提供的服务（内置隧道用）。回调形式：DSH 端口是运行期从 stdout 抓的，重启会变 */
@@ -272,7 +265,7 @@ function tunnelServices() {
 
 /**
  * 启动内置隧道并等待首次握手。
- * fatal（tunnel-disabled / version-mismatch / bad-hello / bind-failed）→ 返回失败，由调用方回退 frpc。
+ * fatal（tunnel-disabled / version-mismatch / bad-hello / bind-failed）→ 返回失败并保留明确状态。
  */
 function attemptBuiltin(timeoutMs = 12000) {
   return new Promise((resolve) => {
@@ -301,7 +294,7 @@ function attemptBuiltin(timeoutMs = 12000) {
       state.tunnelConnected = true;
       state.tunnelLastError = null;
       if (!settled) { settled = true; clearTimeout(timer); resolve({ ok: true }); }
-      void reportLaunchToken();   // 隧道刚通：补报 launch token（对齐 frpc 路径的首连行为）
+      void reportLaunchToken();   // 隧道刚通：补报 launch token
     });
     client.on('disconnected', (info) => {
       state.tunnelConnected = false;
@@ -318,11 +311,8 @@ function attemptBuiltin(timeoutMs = 12000) {
         resolve({ ok: false, reason: info.message, code: info.code });
         return;
       }
-      // 已连上后运行期致命（如服务器切回 frp 模式）→ 直接回退
-      log(`[tunnel] 运行期致命错误 ${info.code} → 回退 frpc`);
-      builtinBlocked = true;
-      state.tunnelKind = 'frp';
-      void startFrpcLegacy();
+      // 生产发布只支持自研隧道；服务端关闭该能力时保持离线并等待明确修复。
+      log(`[tunnel] 运行期致命错误 ${info.code}，自研隧道已停止`);
     });
     client.on('superseded', () => {
       state.tunnelConnected = false;
@@ -335,11 +325,7 @@ function attemptBuiltin(timeoutMs = 12000) {
 }
 
 /**
- * 启动隧道（对外保持原函数名与签名——IPC/托盘/生命周期等调用点全部不变）。
- * 模式：DSHLINK_TUNNEL=auto（默认）| builtin | frp。
- *   auto：读取网关健康状态后优先内置；网关明确未启用内置隧道时直接走 frpc。
- *         探测失败时仍会尝试内置，且不可用后回退 frpc 并在本会话黏滞
- *         （例外：frpc 连续崩溃 ≥3 次时再试一次内置）。
+ * 启动内置隧道。函数名保留以兼容已发布渲染层 IPC，实际不会启动 frpc。
  */
 function startFrpc() {
   if (tunnelStartPromise) return tunnelStartPromise;
@@ -354,30 +340,16 @@ async function startFrpcOnce() {
   if (!(await startDirService())) return false;
   if (!(await startCodexBridge())) return false;
 
-  const mode = process.env.DSHLINK_TUNNEL || 'auto';
-  // 健康检查是一个不含凭据的兼容性提示：当前服务器仍在 frps 兼容模式时，
-  // 不能白等一次 WSS 握手超时。若网关不可达或返回旧版 health，则保留原先
-  // 的“先试内置、失败回退”行为，避免把临时网络故障误判成兼容模式。
-  const builtinEnabled = mode === 'auto' ? await gatewayBuiltinTunnelEnabled() : null;
-  const shouldTryBuiltin = mode === 'builtin' || (mode === 'auto' && builtinEnabled !== false);
-  if (mode === 'auto' && builtinEnabled === false) {
-    log('网关未启用内置隧道，直接使用 frpc 兼容通道');
+  if (!TunnelClient) {
+    log(`自研隧道不可用（加载失败：${tunnelRequireError || '未知'}）`);
+    return false;
   }
-  if (shouldTryBuiltin) {
-    if (!TunnelClient) {
-      log(`内置隧道不可用（加载失败：${tunnelRequireError || '未知'}）`);
-    } else if (!builtinBlocked) {
-      state.tunnelKind = 'builtin';
-      const r = await attemptBuiltin();
-      if (r.ok) return true;
-      log(`内置隧道不可用（${r.reason}${r.code ? ` / ${r.code}` : ''}）`);
-      state.tunnelLastError = `${r.code || 'unavailable'}: ${r.reason}`;
-      if (mode === 'builtin') return false;
-      builtinBlocked = true;   // auto：黏滞，避免反复探测
-    }
-  }
-  state.tunnelKind = 'frp';
-  return startFrpcLegacy();
+  state.tunnelKind = 'builtin';
+  const r = await attemptBuiltin();
+  if (r.ok) return true;
+  log(`自研隧道不可用（${r.reason}${r.code ? ` / ${r.code}` : ''}）`);
+  state.tunnelLastError = `${r.code || 'unavailable'}: ${r.reason}`;
+  return false;
 }
 
 /**
