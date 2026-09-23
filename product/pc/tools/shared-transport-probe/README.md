@@ -102,6 +102,11 @@ still blocks prompt/model/permission writes.
   subscribed to the designated native test task. This validates restart
   continuity for the currently installed Desktop version; a normal shortcut
   launch and a Codex upgrade still require separate checks.
+- A post-restart one-shot Batona HTTP bridge pilot submitted text to that
+  designated native test task in about 278 ms. The subscribed bridge received
+  one user message, three assistant chunks, one final reply and turn completion;
+  persisted history contained the expected reply after about 8.1 s. This is a
+  local bridge test, not Android-to-gateway delivery or a visual Desktop check.
 
 ## Decision gate
 
