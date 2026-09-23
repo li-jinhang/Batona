@@ -21,7 +21,7 @@
 最近核验：2026-09-23（网关 v0.3.1，部署 commit `3bf2a6f`，服务器工作树 `bc2284f` 位于 `codex/native-ui-probe`，该提交仅更新服务端文档）。部署包装命令固定跟踪此分支；合并到 `main` 后须显式调整 `DEPLOY_BRANCH`，避免默认更新取回旧代码。改名前基线为 v0.2.0 / `793af05`；此段只记录运维定位信息，**不得**加入私钥、连接串、令牌、账号密码、设备令牌或证书私钥。
 
 - SSH 目标：本机 SSH 别名 `dsh-server`，对应 `root@117.72.10.87`。认证依赖本机已有的专用部署密钥；不得将其复制至仓库或服务器工作树。
-- 代码：工作树为 `/www/wwwroot/117.72.10.87/26-009DSHlink`，远程为 `git@gitee.com:li-jinhang7/26-010-dshplugin.git`，跟踪 `main`，并且只稀疏检出 `product/server`。
+- 代码：工作树为 `/www/wwwroot/117.72.10.87/26-009DSHlink`，远程为 `git@gitee.com:li-jinhang7/26-010-dshplugin.git`，当前跟踪 `codex/native-ui-probe`，并且只稀疏检出 `product/server`。
 - 运行时：应用 `/opt/batona-gateway/app`；配置与服务器登记 `/etc/batona-gateway`；持久数据与部署回滚状态 `/var/lib/batona-gateway`；systemd 服务为 `batona-gateway` 与 Nginx。历史 `frps` 服务已停用，不是当前链路依赖。
 - HTTPS：宝塔主虚拟主机 `/www/server/panel/vhost/nginx/117.72.10.87.conf`；首页静态根目录为 `/www/wwwroot/117.72.10.87/00-001WebMainIndex`，对应本机 `D:\_Projects\00-001WebMainIndex`。DSH 反代 include `/www/server/panel/vhost/nginx/proxy/117.72.10.87/batona-gateway.conf` 使用 [nginx-batona-gateway-routes.conf](nginx-batona-gateway-routes.conf)：`/api/`、`/ws`、`/tunnel`、`/healthz` 及 `/access-admin`（含 JS/CSS）转发至 `127.0.0.1:3090`；旧 `/remote/` 返回 410。80 端口仅重定向至 HTTPS；`/pair.html` 保持 404。
 - 网络：443 是唯一网关公网 TLS 入口；内置 WSS 隧道经 `/tunnel` 连接。3080、3081、3082 与 3090 仅供服务器回环使用，7500 与 7000 不得对公网开放；`frps` 已停用。云安全组中遗留的 7000 规则应在下次云控制台维护时关闭。
@@ -44,7 +44,7 @@ git clone --filter=blob:none --no-checkout git@gitee.com:<你的用户名>/<仓�
 cd /www/wwwroot/117.72.10.87/26-009DSHlink
 git sparse-checkout init --cone
 git sparse-checkout set product/server
-git checkout main
+git checkout codex/native-ui-probe
 ```
 
 `deploy.sh` 仍在这个 monorepo 工作区的根目录执行，能够读取同一提交内的 `product/server/deploy.sh`、`install.sh` 和 `gateway/`，但不会把 `product/android/`、`product/pc/` 检出到服务器工作树。
