@@ -428,12 +428,18 @@ let codexBridge = null;
 
 function startCodexBridge() {
   if (!codexBridge) {
-    codexBridge = new CodexBridge({
-      host: '127.0.0.1',
-      port: CODEX_SERVICE_PORT,
-      userDataDir: app.getPath('userData'),
-      log,
-    });
+    try {
+      codexBridge = new CodexBridge({
+        host: '127.0.0.1',
+        port: CODEX_SERVICE_PORT,
+        userDataDir: app.getPath('userData'),
+        websocketUrl: process.env.BATONA_SHARED_CODEX_WS_URL || undefined,
+        log,
+      });
+    } catch {
+      log('Codex 共享连接地址无效；桥未启动');
+      return Promise.resolve(false);
+    }
   }
   return codexBridge.start();
 }

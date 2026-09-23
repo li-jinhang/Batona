@@ -1,11 +1,13 @@
-// Throwaway transport probe. Never points at the user's live Codex home or threads.
+// Throwaway transport probe. Live mode reads the user's profile but never loads a thread.
 // Run: node product/pc/tools/shared-transport-probe/probe.cjs
+// Read-only live-profile check: add --live-readonly (never loads a thread).
 'use strict';
 
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
+const { CodexBridge } = require('../../codex-bridge');
 
 const timeout = (ms, label) => new Promise((_, reject) =>
   setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms));
@@ -103,21 +105,26 @@ async function connect(url, name) {
 }
 
 async function main() {
-  const scratchBase = path.join(process.cwd(), 'output', '.shared-transport-probe');
-  fs.mkdirSync(scratchBase, { recursive: true });
-  const scratch = fs.mkdtempSync(path.join(scratchBase, 'run-'));
+  const liveReadOnly = process.argv.includes('--live-readonly');
+  let scratch = null;
+  if (!liveReadOnly) {
+    const scratchBase = path.join(process.cwd(), 'output', '.shared-transport-probe');
+    fs.mkdirSync(scratchBase, { recursive: true });
+    scratch = fs.mkdtempSync(path.join(scratchBase, 'run-'));
+  }
   const port = await unusedPort();
   const exe = findCodex();
   const url = `ws://127.0.0.1:${port}`;
-  const child = spawn(exe, ['app-server', '--listen', url], {
+  const child = spawn(exe, ['-c', 'features.code_mode_host=true', 'app-server', '--listen', url, '--analytics-default-enabled'], {
     cwd: process.cwd(),
-    env: { ...process.env, CODEX_HOME: scratch },
+    env: liveReadOnly ? { ...process.env } : { ...process.env, CODEX_HOME: scratch },
     windowsHide: true,
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   child.stderr.on('data', () => {});
   let a;
   let b;
+  let bridge;
   try {
     let lastError;
     for (let attempt = 0; attempt < 40 && !a; attempt++) {
@@ -125,6 +132,35 @@ async function main() {
       catch (error) { lastError = error; await new Promise(resolve => setTimeout(resolve, 200)); }
     }
     if (!a) throw lastError || new Error('App server did not start');
+    if (liveReadOnly) {
+      bridge = new CodexBridge({ port: 0, websocketUrl: url, nativeControl: { warm() {} } });
+      if (!await bridge.start() || !bridge.appServer.ready) throw new Error('Batona WebSocket bridge did not initialize');
+      const bridgeUrl = `http://127.0.0.1:${bridge.server.address().port}`;
+      const responses = await Promise.all(['/healthz', '/v1/sessions', '/v1/models', '/v1/profiles']
+        .map(async (endpoint) => {
+          const response = await fetch(`${bridgeUrl}${endpoint}`);
+          return { status: response.status, body: await response.json() };
+        }));
+      const blockedWrite = await fetch(`${bridgeUrl}/v1/sessions`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+      });
+      const blockedWriteBody = await blockedWrite.json();
+      const checks = {
+        mode: 'live-readonly',
+        codeModeHost: true,
+        health: responses[0].status === 200 && responses[0].body.ok === true,
+        threadListReadable: responses[1].status === 200 && Array.isArray(responses[1].body.threads),
+        modelsAvailable: responses[2].status === 200 && responses[2].body.items.length > 0,
+        profilesReadable: responses[3].status === 200 && Array.isArray(responses[3].body.items),
+        writesBlocked: blockedWrite.status === 400 && blockedWriteBody.error?.code === 'shared-transport-readonly',
+        nativeDesktopAttached: false,
+      };
+      const passed = checks.health && checks.threadListReadable && checks.modelsAvailable
+        && checks.profilesReadable && checks.writesBlocked;
+      console.log(JSON.stringify({ result: passed ? 'PASS' : 'FAIL', ...checks }, null, 2));
+      if (!passed) process.exitCode = 1;
+      return;
+    }
     b = await connect(url, 'b');
     const started = await a.request('thread/start', { cwd: process.cwd() });
     const threadId = started.thread.id;
@@ -168,6 +204,7 @@ async function main() {
     console.error(JSON.stringify({ result: 'FAIL', error: error.message }, null, 2));
     process.exitCode = 1;
   } finally {
+    await bridge?.stop();
     a?.close();
     b?.close();
     child.kill();

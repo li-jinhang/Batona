@@ -16,6 +16,7 @@
     "test:dir-service": "node test/dir-service.test.js",
     "test:dsh-launcher": "node test/dsh-launcher.test.js",
     "test:codex-open": "node test/codex-open.test.js",
+    "test:codex-transport": "node test/codex-shared-ws.test.js",
     "test:native-control": "node test/native-thread-binding.test.js && node test/native-prompt.test.js && node test/native-model.test.js && node test/native-permission.test.js",
     "test:software-status": "node test/software-status.test.js",
     "predist": "npm run build:native-control",

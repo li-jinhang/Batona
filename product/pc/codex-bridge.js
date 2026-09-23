@@ -20,11 +20,13 @@ const HISTORY_EVENT_LIMIT = 200;
 const THREAD_PAGE_LIMIT = 100;
 
 class AppServerClient extends EventEmitter {
-  constructor({ executable, log = () => {} } = {}) {
+  constructor({ executable, websocketUrl, log = () => {} } = {}) {
     super();
-    this.executable = executable || resolveCodexExecutable();
+    this.websocketUrl = websocketUrl ? loopbackWebSocketUrl(websocketUrl) : null;
+    this.executable = executable || (this.websocketUrl ? null : resolveCodexExecutable());
     this.log = log;
     this.proc = null;
+    this.socket = null;
     this.buffer = '';
     this.nextId = 1;
     this.pending = new Map();
@@ -40,21 +42,13 @@ class AppServerClient extends EventEmitter {
   }
 
   async startOnce() {
-    if (!this.executable || !fs.existsSync(this.executable)) {
+    if (!this.websocketUrl && (!this.executable || !fs.existsSync(this.executable))) {
       this.log('Codex 本机桥不可用：未找到 Codex Desktop CLI');
       return false;
     }
-    const proc = spawn(this.executable, ['app-server'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-    this.proc = proc;
-    proc.stdout.on('data', (chunk) => this.onStdout(String(chunk)));
-    // stderr 可能带用户路径、命令或其他诊断，桥不转发其正文。
-    proc.stderr.on('data', () => {});
-    proc.on('error', () => this.onStopped('start-failed'));
-    proc.on('exit', () => this.onStopped('stopped'));
     try {
+      if (this.websocketUrl) await this.connectWebSocket();
+      else this.spawnStdio();
       await this.request('initialize', {
         clientInfo: { name: 'batona', title: 'Batona PC', version: '0.3.0' },
         capabilities: { experimentalApi: true },
@@ -68,6 +62,33 @@ class AppServerClient extends EventEmitter {
       this.log('Codex 本机桥不可用：App Server 初始化失败');
       return false;
     }
+  }
+
+  spawnStdio() {
+    const proc = spawn(this.executable, ['app-server'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    this.proc = proc;
+    proc.stdout.on('data', (chunk) => this.onStdout(String(chunk)));
+    // stderr 可能带用户路径、命令或其他诊断，桥不转发其正文。
+    proc.stderr.on('data', () => {});
+    proc.on('error', () => this.onStopped('start-failed'));
+    proc.on('exit', () => this.onStopped('stopped'));
+  }
+
+  async connectWebSocket() {
+    const socket = new WebSocket(this.websocketUrl);
+    this.socket = socket;
+    socket.on('message', (data) => this.onStdout(`${String(data)}\n`));
+    socket.on('error', () => { if (this.socket === socket) this.onStopped('connection-error'); });
+    socket.on('close', () => { if (this.socket === socket) this.onStopped('stopped'); });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Codex WebSocket 连接超时')), 10_000);
+      socket.once('open', () => { clearTimeout(timer); resolve(); });
+      socket.once('error', () => { clearTimeout(timer); reject(new Error('Codex WebSocket 连接失败')); });
+      socket.once('close', () => { clearTimeout(timer); reject(new Error('Codex WebSocket 已关闭')); });
+    });
   }
 
   onStdout(chunk) {
@@ -99,7 +120,7 @@ class AppServerClient extends EventEmitter {
   }
 
   request(method, params, timeoutMs = 60_000) {
-    if (!this.proc || !this.proc.stdin.writable) return Promise.reject(Object.assign(new Error('Codex App Server 未连接'), { code: 'not-connected' }));
+    if (!this.connected()) return Promise.reject(Object.assign(new Error('Codex App Server 未连接'), { code: 'not-connected' }));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -116,18 +137,25 @@ class AppServerClient extends EventEmitter {
   }
 
   respond(id, result) {
-    if (!this.proc || !this.proc.stdin.writable) throw Object.assign(new Error('Codex App Server 未连接'), { code: 'not-connected' });
+    if (!this.connected()) throw Object.assign(new Error('Codex App Server 未连接'), { code: 'not-connected' });
     this.send({ id, result });
   }
 
+  connected() {
+    return Boolean(this.proc?.stdin.writable || this.socket?.readyState === WebSocket.OPEN);
+  }
+
   send(message) {
-    this.proc.stdin.write(`${JSON.stringify(message)}\n`);
+    if (this.socket) this.socket.send(JSON.stringify(message));
+    else this.proc.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
   onStopped(reason) {
     const wasReady = this.ready;
     this.ready = false;
-    if (this.proc) this.proc = null;
+    this.proc = null;
+    this.socket = null;
+    this.buffer = '';
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(Object.assign(new Error('Codex App Server 已断开'), { code: 'not-connected' }));
@@ -138,8 +166,11 @@ class AppServerClient extends EventEmitter {
 
   stop() {
     const proc = this.proc;
+    const socket = this.socket;
     this.proc = null;
+    this.socket = null;
     this.ready = false;
+    this.buffer = '';
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(Object.assign(new Error('Codex App Server 已停止'), { code: 'not-connected' }));
@@ -147,15 +178,16 @@ class AppServerClient extends EventEmitter {
     this.pending.clear();
     try { proc?.stdin.end(); } catch {}
     try { proc?.kill(); } catch {}
+    try { socket?.close(); } catch {}
   }
 }
 
 class CodexBridge {
-  constructor({ host = '127.0.0.1', port = 3082, userDataDir, executable, nativeControl, log = () => {} } = {}) {
+  constructor({ host = '127.0.0.1', port = 3082, userDataDir, executable, websocketUrl, nativeControl, log = () => {} } = {}) {
     this.host = host;
     this.port = port;
     this.log = log;
-    this.appServer = new AppServerClient({ executable, log });
+    this.appServer = new AppServerClient({ executable, websocketUrl, log });
     this.nativeControl = nativeControl || new NativeCodexControl({ appServer: this.appServer });
     this.nativePromptInFlight = false;
     this.bridgeOwnedThreads = new Set();
@@ -244,6 +276,12 @@ class CodexBridge {
         return;
       }
       if (!(await this.ensureAppServer())) throw Object.assign(new Error('Codex Desktop App Server 当前不可用'), { code: 'codex-unavailable' });
+      // Shared Desktop transport is observation-only until request ownership and
+      // cross-client turns are verified. Never race the native client's writes.
+      if (this.appServer.websocketUrl && req.method !== 'GET'
+        && !(/^\/v1\/sessions\/[^/]+\/resume$/.test(url.pathname) && req.method === 'POST')) {
+        throw Object.assign(new Error('共享 Codex 连接尚未开放写入'), { code: 'shared-transport-readonly' });
+      }
       if (req.method === 'GET' && url.pathname === '/v1/sessions') {
         writeJson(res, 200, { threads: await this.listThreads() });
         return;
@@ -602,6 +640,7 @@ class CodexBridge {
   }
 
   onServerRequest(msg) {
+    if (this.appServer.websocketUrl) return; // The native Desktop owns approvals in shared mode.
     const normalized = normalizeServerRequest(msg);
     if (!normalized) {
       // 未实现的 App Server 请求一律安全拒绝，不能因手机 UI 缺失而默认放行。
@@ -648,6 +687,15 @@ function resolveCodexExecutable() {
       .filter((entry) => entry.mtime > 0)
       .sort((a, b) => b.mtime - a.mtime)[0]?.candidate || null;
   } catch { return null; }
+}
+
+function loopbackWebSocketUrl(value) {
+  const parsed = new URL(value);
+  if (parsed.protocol !== 'ws:' || parsed.hostname !== '127.0.0.1' || !parsed.port
+    || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== '/') {
+    throw new Error('Codex WebSocket 地址必须是 ws://127.0.0.1:<port>/');
+  }
+  return parsed.href;
 }
 
 function normalizeThread(value) {
