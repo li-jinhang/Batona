@@ -1,8 +1,8 @@
 # Batona — 三端工程导航与共享契约
 
-当前品牌迁移目标版本为 Batona Gateway 0.3.0、Batona PC 0.5.0 与 Batona Mobile 0.3.0。生产发布、迁移与回退先读 [托管接入运维](server/hosted-access-operations.md)，验收记录见 [实施证据](../docs/plans/hosted-access/evidence.md)。
+当前联调组合为生产 Batona Gateway 0.3.1、本机 Batona PC 0.5.4 与 Batona Mobile 0.3.3（测试 AVD）。生产发布、迁移与回退先读 [托管接入运维](server/hosted-access-operations.md)，验收记录见 [实施证据](../docs/plans/hosted-access/evidence.md)。
 
-本次改名同时更新了 PC appId、Android applicationId、本地安全存储别名、配对 URI、账号密钥前缀和服务器运行标识。Batona PC 与 Batona Mobile 会建立新的本地数据空间，需要重新登录和配对；现有生产网关仍处于改名前的已登记状态，完成受控服务器迁移前不得把源码中的 Batona 运行路径当成线上现状。
+本次改名同时更新了 PC appId、Android applicationId、本地安全存储别名、配对 URI、账号密钥前缀和服务器运行标识。Batona PC 与 Batona Mobile 使用新的本地数据空间；2026-09-23 已完成服务器运行标识迁移并保留现有托管授权，迁移证据见运维记录。
 
 Batona 让 Android 手机通过公网网关远程操控笔记本上的 DeepSeek Harness（DSH）或 Codex。
 Agent、LLM 与工具执行始终留在 PC；服务器只提供认证、会话路由和 PC 的出站隧道。

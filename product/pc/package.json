@@ -1,7 +1,7 @@
 {
   "name": "batona-pc",
   "productName": "Batona PC",
-  "version": "0.5.2",
+  "version": "0.5.4",
   "description": "Batona PC — 在本机运行并连接多个 Coding Agent，供手机安全远程操控",
   "main": "main.js",
   "author": "Batona",

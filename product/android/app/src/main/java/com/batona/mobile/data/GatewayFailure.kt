@@ -22,7 +22,9 @@ class GatewayFailure(val code: String) : Exception(when (code) {
     "native-control-busy" -> "电脑端正在执行另一项操作，请稍后重试。"
     "codex-offline", "codex-unavailable" -> "Codex 电脑端未连接，请确认 Batona PC 与 Codex 正在运行。"
     "timeout", "not-connected", "send-failed", "transport-error" -> "连接中断或请求超时，请检查电脑端与网络后重试。"
-    else -> "请求未完成，请刷新后重试。"
+    else -> if (code.startsWith("native-model-unavailable:"))
+        "电脑端模型或思考强度未能确认，请检查 Codex 原生窗口后重试。"
+    else "请求未完成，请刷新后重试。"
 })
 
 internal fun <T> RpcResult<T>.requireValue(): T {

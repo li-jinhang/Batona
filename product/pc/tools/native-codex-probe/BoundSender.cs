@@ -15,6 +15,7 @@ namespace Batona.NativeCodexProbe
     {
         private const uint DesktopReadObjects = 0x0001;
         private const int UoiName = 2;
+        private static string modelFailure = "unknown";
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint desiredAccess);
@@ -95,7 +96,7 @@ namespace Batona.NativeCodexProbe
                         || effortIndex < 1 || effortIndex > effortCount || effortCount > 8)
                         return Fail("native-model-invalid", 19);
                     if (!SetModel(root, title, windowHandle, Decode(args[6]), effortIndex, effortCount))
-                        return Fail("native-model-unavailable", 20);
+                        return Fail("native-model-unavailable:" + modelFailure, 20);
                     Console.WriteLine("{\"accepted\":true}");
                     return 0;
                 }
@@ -262,27 +263,34 @@ namespace Batona.NativeCodexProbe
         private static bool SetModel(AutomationElement root, string title, IntPtr windowHandle,
             string displayName, int effortIndex, int effortCount)
         {
-            if (ActiveTitle(root) != title || displayName.Length == 0) return false;
+            modelFailure = "unknown";
+            if (ActiveTitle(root) != title || displayName.Length == 0) return ModelFail("task");
             AutomationElement button = ModelButton(root);
-            if (button == null) return false;
+            if (button == null) return ModelFail("button");
             object expandObject;
-            if (!button.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out expandObject)) return false;
+            if (!button.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out expandObject)) return ModelFail("expand");
             ExpandCollapsePattern menu = (ExpandCollapsePattern)expandObject;
             if (menu.Current.ExpandCollapseState != ExpandCollapseState.Expanded) menu.Expand();
 
             List<AutomationElement> radios = Find(root, ControlType.RadioButton, null, false);
             if (radios.Count == 0)
             {
-                List<AutomationElement> choices = Find(root, ControlType.MenuItem, "选择模型", false);
+                List<AutomationElement> choices = new List<AutomationElement>();
+                for (int attempt = 0; attempt < 30; attempt++)
+                {
+                    choices = Find(root, ControlType.MenuItem, "选择模型", false);
+                    if (choices.Count == 1) break;
+                    Thread.Sleep(100);
+                }
                 object invoke;
-                if (choices.Count != 1 || !choices[0].TryGetCurrentPattern(InvokePattern.Pattern, out invoke)) return false;
-                if (ActiveTitle(root) != title) return false;
+                if (choices.Count != 1 || !choices[0].TryGetCurrentPattern(InvokePattern.Pattern, out invoke)) return ModelFail("picker");
+                if (ActiveTitle(root) != title) return ModelFail("picker-task");
                 ((InvokePattern)invoke).Invoke();
             }
             string normalizedName = NormalizeModelName(displayName);
-            for (int attempt = 0; attempt < 16; attempt++)
+            for (int attempt = 0; attempt < 40; attempt++)
             {
-                Thread.Sleep(50);
+                Thread.Sleep(100);
                 radios = Find(root, ControlType.RadioButton, null, false).FindAll(delegate(AutomationElement radio)
                 {
                     try { return NormalizeModelName(radio.Current.Name ?? "") == normalizedName; }
@@ -291,13 +299,13 @@ namespace Batona.NativeCodexProbe
                 if (radios.Count == 1) break;
             }
             object modelInvoke;
-            if (radios.Count != 1 || !radios[0].TryGetCurrentPattern(InvokePattern.Pattern, out modelInvoke)) return false;
-            if (ActiveTitle(root) != title) return false;
+            if (radios.Count != 1 || !radios[0].TryGetCurrentPattern(InvokePattern.Pattern, out modelInvoke)) return ModelFail("choice");
+            if (ActiveTitle(root) != title) return ModelFail("choice-task");
             ((InvokePattern)modelInvoke).Invoke();
             List<AutomationElement> strengthItems = new List<AutomationElement>();
-            for (int attempt = 0; attempt < 10; attempt++)
+            for (int attempt = 0; attempt < 30; attempt++)
             {
-                Thread.Sleep(80);
+                Thread.Sleep(100);
                 button = ModelButton(root);
                 if (button == null || !button.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out expandObject)) continue;
                 try
@@ -313,22 +321,23 @@ namespace Batona.NativeCodexProbe
                 }
                 catch { }
             }
-            if (strengthItems.Count != 1) return false;
+            if (strengthItems.Count != 1) return ModelFail("strength-menu");
             Thread.Sleep(300);
             int current, count;
-            if (!ReadStrength(root, displayName, out current, out count) || count != effortCount) return false;
+            if (!ReadStrength(root, displayName, out current, out count)) return ModelFail("strength-read");
+            if (count != effortCount) return ModelFail("strength-count");
             if (current != effortIndex)
             {
                 strengthItems = Find(root, ControlType.MenuItem, "强度", false);
-                if (strengthItems.Count != 1) return false;
+                if (strengthItems.Count != 1) return ModelFail("strength-item");
                 SetForegroundWindow(windowHandle);
                 strengthItems[0].SetFocus();
                 Thread.Sleep(100);
-                if (GetForegroundWindow() != windowHandle) return false;
+                if (GetForegroundWindow() != windowHandle) return ModelFail("foreground");
                 while (current != effortIndex)
                 {
                     if (!InteractiveDesktop() || ActiveTitle(root) != title || GetForegroundWindow() != windowHandle)
-                        return false;
+                        return ModelFail("window-changed");
                     byte key = current < effortIndex ? (byte)0x27 : (byte)0x25;
                     keybd_event(key, 0, 0, UIntPtr.Zero);
                     keybd_event(key, 0, 2, UIntPtr.Zero);
@@ -342,10 +351,10 @@ namespace Batona.NativeCodexProbe
                             && observedCount == effortCount && observed == next)
                         { current = observed; moved = true; break; }
                     }
-                    if (!moved) return false;
+                    if (!moved) return ModelFail("strength-move");
                 }
             }
-            if (ActiveTitle(root) != title) return false;
+            if (ActiveTitle(root) != title) return ModelFail("final-task");
             button = ModelButton(root);
             if (button != null && button.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out expandObject))
             {
@@ -353,6 +362,12 @@ namespace Batona.NativeCodexProbe
                 if (menu.Current.ExpandCollapseState == ExpandCollapseState.Expanded) menu.Collapse();
             }
             return true;
+        }
+
+        private static bool ModelFail(string stage)
+        {
+            modelFailure = stage;
+            return false;
         }
 
         private static bool ReadStrength(AutomationElement root, string modelName, out int index, out int count)

@@ -1,15 +1,22 @@
 # 托管接入候选版：迁移与运维
 
-状态（2026-09-22 20:04）：网关 **v0.2.0 / commit 793af05 已上线**，但 Batona Gateway 0.3.1 的品牌与运行标识迁移尚未在生产执行。下文中的 Batona 目录、服务、Nginx include 与部署命令均为迁移完成后的目标状态；迁移前先只读盘点实际旧状态，不能直接运行新版部署脚本。完整配对/聊天仍待验收。
+状态（2026-09-23）：Batona Gateway **v0.3.1 / commit `3bf2a6f` 已上线**，运行标识迁移完成。Batona PC 0.5.4 与手测 AVD 的 Batona Mobile 0.3.3 已通过实际已配对链路读取 DSH/Codex 工作区，并在指定的 Codex“运行测试”任务完成手机发送、回复历史读取、模型、思考强度和权限菜单操作。运行中增量、审批/提问与多账号吊销场景尚未验收。
 
-2026-09-23 只读复核：回环 `/healthz` 仍返回 `version: 0.2.0`、`accessMode: hosted`、隧道启用；`batona-deploy --status` 提示命令不存在。0.3.1 的权限/模型联动尚未部署，不能据本地 APK 与 PC 包构建成功宣称公网端到端验收。
+迁移前只读复核：旧回环 `/healthz` 返回 `version: 0.2.0`、`accessMode: hosted`、隧道启用；当时 `batona-deploy` 尚不存在。下方保留旧部署记录，用于跨代灾备，不代表当前状态。
+
+### 2026-09-23 Batona 联合迁移
+
+- 获用户授权后推送 `codex/native-ui-probe` 的 `3bf2a6f`，服务器核对同一提交。停止旧网关，把旧程序、配置、数据、systemd、Nginx 主 vhost/include 和部署包装命令联合备份至服务器 `/var/backups/batona-migration/20260923-native-control/joint-before.tar.gz`；目录 700、文件 600，SHA256 `6e17dc28eeb42f307b9ee2613dbc87b013aca3fa95f0389bf00d0a50f5b303f8`。备份保持在服务器，不复制凭据到仓库。
+- 维护期间网关路由临时返回 503，首页保持 200。将旧配置/数据复制到 Batona 目录后核对管理员密钥、vault 主密钥和 vault 文件哈希相同；只改新配置的路径，不重新生成身份。`batona-deploy --tag 3bf2a6f` 成功，`nginx -t` 通过后切换 include 并重载。`dsh-gateway` 已禁用，旧 `dsh-deploy` 已移到上述备份目录；`batona-gateway`、Nginx 活跃，`frps` 停用。
+- 公网系统 CA 校验的 `/healthz` 返回 v0.3.1、hosted、隧道启用；首页 200、`/pair.html` 404、`/remote/` 410。3090 只监听回环，PC 三个本地端口为 3080/3081/3082；公网无 7000/7500。Batona PC 的出站隧道连通，已配对 AVD 无需重新配对。
+- 此次跨代迁移**没有可用的普通 `batona-deploy --rollback` 点**；旧联合快照只能按“回退规则”处理授权撤销与凭据轮换，不能直接覆盖新 vault 后开放入口。
 
 ## 本次备份与部署记录
 
 - 旧程序 v0.1.34 / `cede58c` 已备份到开发工作区 `server-backups/20260922-hosted-cutover/program-before-complete.tar.gz`，SHA256 为 `98800be2b64a3272e8573ef5e37b6467b7c86321010b4a4c41186b06ff563d48`。此目录已被 Git 忽略；两个 `.incomplete` 文件是失败传输，不能用来恢复。
 - 含配置/凭据/数据的完整回退快照仅留服务器 `/var/backups/dsh-hosted/20260922-hosted-cutover/joint-before.tar.gz`（目录 700、文件 600），SHA256 为 `d259a2f22f0b011c08e29d028213e2e5fee9042cbdee970d5bc39b9d03b01f15`。包含程序、配置、数据、systemd 单元、宝塔主 vhost 与 DSH include；未复制或覆盖续签证书私钥。
 - commit `793af05` 的改名前版本已构建并验证，Nginx 检查后平滑重载。首页与后台为 200、旧认证/remote 为 410、未授权管理请求为 401；有效管理员密钥在服务器内存中只读验证成功，无密钥输出。3090 仅回环，FRP 未启用。
-- **当前自动回滚点是旧认证版 cede58c**，不能将其当作“同一托管版本”的普通回滚。若需回退，先关闭远程入口并按下方跨代联合回退处理，避免意外恢复旧授权。
+- 当时的自动回滚点是旧认证版 `cede58c`，不是当前 Batona 部署的普通回滚点。若需回退，先关闭远程入口并按下方跨代联合回退处理，避免意外恢复旧授权。
 
 ## 使用方式
 

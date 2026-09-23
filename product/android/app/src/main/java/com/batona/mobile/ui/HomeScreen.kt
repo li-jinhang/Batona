@@ -613,7 +613,10 @@ internal fun ChatTab(
                         if (sessionId == null) return@launch
                         val result = client.modelSelect(sessionId, model)
                         if (!result.ok) throw GatewayFailure(result.error?.code ?: "request-failed")
-                        if (state.currentId == sessionId) state.selectedModel = model
+                        if (state.currentId == sessionId) {
+                            state.selectedModel = model
+                            state.sessionError = null
+                        }
                         state.showModels = false
                     } catch (cancelled: CancellationException) { throw cancelled }
                     catch (e: Exception) {
@@ -637,7 +640,10 @@ internal fun ChatTab(
                     try {
                         val result = client.modelSelect(sessionId, selection)
                         if (!result.ok) throw GatewayFailure(result.error?.code ?: "request-failed")
-                        if (state.currentId == sessionId) state.selectedModel = selection
+                        if (state.currentId == sessionId) {
+                            state.selectedModel = selection
+                            state.sessionError = null
+                        }
                         state.showEfforts = false
                     } catch (cancelled: CancellationException) { throw cancelled }
                     catch (e: Exception) {
@@ -923,7 +929,10 @@ internal fun ConversationControls(state: HomeState, client: GatewayClient) {
                                     try {
                                         val confirmed = client.permissionSelect(sessionId, profile.id)
                                         if (confirmed.profileId != profile.id) throw GatewayFailure("native-profile-unavailable")
-                                        if (state.currentId == sessionId) state.profileBySession[sessionId] = profile.id
+                                        if (state.currentId == sessionId) {
+                                            state.profileBySession[sessionId] = profile.id
+                                            state.sessionError = null
+                                        }
                                         closePermissions()
                                     } catch (cancelled: CancellationException) { throw cancelled }
                                     catch (e: Exception) { state.permissionError = e.message ?: "权限切换失败，请在电脑端确认。" }
