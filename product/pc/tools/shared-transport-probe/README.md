@@ -115,8 +115,10 @@ approval broadcast are proven on local probes. Shared writes are still a
 local opt-in pilot. The remaining gates are native composer model/effort
 display, permission profile behavior, actual Android→gateway→PC delivery,
 and phone/Desktop approval race handling. Model and permission selection
-remain blocked in shared mode. The installed Android/PC pair still follows
-the previous UI Automation route.
+remain blocked in shared mode. Gateway 0.3.2 now contains the approval-resolution
+mapping and Android 0.3.4 is on the test AVD, but the running PC is still 0.5.4;
+the built 0.5.5 pilot has not been activated. The installed Android/PC pair
+still follows the previous UI Automation route.
 
 The following scripts require an explicit loopback URL and, for native turns,
 the designated task UUID. They do not install or deploy Batona:

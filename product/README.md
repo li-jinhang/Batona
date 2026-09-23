@@ -1,6 +1,6 @@
 # Batona — 三端工程导航与共享契约
 
-当前联调组合为生产 Batona Gateway 0.3.1、本机 Batona PC 0.5.4 与 Batona Mobile 0.3.3（测试 AVD）。生产发布、迁移与回退先读 [托管接入运维](server/hosted-access-operations.md)，验收记录见 [实施证据](../docs/plans/hosted-access/evidence.md)。
+当前联调组合为生产 Batona Gateway 0.3.2、本机 Batona PC 0.5.4 与 Batona Mobile 0.3.4（测试 AVD）。PC 0.5.5 共享连接测试包已构建但尚未切换运行；手机仍走原有 PC 路径。生产发布、迁移与回退先读 [托管接入运维](server/hosted-access-operations.md)，验收记录见 [实施证据](../docs/plans/hosted-access/evidence.md)。
 
 本次改名同时更新了 PC appId、Android applicationId、本地安全存储别名、配对 URI、账号密钥前缀和服务器运行标识。Batona PC 与 Batona Mobile 使用新的本地数据空间；2026-09-23 已完成服务器运行标识迁移并保留现有托管授权，迁移证据见运维记录。
 

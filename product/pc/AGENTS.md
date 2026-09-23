@@ -14,7 +14,7 @@
 
 ## 托管接入候选版
 
-生产网关已于 2026-09-23 迁移到 Batona Gateway 0.3.1；Batona PC 0.5.4 便携版已在本机运行。新安装默认使用 `Batona PC` 产品名与 `%APPDATA%\Batona PC` 数据目录；改名前安装不会因源码改名自动搬迁。当前入口固定 117.72.10.87:443；旧 `binding.json` 不再加载。Windows safeStorage 加密 `access.bin`，保留独立设备身份；原始接入密钥仅用于登录交换，不进 renderer 状态或磁盘。明确 401 清除授权回登录页，网络故障保留授权。配对页面关闭时通知撤销，窗口最小化保持续租（禁止后台节流）。退出账号/解绑/禁用只断远程链路，不停止 DSH/Codex 本地任务。发布或迁移先读 [运维边界](../server/hosted-access-operations.md)。
+生产网关为 Batona Gateway 0.3.2；Batona PC 0.5.4 便携版仍在本机运行。PC 0.5.5 共享连接测试包已构建并用独立数据目录启动检查，但尚未替换运行版；切换尝试未启动新版，旧版已恢复并复核 3080/3081/3082、DSH 认证与网关连接。新安装默认使用 `Batona PC` 产品名与 `%APPDATA%\Batona PC` 数据目录；改名前安装不会因源码改名自动搬迁。当前入口固定 117.72.10.87:443；旧 `binding.json` 不再加载。Windows safeStorage 加密 `access.bin`，保留独立设备身份；原始接入密钥仅用于登录交换，不进 renderer 状态或磁盘。明确 401 清除授权回登录页，网络故障保留授权。配对页面关闭时通知撤销，窗口最小化保持续租（禁止后台节流）。退出账号/解绑/禁用只断远程链路，不停止 DSH/Codex 本地任务。发布或迁移先读 [运维边界](../server/hosted-access-operations.md)。
 
 ## 端内约束
 

@@ -1,6 +1,6 @@
 # 托管接入候选版：迁移与运维
 
-状态（2026-09-23）：Batona Gateway **v0.3.1 / commit `3bf2a6f` 已上线**，运行标识迁移完成。Batona PC 0.5.4 与手测 AVD 的 Batona Mobile 0.3.3 已通过实际已配对链路读取 DSH/Codex 工作区，并在指定的 Codex“运行测试”任务完成手机发送、回复历史读取、模型、思考强度和权限菜单操作。运行中增量、审批/提问与多账号吊销场景尚未验收。
+状态（2026-09-23）：Batona Gateway **v0.3.2 / commit `c5161f8` 已上线**，运行标识迁移完成。Batona PC 0.5.4 与手测 AVD 的 Batona Mobile 0.3.4 保持原有配对；既有链路已在指定的 Codex“运行测试”任务完成手机发送、回复历史读取、模型、思考强度和权限菜单操作。运行中增量、审批/提问与多账号吊销场景尚未验收。
 
 迁移前只读复核：旧回环 `/healthz` 返回 `version: 0.2.0`、`accessMode: hosted`、隧道启用；当时 `batona-deploy` 尚不存在。下方保留旧部署记录，用于跨代灾备，不代表当前状态。
 
@@ -11,6 +11,12 @@
 - 公网系统 CA 校验的 `/healthz` 返回 v0.3.1、hosted、隧道启用；首页 200、`/pair.html` 404、`/remote/` 410。3090 只监听回环，PC 三个本地端口为 3080/3081/3082；公网无 7000/7500。Batona PC 的出站隧道连通，已配对 AVD 无需重新配对。
 - 此次跨代迁移**没有可用的普通 `batona-deploy --rollback` 点**；旧联合快照只能按“回退规则”处理授权撤销与凭据轮换，不能直接覆盖新 vault 后开放入口。
 - 服务器工作树随后快进到仅修改服务端文档的 `bc2284f`，并创建跟踪 `origin/codex/native-ui-probe` 的本地分支；运行网关仍为 `3bf2a6f` 的 v0.3.1。`/usr/local/bin/batona-deploy` 显式设置 `DEPLOY_BRANCH=codex/native-ui-probe`，避免无参数部署误取仍旧的 `main`；后续合并 `main` 时须再调整。
+
+### 2026-09-23 共享连接测试网关更新
+
+- 以 `batona-deploy --tag c5161f8` 部署 v0.3.2；新增共享 Codex 审批已解决通知的手机请求编号映射。部署脚本确认服务、版本、512MB 堆上限和配置/数据保留；公网系统 CA 校验的 `/healthz` 返回 v0.3.2，服务器状态检查确认 3080/3081/3082 未绑定公网。代码回退点为 `3bf2a6f`，可用 `batona-deploy --rollback`。
+- 服务器创建跟踪 `origin/codex/shared-transport-probe` 的本地分支；日常部署包装命令改为跟踪此分支，旧包装命令备份在 `/usr/local/bin/batona-deploy.before-shared-20260923`。当前工作树为部署 commit 的 detached HEAD，下次无参数部署会切换到该本地分支。
+- PC 0.5.5 测试包已构建但没有替换运行中的 0.5.4。切换尝试中，旧版退出后 DSH 保持运行；新版启动被自动执行审查拒绝，随后恢复 0.5.4 并复核 DSH 认证、Codex 桥和到网关的 TCP 连接。故 v0.3.2 的新审批事件尚未经过真实手机全链路验收。
 
 ## 本次备份与部署记录
 
