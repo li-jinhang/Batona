@@ -9,7 +9,7 @@
 - Windows 桌面客户端：Electron 33，CommonJS；应用入口为 `main.js`，安全桥为 `preload.js`，渲染进程位于 `renderer/`。
 - 接入密钥登录（`access-client.js`）、DSH 启动与生命周期、网关 API、配对二维码、窗口行为由 `main.js` 协调；渲染端经 preload 暴露的窄 API 与主进程交互。
 - 自研 WSS 隧道客户端在 `tunnel/client.js`，帧协议在 `tunnel/protocol.js`；它连接到服务器内置隧道服务端，并将流量安全转发至本机 DSH。
-- Codex 桥在 `codex-bridge.js`：默认以 stdio 启动本机 Codex App Server，且只监听 `127.0.0.1:3082`。该端口只能由既有隧道转发；桥必须在 PC 端脱敏事件，不能记录或转发认证资料、连接串、原始工具输出或私钥。涉及实验共享 WebSocket 接入时，先读 [共享传输探针](tools/shared-transport-probe/README.md)；该模式目前只读。
+- Codex 桥在 `codex-bridge.js`：默认以 stdio 启动本机 Codex App Server，且只监听 `127.0.0.1:3082`。该端口只能由既有隧道转发；桥必须在 PC 端脱敏事件，不能记录或转发认证资料、连接串、原始工具输出或私钥。涉及实验共享 WebSocket 接入时，先读 [共享传输探针](tools/shared-transport-probe/README.md)；共享模式默认只读，只有本机显式设置 `BATONA_SHARED_CODEX_WRITES=1` 才开启文本发送与审批应答探针。
 - 依赖与打包配置在 `package.json`。`electron-builder` 的 `files` 白名单决定进安装包的文件：`main.js` 直接 `require` 的每个本地文件或目录（当前包括 `tunnel/**/*`）都必须列入。Windows 发布包只允许内置 WSS 隧道模块，不能打包或下载第三方隧道二进制。
 
 ## 托管接入候选版
@@ -23,7 +23,7 @@
 - 保持 Electron 进程隔离：优先将特权操作放入主进程，通过 `preload.js` 暴露最小、显式的 IPC 接口；不要关闭 `contextIsolation` 或把 Node API 直接暴露给 renderer。
 - 隧道需保持 PC 出站连接和本地 DSH 回环转发的模型；不可改成服务器主动连接用户 PC，或将本地监听改为公网可达。
 - Codex 可用性须由本机 `app-server` 初始化、`thread/list`、`model/list` 与 `permissionProfile/list` 实测决定；不可在不可用时改用 `codex exec` 伪装成已有桌面会话控制。手机的三档权限只能使用 PC 校验为 allowed 的内建 profile。
-- 修改 Codex 原生任务的发送、审批、同步或远程控制前，先读 [ADR 0003](../../docs/adr/0003-native-codex-window-control.md)。原生 Codex 窗口是同一任务的唯一写入面；Batona 的独立 `app-server` 只读镜像任务列表、状态和历史，运行期增量与写入必须经受限的原生界面代理完成。
+- 修改 Codex 原生任务的发送、审批、同步或远程控制前，先读 [ADR 0003](../../docs/adr/0003-native-codex-window-control.md)。现有安装版仍用原生窗口写入，独立 stdio `app-server` 只读镜像；实验分支可让 Desktop 与 Batona 加入**同一个**回环 WebSocket app-server，以协议事件和 `turn/start` 交互。该实验不能按“两个独立 app-server”放开写入，亦未通过手机端完整验收。
 - Windows 路径、子进程、DSH 未启动、令牌过期、网络重连和应用退出都必须有明确处理；不要只在打包环境或仅在开发环境假定某个路径存在。
 
 ## 验证

@@ -183,11 +183,12 @@ class AppServerClient extends EventEmitter {
 }
 
 class CodexBridge {
-  constructor({ host = '127.0.0.1', port = 3082, userDataDir, executable, websocketUrl, nativeControl, log = () => {} } = {}) {
+  constructor({ host = '127.0.0.1', port = 3082, userDataDir, executable, websocketUrl, enableSharedWrites = false, nativeControl, log = () => {} } = {}) {
     this.host = host;
     this.port = port;
     this.log = log;
     this.appServer = new AppServerClient({ executable, websocketUrl, log });
+    this.enableSharedWrites = Boolean(this.appServer.websocketUrl && enableSharedWrites);
     this.nativeControl = nativeControl || new NativeCodexControl({ appServer: this.appServer });
     this.nativePromptInFlight = false;
     this.bridgeOwnedThreads = new Set();
@@ -203,7 +204,10 @@ class CodexBridge {
 
     this.appServer.on('notification', (msg) => this.onNotification(msg));
     this.appServer.on('server-request', (msg) => this.onServerRequest(msg));
-    this.appServer.on('stopped', () => this.broadcast({ type: 'bridge-status', available: false }));
+    this.appServer.on('stopped', () => {
+      this.pendingRequests.clear();
+      this.broadcast({ type: 'bridge-status', available: false });
+    });
   }
 
   async start() {
@@ -276,10 +280,11 @@ class CodexBridge {
         return;
       }
       if (!(await this.ensureAppServer())) throw Object.assign(new Error('Codex Desktop App Server 当前不可用'), { code: 'codex-unavailable' });
-      // Shared Desktop transport is observation-only until request ownership and
-      // cross-client turns are verified. Never race the native client's writes.
+      // Shared transport writes require an explicit local experiment opt-in.
       if (this.appServer.websocketUrl && req.method !== 'GET'
-        && !(/^\/v1\/sessions\/[^/]+\/resume$/.test(url.pathname) && req.method === 'POST')) {
+        && !(req.method === 'POST' && /^\/v1\/sessions\/[^/]+\/resume$/.test(url.pathname))
+        && !(this.enableSharedWrites && req.method === 'POST'
+          && /^\/v1\/sessions\/[^/]+\/(prompt|respond)$/.test(url.pathname))) {
         throw Object.assign(new Error('共享 Codex 连接尚未开放写入'), { code: 'shared-transport-readonly' });
       }
       if (req.method === 'GET' && url.pathname === '/v1/sessions') {
@@ -505,6 +510,13 @@ class CodexBridge {
     const read = await this.appServer.request('thread/read', { threadId, includeTurns: false });
     if (read?.thread?.id !== threadId) throw Object.assign(new Error('Codex 任务不存在'), { code: 'session-not-found' });
     if (read.thread.originator === 'Codex Desktop') {
+      if (this.appServer.websocketUrl && this.enableSharedWrites) {
+        await this.appServer.request('thread/resume', { threadId, excludeTurns: true });
+        // Inherit the native task's current settings. Model/permission selection
+        // stays closed until composer synchronization is verified separately.
+        await this.appServer.request('turn/start', { threadId, input: [{ type: 'text', text }] });
+        return;
+      }
       if (this.nativePromptInFlight) throw Object.assign(new Error('原生 Codex 正在提交另一条消息'), { code: 'native-control-busy' });
       const selectedProfileId = profileId || 'keep-current';
       if (selectedProfileId !== 'keep-current') await this.requireProfile(selectedProfileId);
@@ -614,12 +626,12 @@ class CodexBridge {
   }
 
   async respond(threadId, body) {
-    await this.requireAppServerWriter(threadId);
+    if (!this.enableSharedWrites) await this.requireAppServerWriter(threadId);
     const rpcId = body?.rpcId;
     const pending = this.pendingRequests.get(String(rpcId));
     if (!pending || pending.threadId !== threadId) throw Object.assign(new Error('该请求已处理或不属于当前会话'), { code: 'interaction-resolved' });
     const result = responseFor(pending, body?.payload || {});
-    this.appServer.respond(pending.rpcId, result);
+    this.appServer.respond(pending.wireId, result);
     this.pendingRequests.delete(pending.rpcId);
   }
 
@@ -635,8 +647,13 @@ class CodexBridge {
     const event = eventFromNotification(msg);
     if (threadId && event) this.broadcast({ type: 'agent-event', threadId, event });
     if (msg?.method === 'serverRequest/resolved') {
-      const requestId = asString(msg?.params?.requestId);
-      if (requestId) this.pendingRequests.delete(requestId);
+      const requestId = String(msg?.params?.requestId ?? '');
+      const pending = this.pendingRequests.get(requestId);
+      if (pending) {
+        this.pendingRequests.delete(requestId);
+        this.broadcast({ type: 'agent-event', threadId: pending.threadId,
+          event: { type: 'interaction/resolved', rpcId: requestId } });
+      }
     }
     if (msg?.method === 'thread/status/changed' && msg?.params?.thread) {
       this.broadcast({ type: 'thread-status', thread: normalizeThread(msg.params.thread) });
@@ -644,11 +661,13 @@ class CodexBridge {
   }
 
   onServerRequest(msg) {
-    if (this.appServer.websocketUrl) return; // The native Desktop owns approvals in shared mode.
+    if (this.appServer.websocketUrl && !this.enableSharedWrites) return;
     const normalized = normalizeServerRequest(msg);
     if (!normalized) {
       // 未实现的 App Server 请求一律安全拒绝，不能因手机 UI 缺失而默认放行。
-      try { this.appServer.respond(msg.id, { action: 'decline', content: null }); } catch {}
+      if (!this.appServer.websocketUrl) {
+        try { this.appServer.respond(msg.id, { action: 'decline', content: null }); } catch {}
+      }
       return;
     }
     this.pendingRequests.set(normalized.rpcId, normalized);
@@ -759,8 +778,8 @@ function eventFromNotification(msg) {
       return error ? { type: 'error', code: 'turn-failed', message: redactText(asString(error.message) || 'Codex 回合失败') } : { type: 'turn/end' };
     }
     case 'item/agentMessage/delta': return { type: 'assistant/chunk', text: redactText(asString(p?.delta)) };
-    case 'item/started': return eventFromItem(p?.item, false);
-    case 'item/completed': return eventFromItem(p?.item, true);
+    case 'item/started': return asString(p?.item?.type) === 'agentMessage' ? null : eventFromItem(p?.item, false);
+    case 'item/completed': return asString(p?.item?.type) === 'userMessage' ? null : eventFromItem(p?.item, true);
     default: return null;
   }
 }
@@ -796,13 +815,13 @@ function normalizeServerRequest(msg) {
   const rpcId = String(msg.id ?? '');
   if (!threadId || !rpcId) return null;
   if (method === 'item/commandExecution/requestApproval') {
-    return { rpcId, threadId, method, params: p, event: { type: 'approval/requested', approvalId: rpcId, rpcId, toolName: '执行命令', reason: redactText(asString(p.reason) || asString(p.command) || 'Codex 请求执行命令') } };
+    return { rpcId, wireId: msg.id, threadId, method, params: p, event: { type: 'approval/requested', approvalId: rpcId, rpcId, toolName: '执行命令', reason: redactText(asString(p.reason) || asString(p.command) || 'Codex 请求执行命令') } };
   }
   if (method === 'item/fileChange/requestApproval') {
-    return { rpcId, threadId, method, params: p, event: { type: 'approval/requested', approvalId: rpcId, rpcId, toolName: '修改文件', reason: redactText(asString(p.reason) || 'Codex 请求修改文件') } };
+    return { rpcId, wireId: msg.id, threadId, method, params: p, event: { type: 'approval/requested', approvalId: rpcId, rpcId, toolName: '修改文件', reason: redactText(asString(p.reason) || 'Codex 请求修改文件') } };
   }
   if (method === 'item/permissions/requestApproval') {
-    return { rpcId, threadId, method, params: p, event: { type: 'approval/requested', approvalId: rpcId, rpcId, toolName: '额外权限', reason: redactText(asString(p.reason) || 'Codex 请求额外权限') } };
+    return { rpcId, wireId: msg.id, threadId, method, params: p, event: { type: 'approval/requested', approvalId: rpcId, rpcId, toolName: '额外权限', reason: redactText(asString(p.reason) || 'Codex 请求额外权限') } };
   }
   if (method === 'item/tool/requestUserInput') {
     const questions = Array.isArray(p.questions) ? p.questions : [];
@@ -820,7 +839,7 @@ function normalizeServerRequest(msg) {
         options,
       };
     });
-    return { rpcId, threadId, method, params: p, event: { type: 'question/requested', questionRpcId: rpcId, rpcId, questions: normalized.length ? normalized : [{ id: 'answer', kind: 'text', prompt: 'Codex 需要你的输入' }] } };
+    return { rpcId, wireId: msg.id, threadId, method, params: p, event: { type: 'question/requested', questionRpcId: rpcId, rpcId, questions: normalized.length ? normalized : [{ id: 'answer', kind: 'text', prompt: 'Codex 需要你的输入' }] } };
   }
   return null;
 }

@@ -140,6 +140,14 @@ async function main(): Promise<void> {
   await call('respond', { sessionId: g2, serverRequestRpcId: q.rpcId, payload: { answer: 'a' } });
   check('提问应答后回合完成', ((await qDone).payload as { sessionId?: string }).sessionId === g2);
 
+  // A Desktop-side answer must retire the phone's gateway RPC mapping as soon
+  // as app-server reports the shared request resolved.
+  (ws as any).pending.set('phone-request', { gatewaySessionId: g1, adapterRpcId: 'appserver-122' });
+  const resolved = (ws as any).buildPushFrame(g1, { type: 'interaction/resolved', rpcId: 'appserver-122' }) as ServerRequest;
+  check('电脑端处理审批后网关推送手机请求编号', resolved.method === 'interaction/resolved'
+    && (resolved.payload as any).requestRpcIds?.includes('phone-request'));
+  check('电脑端处理审批后网关移除待应答映射', !(ws as any).pending.has('phone-request'));
+
   // ── 5. 工作区 ──────────────────────────────────────────────────────
   r = await call('workspace.create', { path: '/tmp/smoke-ws' });
   check('workspace.create 成功', r.ok && (r.value as any).created === true);

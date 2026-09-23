@@ -106,6 +106,7 @@ Git 永不提交 `frpc.toml`、frpc/exe、APK、PC `dist/`、`node_modules/`、�
 - 公网入口只应为反向代理后的 TLS；网关服务监听 `127.0.0.1:3090`，各 PC 的动态隧道端口只绑定回环。`trustedHosts` 不是认证；管理员、账号与设备授权严格分域。
 - 不记录或回显账号密码、连接串、`agentKey`、launch token、TOTP 秘钥或设备令牌。更改认证、限速、吊销或数据结构时要考虑已有数据的迁移与失效策略。
 - 跨端 RPC、连接串、二维码、launch-token 上报和隧道帧以 `../README.md` 的跨端契约为准。修改协议须同步检查 Android 与 PC 的兼容性，并保持旧客户端的明确行为。
+- 共享 Codex 连接的实验审批由 app-server 向多个订阅客户端广播同一请求 ID。PC 发出 `interaction/resolved` 后，网关把适配器请求 ID 映射为手机侧 `requestRpcIds` 并移除待应答映射；手机仅关闭匹配的弹窗。此事件不授予权限，也不代表审批结果为允许。
 - 部署更改必须维持：从同一 Git commit 安装 `install.sh` 与 `gateway/`、健康检查版本一致、失败自动回滚、配置/数据保留。不要用手工 tar 覆盖流程替代 `deploy.sh`。
 
 ## 验证

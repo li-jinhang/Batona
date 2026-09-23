@@ -113,6 +113,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -326,6 +328,14 @@ internal class HomeState(val backend: String) {
                     onAgentNotice?.invoke("question")
                     lines.add(ChatLine(System.nanoTime(), "system", "❓ ${qs.firstOrNull()?.prompt ?: "问题"}"))
                     updateSessionState(sid, "waiting-question")
+                }
+                "interaction/resolved" -> {
+                    val requestIds = frame.payload.jsonObject["requestRpcIds"]?.jsonArray
+                        ?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
+                    if (sessionId == currentId && pending?.rpcId?.let { it in requestIds } == true) {
+                        pending = null
+                        updateSessionState(sessionId, "running")
+                    }
                 }
             }
         } catch (_: Exception) { /* 忽略畸形帧 */ }

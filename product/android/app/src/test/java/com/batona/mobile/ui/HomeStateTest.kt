@@ -5,6 +5,8 @@ import com.batona.mobile.data.ServerRequest
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.*
 import org.junit.Test
 import kotlinx.coroutines.runBlocking
@@ -110,6 +112,21 @@ class HomeStateTest {
             it.handlePush(event("unknown", "session/title", "ignore"))
         }
         assertEquals(0, refreshes)
+    }
+
+    @Test fun desktopResolutionClosesOnlyMatchingPhoneApproval() {
+        val state = HomeState("codex").apply {
+            currentId = "gateway-codex"
+            pending = PendingFrame("approval", "approval-1")
+        }
+        fun resolved(id: String) = ServerRequest(rpcId = "event-1", method = "interaction/resolved", payload = buildJsonObject {
+            put("sessionId", "gateway-codex")
+            putJsonArray("requestRpcIds") { add(JsonPrimitive(id)) }
+        })
+        state.handlePush(resolved("other-approval"))
+        assertEquals("approval-1", state.pending?.rpcId)
+        state.handlePush(resolved("approval-1"))
+        assertNull(state.pending)
     }
 
     private fun event(sessionId: String, type: String, title: String = "") =

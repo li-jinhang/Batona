@@ -1,8 +1,7 @@
 # Shared app-server transport probe
 
-Throwaway experiment for one narrow question: can two independent clients attach to
-one `codex app-server` process, write the same thread, and receive each other's
-events? Run from the repository root:
+Experimental probes for shared `codex app-server` attachment, bidirectional
+events, approval routing, and Batona's local bridge. Run from the repository root:
 
 ```powershell
 node product/pc/tools/shared-transport-probe/probe.cjs
@@ -82,17 +81,38 @@ still blocks prompt/model/permission writes.
   needs separate latency diagnosis. The Batona bridge now subscribes when
   its session-open endpoint is used in shared mode. Live Android delivery,
   approval ownership, and model/effort composer synchronization remain untested.
+- A later isolated approval probe showed that both subscribed WebSocket clients
+  receive the same approval request ID and both receive its resolution. The
+  initiating client declined it; the temporary task was archived. On the
+  designated native task, `turn/start` changed reasoning effort from `high` to
+  `xhigh` and emitted `thread/settings/updated` in about 61 ms. A second turn
+  restored `high`. A `thread/resume` model override on that already-loaded task
+  did not change its model. The native composer label still needs human checking.
+- The Batona HTTP bridge pilot submitted a text turn to that native task in
+  about 159 ms and received reply deltas and completion through `/v1/events`;
+  total turn time was about 4.2 s with a healthy model connection. The branch
+  now has an explicit `BATONA_SHARED_CODEX_WRITES=1` opt-in for shared text
+  turns and approval responses. It remains disabled by default, and the
+  installed PC client has not been updated.
 
 ## Decision gate
 
-Native attachment and both directions of turn events are now proven on the
-designated task. The next gate is request ownership: identify which client
-receives approval/question requests when the other starts a turn; verify
-model/effort changes propagate to Desktop's composer; then allow Batona
-HTTP writes in shared mode. Until that gate passes, the bridge rejects
-prompt/model/permission writes and ignores server requests, leaving Desktop
-as the interaction owner. The installed Android/PC pair still follows the
-previous UI Automation route.
+Native attachment, bidirectional turn events, HTTP text submission, and
+approval broadcast are proven on local probes. Shared writes are still a
+local opt-in pilot. The remaining gates are native composer model/effort
+display, permission profile behavior, actual Android→gateway→PC delivery,
+and phone/Desktop approval race handling. Model and permission selection
+remain blocked in shared mode. The installed Android/PC pair still follows
+the previous UI Automation route.
+
+The following scripts require an explicit loopback URL and, for native turns,
+the designated task UUID. They do not install or deploy Batona:
+
+```powershell
+node product/pc/tools/shared-transport-probe/request-route.cjs --attach ws://127.0.0.1:45678
+node product/pc/tools/shared-transport-probe/live-turn.cjs --attach ws://127.0.0.1:45678 --thread <uuid> --effort high --mode restore
+node product/pc/tools/shared-transport-probe/bridge-pilot.cjs --attach ws://127.0.0.1:45678 --thread <uuid>
+```
 
 The [handoff script](native-handoff.ps1) does a read-only preflight now:
 

@@ -44,6 +44,7 @@ export type AgentEvent =
   | { type: 'approval/resolved'; approvalId: string; outcome: 'allowed-once' | 'rejected' | 'cancelled' }
   | { type: 'question/requested'; questionRpcId: string; questions: AskUserQuestionItem[]; rpcId?: string }
   | { type: 'question/resolved'; questionRpcId: string; outcome: 'answered' | 'cancelled' }
+  | { type: 'interaction/resolved'; rpcId: string }
   | { type: 'session/title'; title: string }
   | { type: 'error'; code: string; message: string }
   | { type: 'done' };

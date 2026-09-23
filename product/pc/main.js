@@ -434,6 +434,7 @@ function startCodexBridge() {
         port: CODEX_SERVICE_PORT,
         userDataDir: app.getPath('userData'),
         websocketUrl: process.env.BATONA_SHARED_CODEX_WS_URL || undefined,
+        enableSharedWrites: process.env.BATONA_SHARED_CODEX_WRITES === '1',
         log,
       });
     } catch {

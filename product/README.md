@@ -71,6 +71,7 @@ PC 登录并连通隧道后打开手机配对页，显示随机手动码和 `bat
 
 - 上行：`auth.hello`、`session.list/create/resume/prompt/cancel/history/rename`、`workspace.*`、`model.*`、`agent.profile.list`、`respond`；设备管理仅走 PC 的 `/api/access/*` REST。
 - 下行：`session/event`、`approval/requested`、`question/requested`。审批/提问必须用原始 `serverRequestRpcId` 经 `respond` 回答。
+- 实验共享 Codex 审批另发 `interaction/resolved`，携带当前网关会话的 `requestRpcIds[]`；原生 Desktop 先处理时，手机只关闭编号匹配的待审批/提问卡。此事件不携带批准结果，也不表示已授权。
 - 任何字段、方法、事件或兼容策略变更都必须同步检查 Android、PC、服务器，并更新本文件与受影响端的 `AGENTS.md`。
 
 ### Codex 接入边界
@@ -80,6 +81,7 @@ PC 登录并连通隧道后打开手机配对页，显示随机手动码和 `bat
 - PC 的 `codex-bridge.js` 仅监听 `127.0.0.1:3082`，通过本机 Codex `app-server` 的 stdio JSON-RPC 工作；网关只能经既有隧道访问它。不能配置公网 listener，也不能把 App Server 原始帧、认证资料或未脱敏工具输出转给服务器。
 - Codex 会话与 DSH 会话是不同 backend；手机切换后只显示当前 backend 的工作区树。Codex 工作区按 PC 上会话的 `cwd` 分组；用户通过现有目录浏览服务选择任意本机目录，新建空工作区仅登记路径，不创建或删除磁盘目录。
 - Codex App Server 的 `thread/list` 发现桌面端已有任务，打开/历史浏览使用 `thread/read` 与 `thread/turns/list`，不取得第二个 writer。Desktop 持有任务的文本发送、模型/思考强度切换、权限菜单开合与权限选择经 PC 的原生窗口代理：先将 thread id 与唯一标题、最近完整轮次及原生窗口指纹绑定，再在操作前复核；失败时保留手机草稿或原设置。Batona 自建任务仍由其 app-server 写入。原生任务的审批/提问交互与运行中增量同步尚未接入；不能将历史可读或文本发送成功视为完整双向同步，也不能以 fork、抢锁或 `codex exec` 替代。详见 [ADR 0003](../docs/adr/0003-native-codex-window-control.md)。
+- 实验分支另提供**同一**回环 WebSocket app-server 的共享传输：Desktop 与 Batona 可同时订阅原生任务，显式本机开关下可直接提交文本和转发审批。其模型/权限设置界面同步、手机全链路和升级兼容尚未验收，当前安装版仍采用上一条的窗口代理，不能把共享传输当作已发布功能。详见 [共享传输探针](pc/tools/shared-transport-probe/README.md)。
 - 手机上的 `请求批准`、`帮我审批`、`完全访问` 是 PC 校验后的固定档；Batona 自建任务映射到允许的 App Server permission profile，Desktop 原生任务经窗口权限控件选择。原生“完全访问”若需要桌面确认，远程提交会拒绝，不能代用户确认。手机不能自定义底层权限。所有镜像事件先在 PC 脱敏，且只接受文本输入。
 - `session.permissionMenu`（`{sessionId,open}`）与 `session.permissionSelect`（`{sessionId,profileId}`）通过网关转至 PC 桥；返回 `{profileId}` 表示原生窗口确认的当前权限。手机弹窗立即展示，PC 菜单异步开合；原生界面验证失败时不把本地选择冒充为成功。模型及思考强度沿用 `model.select`。
 - 手机只在本地缓存每个工作区最近 5 个 Codex 会话和每个会话最多 200 条已脱敏历史；断网只能浏览、不可排队发送，注销或重新绑定会清空缓存。通知仅提示等待审批、等待回答、完成或失败，且不含对话、命令、路径或凭据。

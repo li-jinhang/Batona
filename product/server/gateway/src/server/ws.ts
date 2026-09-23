@@ -297,6 +297,17 @@ export class GatewayWsServer {
           },
         };
       }
+      case 'interaction/resolved': {
+        const requestRpcIds: string[] = [];
+        for (const [pendingId, pending] of this.pending) {
+          if (pending.gatewaySessionId === gatewaySessionId && pending.adapterRpcId === event.rpcId) {
+            this.pending.delete(pendingId);
+            requestRpcIds.push(pendingId);
+          }
+        }
+        return { type: 'server-request', rpcId, method: 'interaction/resolved',
+          payload: { sessionId: gatewaySessionId, requestRpcIds } };
+      }
       default:
         return { type: 'server-request', rpcId, method: 'session/event', payload: { sessionId: gatewaySessionId, event } };
     }
