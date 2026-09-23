@@ -78,14 +78,32 @@ actually observed using the shared listener. Then, using only the designated
 4. Only after these pass, route Desktop-originator writes through the shared
    protocol and remove the foreground UI Automation dependency in this mode.
 
-For the handoff, start the shared server on `127.0.0.1` with the flags above,
-launch Desktop with `CODEX_APP_SERVER_WS_URL` in **its process environment**,
-and launch a newly built Batona PC with `BATONA_SHARED_CODEX_WS_URL` set to the
-same URL. Do not set `CODEX_APP_SERVER_FORCE_CLI=1`. The packaged Desktop
-launch/inheritance path has not been exercised yet, so these are conditions,
-not a tested restart recipe. If Desktop fails to attach, quit it, restart
-normally without the override, and stop the temporary shared server. Leave the
-current production Batona build on its default stdio path until validation.
+The [handoff script](native-handoff.ps1) does a read-only preflight now:
+
+```powershell
+pwsh -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1
+```
+
+After saving work and quitting Codex Desktop, run it from an external PowerShell
+terminal with `-Launch`. It starts one matching CLI app-server on loopback,
+waits for `/readyz`, then attempts to start packaged Desktop with
+`CODEX_APP_SERVER_WS_URL` in **its process environment**. It refuses to launch
+while Desktop is running and never terminates it. The packaged Desktop launch
+path remains untested until this handoff. If launch fails, the script stops its
+temporary server; reopen Desktop normally from Start. For a successful handoff,
+quit Desktop before using `-Stop` to stop the server. The script does not set
+persistent environment variables.
+
+```powershell
+pwsh -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1 -Launch
+# After the shared-connection test, quit Desktop first:
+pwsh -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1 -Stop
+```
+
+For Batona's second connection, a newly built PC client must start with
+`BATONA_SHARED_CODEX_WS_URL` set to the same URL. The current production build
+remains on stdio until native attachment has been verified. Do not set
+`CODEX_APP_SERVER_FORCE_CLI=1` in Desktop's environment.
 
 The WebSocket transport is described as experimental in the
 [official app-server documentation](https://learn.chatgpt.com/docs/app-server).
