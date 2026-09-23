@@ -114,27 +114,32 @@ node product/pc/tools/shared-transport-probe/live-turn.cjs --attach ws://127.0.0
 node product/pc/tools/shared-transport-probe/bridge-pilot.cjs --attach ws://127.0.0.1:45678 --thread <uuid>
 ```
 
-The [handoff script](native-handoff.ps1) does a read-only preflight now:
+The [handoff script](native-handoff.ps1) provides a read-only status check:
 
 ```powershell
-pwsh -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1
+pwsh -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1 -Status
 ```
 
-After saving work and quitting Codex Desktop, run it from an external PowerShell
-terminal with `-Launch`. It starts one matching CLI app-server on loopback,
-waits for `/readyz`, then attempts to start packaged Desktop with
-`CODEX_APP_SERVER_WS_URL` in **its process environment**. It refuses to launch
-while Desktop is running and never terminates it. The packaged Desktop launch
-path succeeded on this machine. If launch fails on another build, the script stops its
-temporary server; reopen Desktop normally from Start. For a successful handoff,
-quit Desktop before using `-Stop` to stop the server. The script does not set
-persistent environment variables.
+After saving work and quitting Codex Desktop, run `-Launch` from an external
+PowerShell terminal. It reuses its recorded, healthy loopback app-server when
+available, even if Desktop's PID has changed. Otherwise it starts a matching
+CLI server, waits for `/readyz`, and starts packaged Desktop with
+`CODEX_APP_SERVER_WS_URL` in **its process environment**. It waits for the new
+Desktop process to establish a connection to that listener before reporting
+success. It refuses to launch while Desktop is running, never terminates it,
+and refuses to attach to a port owned by an unknown process. The ordinary
+Codex shortcut does not inherit this temporary environment setting; use
+`-Launch` for each shared-mode Desktop start. `-Stop` is only needed when
+ending the experiment or replacing the server after a Codex update, and
+requires Desktop to be closed. The script does not set persistent environment
+variables.
 
 ```powershell
 pwsh -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1 -Launch
 # After Desktop opens, from this repository root:
 node product/pc/tools/shared-transport-probe/probe.cjs --attach ws://127.0.0.1:45678
-# After the shared-connection test, quit Desktop first:
+# On the next Desktop restart, quit it and run -Launch again; the same verified
+# listener is reused. When finished with the experiment, quit Desktop first:
 pwsh -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1 -Stop
 ```
 

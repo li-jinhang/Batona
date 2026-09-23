@@ -24,6 +24,7 @@
 - 隧道需保持 PC 出站连接和本地 DSH 回环转发的模型；不可改成服务器主动连接用户 PC，或将本地监听改为公网可达。
 - Codex 可用性须由本机 `app-server` 初始化、`thread/list`、`model/list` 与 `permissionProfile/list` 实测决定；不可在不可用时改用 `codex exec` 伪装成已有桌面会话控制。手机的三档权限只能使用 PC 校验为 allowed 的内建 profile。
 - 修改 Codex 原生任务的发送、审批、同步或远程控制前，先读 [ADR 0003](../../docs/adr/0003-native-codex-window-control.md)。现有安装版仍用原生窗口写入，独立 stdio `app-server` 只读镜像；实验分支可让 Desktop 与 Batona 加入**同一个**回环 WebSocket app-server，以协议事件和 `turn/start` 交互。该实验不能按“两个独立 app-server”放开写入，亦未通过手机端完整验收。
+- 共享实验的 Codex Desktop 必须由 [native-handoff.ps1](tools/shared-transport-probe/native-handoff.ps1) 的 `-Launch` 启动；普通快捷方式不会继承临时共享地址。下次关闭 Desktop 后再次运行 `-Launch` 会复用经进程身份、端口和健康检查验证的监听；`-Status` 只读核验实际连接，`-Stop` 仅在 Desktop 关闭后结束实验。不得以旧 PID 作为新进程身份依据。
 - Windows 路径、子进程、DSH 未启动、令牌过期、网络重连和应用退出都必须有明确处理；不要只在打包环境或仅在开发环境假定某个路径存在。
 
 ## 验证
