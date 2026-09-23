@@ -94,6 +94,14 @@ still blocks prompt/model/permission writes.
   now has an explicit `BATONA_SHARED_CODEX_WRITES=1` opt-in for shared text
   turns and approval responses. It remains disabled by default, and the
   installed PC client has not been updated.
+- After Desktop was fully closed and relaunched through `native-handoff.ps1
+  -Launch`, the script reused listener PID `26284` and detected the new Desktop
+  PID `40808` connected to it. A separate `-Status` check confirmed the same
+  connection. Batona's read-only attach probe then passed health, task list,
+  model and permission catalog checks, verified writes remained blocked, and
+  subscribed to the designated native test task. This validates restart
+  continuity for the currently installed Desktop version; a normal shortcut
+  launch and a Codex upgrade still require separate checks.
 
 ## Decision gate
 
