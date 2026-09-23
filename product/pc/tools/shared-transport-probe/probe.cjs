@@ -107,8 +107,12 @@ async function connect(url, name) {
 async function main() {
   const attachIndex = process.argv.indexOf('--attach');
   const attachUrl = attachIndex >= 0 ? process.argv[attachIndex + 1] : null;
+  const threadIndex = process.argv.indexOf('--thread');
+  const observeThreadId = threadIndex >= 0 ? process.argv[threadIndex + 1] : null;
   const testAttach = process.argv.includes('--test-attach');
   if (attachIndex >= 0 && !attachUrl) throw new Error('--attach requires a loopback WebSocket URL');
+  if (threadIndex >= 0 && (!attachUrl || !/^[0-9a-f-]{36}$/.test(observeThreadId || '')))
+    throw new Error('--thread requires --attach and a thread UUID');
   const liveReadOnly = process.argv.includes('--live-readonly') || Boolean(attachUrl) || testAttach;
   let scratch = null;
   if (!liveReadOnly) {
@@ -158,6 +162,14 @@ async function main() {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
       });
       const blockedWriteBody = await blockedWrite.json();
+      let subscribed = null;
+      if (observeThreadId) {
+        const opened = await fetch(`${bridgeUrl}/v1/sessions/${observeThreadId}/resume`, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+        });
+        const openedBody = await opened.json();
+        subscribed = opened.status === 200 && openedBody.thread?.id === observeThreadId;
+      }
       const checks = {
         mode: attachUrl ? 'attach-readonly' : 'live-readonly',
         codeModeHost: attachUrl ? 'unknown' : true,
@@ -166,10 +178,11 @@ async function main() {
         modelsAvailable: responses[2].status === 200 && responses[2].body.items.length > 0,
         profilesReadable: responses[3].status === 200 && Array.isArray(responses[3].body.items),
         writesBlocked: blockedWrite.status === 400 && blockedWriteBody.error?.code === 'shared-transport-readonly',
+        ...(observeThreadId ? { subscribed } : {}),
         nativeDesktopAttached: attachUrl ? 'unverified' : false,
       };
       const passed = checks.health && checks.threadListReadable && checks.modelsAvailable
-        && checks.profilesReadable && checks.writesBlocked;
+        && checks.profilesReadable && checks.writesBlocked && subscribed !== false;
       console.log(JSON.stringify({ result: passed ? 'PASS' : 'FAIL', ...checks }, null, 2));
       if (!passed) process.exitCode = 1;
       return;

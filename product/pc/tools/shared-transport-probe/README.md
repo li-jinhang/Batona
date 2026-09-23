@@ -30,13 +30,16 @@ the existing listener without spawning another server and performs the same
 read-only checks. OS process inspection is still required to confirm Desktop
 is one of that listener's clients. `--test-attach` exercises this mode against
 a temporary server and cleans it up; it does not attach Desktop.
+Add `--thread <thread-id>` to verify Batona's session-open endpoint subscribes
+to that existing task's live notifications on the shared server. The probe
+still blocks prompt/model/permission writes.
 
 ## 2026-09-23 findings
 
 - The installed CLI offers `--listen ws://IP:PORT`, `app-server daemon`, and
   `app-server proxy`. In the live user profile, `app-server daemon version`
   could not connect to the default control socket.
-- The running native ChatGPT/Codex Desktop process spawned `codex.exe app-server`
+- Before handoff, the running native ChatGPT/Codex Desktop process spawned `codex.exe app-server`
   with no `--listen` argument. The server did not own a TCP listener. Batona PC
   spawned a separate `codex.exe app-server` process. Thus Batona's current bridge
   has no published address for joining the Desktop-owned stdio connection.
@@ -60,28 +63,36 @@ a temporary server and cleans it up; it does not attach Desktop.
   Batona PC build does not yet include this branch's change. The opt-in mode
   blocks mutating HTTP requests and does not respond to app-server requests;
   native Desktop remains responsible for approvals during attachment testing.
-- This proves the protocol's single-process shared-client behavior for metadata,
-  plus a compatible Batona read path. It does not prove native Desktop
-  attachment, streamed turns, approval routing, or composer model/effort
-  synchronization. No request was sent to the live “运行测试” task.
+- After the coordinated restart, packaged Desktop PID `35016` held an
+  established client connection to listener PID `26284` on `127.0.0.1:45678`;
+  it had no private `codex.exe` child. The installed Batona PC still used its
+  old, separate stdio process. The branch's Batona bridge joined the shared
+  listener read-only and passed health, task, model, and profile checks.
+- The unique native “运行测试” task was already loaded. A second connection's
+  `thread/resume` subscribed in 17 ms with no active-writer conflict. A direct
+  `turn/start` from that connection was accepted in 24 ms; it received three
+  reply deltas and completion, and the persisted reply matched. The user
+  confirmed both message and reply appeared in native Desktop. Total turn
+  time was about 56 seconds during roughly 55 network reconnections, so it
+  does not measure steady-state model latency.
+- In the reverse direction, the user sent a short message from native
+  Desktop while the second connection was subscribed. That connection saw
+  `turn/started`, four reply deltas, and `turn/completed`. First delta arrived
+  after about 81 seconds with two error events; the model/network phase still
+  needs separate latency diagnosis. The Batona bridge now subscribes when
+  its session-open endpoint is used in shared mode. Live Android delivery,
+  approval ownership, and model/effort composer synchronization remain untested.
 
 ## Decision gate
 
-The next gate needs a coordinated native Desktop restart: it only reads the
-WebSocket override at process startup, and the current process hosts this
-Codex conversation. Keep the native task as sole writer until Desktop is
-actually observed using the shared listener. Then, using only the designated
-“运行测试” task, verify:
-
-1. Desktop attaches to the loopback listener and opens the task without an
-   active-writer error; Batona attaches to the same **process**, not merely
-   another listener on the same profile.
-2. A Desktop-originated turn appears on Batona's second connection as live
-   notifications, and a Batona-originated turn appears in Desktop's UI.
-3. Model/effort settings and approval requests have a defined owner and round
-   trip correctly; no client silently declines the other client's request.
-4. Only after these pass, route Desktop-originator writes through the shared
-   protocol and remove the foreground UI Automation dependency in this mode.
+Native attachment and both directions of turn events are now proven on the
+designated task. The next gate is request ownership: identify which client
+receives approval/question requests when the other starts a turn; verify
+model/effort changes propagate to Desktop's composer; then allow Batona
+HTTP writes in shared mode. Until that gate passes, the bridge rejects
+prompt/model/permission writes and ignores server requests, leaving Desktop
+as the interaction owner. The installed Android/PC pair still follows the
+previous UI Automation route.
 
 The [handoff script](native-handoff.ps1) does a read-only preflight now:
 
@@ -94,7 +105,7 @@ terminal with `-Launch`. It starts one matching CLI app-server on loopback,
 waits for `/readyz`, then attempts to start packaged Desktop with
 `CODEX_APP_SERVER_WS_URL` in **its process environment**. It refuses to launch
 while Desktop is running and never terminates it. The packaged Desktop launch
-path remains untested until this handoff. If launch fails, the script stops its
+path succeeded on this machine. If launch fails on another build, the script stops its
 temporary server; reopen Desktop normally from Start. For a successful handoff,
 quit Desktop before using `-Stop` to stop the server. The script does not set
 persistent environment variables.
@@ -109,7 +120,7 @@ pwsh -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1
 
 For Batona's second connection, a newly built PC client must start with
 `BATONA_SHARED_CODEX_WS_URL` set to the same URL. The current production build
-remains on stdio until native attachment has been verified. Do not set
+remains on stdio until shared write and approval routing are validated. Do not set
 `CODEX_APP_SERVER_FORCE_CLI=1` in Desktop's environment.
 
 The WebSocket transport is described as experimental in the

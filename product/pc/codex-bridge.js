@@ -481,11 +481,15 @@ class CodexBridge {
 
   async resumeThread(threadId, body) {
     // Opening a conversation is a read, not a second writer. Desktop keeps
-    // ownership of its running threads; acquire a writer only when sending.
+    // ownership of its running threads. A shared server can subscribe this
+    // connection to the native client's live events without creating a writer.
     const profileId = asString(body?.profileId);
     const profile = profileId ? await this.requireProfile(profileId) : null;
     const result = await this.appServer.request('thread/read', { threadId, includeTurns: false });
     const thread = normalizeThread(result?.thread || { id: threadId });
+    if (this.appServer.websocketUrl && thread.id === threadId) {
+      await this.appServer.request('thread/resume', { threadId, excludeTurns: true });
+    }
     if (profile) this.threadOptions.set(threadId, { ...(this.threadOptions.get(threadId) || {}), profile });
     this.broadcast({ type: 'thread-status', thread });
     return thread;

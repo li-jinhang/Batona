@@ -72,7 +72,7 @@ PC 桥现从 `model/list` 的结构化 `supportedReasoningEfforts` 读取真实�
 
 已安装的 Codex Desktop `26.915.4065.0` 在本地启动路径读取内部环境变量 `CODEX_APP_SERVER_WS_URL`，可选用 WebSocket app-server 代替私有 stdio 子进程；Windows 的本地 daemon 路径不可用。桌面包内的 CLI 与 Batona 可访问的 CLI 副本哈希一致。隔离实验中，同一个 WebSocket app-server 的两个客户端可以读写同一持久任务的标题，并收到彼此的 `thread/name/updated`。另用当前登录配置做只读实验，Batona 桥经共享 WebSocket 传输的健康、任务列表、模型和权限接口均通过；没有加载或写入“运行测试”任务。
 
-这是尚未公开保证的桌面启动入口，不等于已经验证桌面实际接入。同一原生进程目前仍使用私有 stdio，生产决策继续有效。下一次经协调的桌面重启要验证原生 UI 与 Batona 是否真的共用一个 app-server、跨客户端流式事件与审批归属，再决定是否把原生任务写入从界面代理改为协议请求。实验代码与证据见 [共享传输探针](../../product/pc/tools/shared-transport-probe/README.md)。
+随后经协调重启，原生 Desktop 进程与 Batona 只读探针同时连接到同一个回环 WebSocket app-server，桌面端没有再启动私有 stdio 子进程。在唯一的“运行测试”任务上，第二连接 `thread/resume` 约 17 毫秒完成且没有写入者冲突；第二连接 `turn/start` 约 24 毫秒被接受，流式回复和最终历史均可读，用户确认原生界面显示了消息与回复。反向从原生界面发送时，第二连接也收到了 `turn/started`、回复增量和 `turn/completed`。两轮生成耗时约 56 秒和 82 秒，并伴随网络错误／重连，不能当作桥接延迟。Batona 桥的共享模式现可在打开任务时订阅事件，但仍拒绝手机写入并忽略服务端交互请求。审批归属、模型／强度与原生输入区同步、安卓实际下行尚未验收；生产决策暂不改变。该桌面启动入口未获公开稳定性保证，实验代码与证据见 [共享传输探针](../../product/pc/tools/shared-transport-probe/README.md)。
 
 ## 后果
 
