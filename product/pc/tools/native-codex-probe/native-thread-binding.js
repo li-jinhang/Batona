@@ -63,7 +63,27 @@ async function uniqueListedThread(client, threadId, title) {
  * durable authorization token.
  */
 async function verifyNativeThreadBinding({ threadId, client, inspect }) {
-  if (typeof threadId !== 'string' || !threadId.trim() || !client?.request || typeof inspect !== 'function') {
+  if (typeof inspect !== 'function') throw bindingError('native-task-invalid-input');
+  const expectation = await readNativeThreadExpectation({ threadId, client });
+  const observed = await inspect(expectation.title);
+  if (!observed || observed.sidebarMatches !== 1 || observed.titleHash !== expectation.titleHash
+    || observed.hasUser !== true || observed.hasAssistant !== true || observed.assistantComplete !== true
+    || observed.lastUserHash !== expectation.lastUserHash || observed.lastAssistantHash !== expectation.lastAssistantHash) {
+    throw bindingError('native-task-identity-mismatch');
+  }
+  if (!Number.isInteger(observed.processId) || observed.processId <= 0
+    || !/^[0-9a-f]+$/i.test(observed.windowHandle || '')) {
+    throw bindingError('native-task-window-unverified');
+  }
+  return Object.freeze({ ...expectation,
+    processId: observed.processId,
+    windowHandle: observed.windowHandle,
+    verifiedAt: Date.now(),
+  });
+}
+
+async function readNativeThreadExpectation({ threadId, client }) {
+  if (typeof threadId !== 'string' || !threadId.trim() || !client?.request) {
     throw bindingError('native-task-invalid-input');
   }
   const result = await client.request('thread/read', { threadId, includeTurns: false });
@@ -78,26 +98,13 @@ async function verifyNativeThreadBinding({ threadId, client, inspect }) {
   });
   if (!Array.isArray(turns?.data) || turns.data.length !== 1) throw bindingError('native-task-history-incomplete');
   const expected = latestPair(turns.data[0]);
-  const observed = await inspect(title);
-  if (!observed || observed.sidebarMatches !== 1 || observed.titleHash !== fingerprint(title)
-    || observed.hasUser !== true || observed.hasAssistant !== true || observed.assistantComplete !== true
-    || observed.lastUserHash !== expected.userHash || observed.lastAssistantHash !== expected.assistantHash) {
-    throw bindingError('native-task-identity-mismatch');
-  }
-  if (!Number.isInteger(observed.processId) || observed.processId <= 0
-    || !/^[0-9a-f]+$/i.test(observed.windowHandle || '')) {
-    throw bindingError('native-task-window-unverified');
-  }
   return Object.freeze({
     threadId,
     title,
-    processId: observed.processId,
-    windowHandle: observed.windowHandle,
-    titleHash: observed.titleHash,
+    titleHash: fingerprint(title),
     lastUserHash: expected.userHash,
     lastAssistantHash: expected.assistantHash,
-    verifiedAt: Date.now(),
   });
 }
 
-module.exports = { verifyNativeThreadBinding, fingerprint };
+module.exports = { verifyNativeThreadBinding, readNativeThreadExpectation, fingerprint };

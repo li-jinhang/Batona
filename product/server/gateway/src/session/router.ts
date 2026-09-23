@@ -213,6 +213,20 @@ export class SessionRouter {
     g.model = model;
   }
 
+  async permissionMenu(gatewaySessionId: string, open: boolean): Promise<{ profileId?: string | null }> {
+    const g = this.requireSession(gatewaySessionId);
+    const a = this.adapters.require(g.backend);
+    if (!a.permissionMenu) throw Object.assign(new Error('backend has no native permission menu'), { code: 'capability-missing' });
+    return a.permissionMenu(refOf(g), open);
+  }
+
+  async selectPermission(gatewaySessionId: string, profileId: string): Promise<{ profileId: string }> {
+    const g = this.requireSession(gatewaySessionId);
+    const a = this.adapters.require(g.backend);
+    if (!a.selectPermission) throw Object.assign(new Error('backend has no native permission control'), { code: 'capability-missing' });
+    return a.selectPermission(refOf(g), profileId);
+  }
+
   async rename(backendSessionId: string, title: string, backendId?: string): Promise<{ title: string }> {
     // 会话可能来自工作区树（DSH 原生 backendSessionId），未必经 adopt 注册进网关 sessions。
     // 因此用 adapter 直接按 backendSessionId 调 rename，而不是 requireSession(gatewaySessionId)。

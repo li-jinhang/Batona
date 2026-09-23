@@ -239,6 +239,14 @@ export class GatewayWsServer {
           await this.router.selectModel(p.sessionId, p.model as never);
           return ok({ accepted: true });
         }
+        case 'session.permissionMenu': {
+          const p = payload as { sessionId: string; open: boolean };
+          return ok(await this.router.permissionMenu(p.sessionId, p.open === true));
+        }
+        case 'session.permissionSelect': {
+          const p = payload as { sessionId: string; profileId: string };
+          return ok(await this.router.selectPermission(p.sessionId, p.profileId));
+        }
         case 'agent.profile.list': {
           const p = payload as { backend?: string };
           return ok({ items: await this.router.listPermissionProfiles(p.backend) });

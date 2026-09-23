@@ -162,6 +162,9 @@ export interface AgentAdapter {
   listModels?(): Promise<ModelRef[]>;
   selectModel?(session: AgentSessionRef, model: ModelRef): Promise<void>;
   listPermissionProfiles?(): Promise<AgentProfile[]>;
+  /** Codex Desktop 的原生权限菜单；其它后端不提供此能力。 */
+  permissionMenu?(session: AgentSessionRef, open: boolean): Promise<{ profileId?: string | null }>;
+  selectPermission?(session: AgentSessionRef, profileId: string): Promise<{ profileId: string }>;
   /** 重命名会话（DSH：session.rename，标题以 session/title 事件持久化） */
   renameSession?(session: AgentSessionRef, title: string): Promise<{ title: string }>;
 

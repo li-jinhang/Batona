@@ -14,7 +14,7 @@
 
 ## 托管接入发布边界
 
-托管 v0.2.0 已于 2026-09-22 获准切换生产；Batona Gateway 0.3.0 是源码中的改名目标，尚未据此迁移或核验生产运行目录、systemd 单元、部署命令与 Nginx include。执行任何生产部署前，必须先按 [hosted-access-operations.md](hosted-access-operations.md) 完成联合迁移，不能直接把新的 Batona 路径当成线上现状。管理员密钥与 AES-GCM 主密钥分开保存在配置目录的受保护文件，账号库 `access.vault` 在首次持久化变更后保存至数据目录（空账号时可能尚无文件）。损坏/缺少主密钥时停止，不创建空库或替代密钥。每个 PC 的隧道、适配器、路由与推送域独立；失效授权在 HTTP、WS 输入/输出及隧道连接时检查。
+托管 v0.2.0 已于 2026-09-22 获准切换生产；Batona Gateway 0.3.1 是源码中的改名目标，尚未据此迁移或核验生产运行目录、systemd 单元、部署命令与 Nginx include。执行任何生产部署前，必须先按 [hosted-access-operations.md](hosted-access-operations.md) 完成联合迁移，不能直接把新的 Batona 路径当成线上现状。管理员密钥与 AES-GCM 主密钥分开保存在配置目录的受保护文件，账号库 `access.vault` 在首次持久化变更后保存至数据目录（空账号时可能尚无文件）。损坏/缺少主密钥时停止，不创建空库或替代密钥。每个 PC 的隧道、适配器、路由与推送域独立；失效授权在 HTTP、WS 输入/输出及隧道连接时检查。
 
 ## 已登记生产服务器（脱敏）
 

@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
-using System.Threading;
 using System.Windows.Automation;
 
 namespace Batona.NativeCodexProbe
@@ -40,15 +39,7 @@ namespace Batona.NativeCodexProbe
                 AutomationElement document = root.FindFirst(TreeScope.Descendants,
                     new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document));
                 if (document == null) throw new InvalidOperationException("document-missing");
-                object textPattern;
-                if (document.TryGetCurrentPattern(TextPattern.Pattern, out textPattern))
-                {
-                    ((TextPattern)textPattern).DocumentRange.GetText(12000);
-                    Thread.Sleep(100);
-                }
-                // Chromium may populate the provider tree on its first walk.
                 List<AutomationElement> elements = Walk(document);
-                elements = Walk(document);
                 string title = SafeName(document);
                 if (title.Length == 0) throw new InvalidOperationException("task-title-missing");
 

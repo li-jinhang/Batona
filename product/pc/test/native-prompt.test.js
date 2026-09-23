@@ -22,6 +22,13 @@ const { CodexBridge } = require('../codex-bridge');
   ]);
 
   calls.length = 0;
+  await bridge.prompt('desktop-thread', { text: '沿用电脑端权限' });
+  assert.deepEqual(calls, [
+    ['app-server', 'thread/read'],
+    ['native', 'desktop-thread', '沿用电脑端权限', 'keep-current'],
+  ]);
+
+  calls.length = 0;
   nativeControl.send = async () => { throw Object.assign(new Error('identity mismatch'), { code: 'native-task-identity-mismatch' }); };
   await assert.rejects(bridge.prompt('desktop-thread', { text: '保留草稿', profileId: 'request-approval' }),
     (error) => error.code === 'native-task-identity-mismatch');

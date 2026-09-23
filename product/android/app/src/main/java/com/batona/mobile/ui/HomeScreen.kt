@@ -148,7 +148,10 @@ internal class HomeState(val backend: String) {
     var connected by mutableStateOf(false)
     var selectedModel by mutableStateOf<ModelRef?>(null)
     var showModels by mutableStateOf(false)
+    var showEfforts by mutableStateOf(false)
     var showProfiles by mutableStateOf(false)
+    var permissionSyncing by mutableStateOf(false)
+    var permissionError by mutableStateOf<String?>(null)
     var loading by mutableStateOf(false)
     var treeError by mutableStateOf<String?>(null)
     var sessionError by mutableStateOf<String?>(null)
@@ -159,6 +162,7 @@ internal class HomeState(val backend: String) {
     val readSessions = mutableStateListOf<String>()
     var input by mutableStateOf("")
     var busy by mutableStateOf(false)
+    var sending by mutableStateOf(false)
     var answering by mutableStateOf(false)
     var wsPath by mutableStateOf("")      // 新工作区路径
     var showNewWs by mutableStateOf(false) // 是否显示"新建工作区"输入行
@@ -484,11 +488,6 @@ fun HomeScreen(binding: Binding, token: String, store: SettingsStore, onLogout: 
                         }
                         scope.launch {
                             state.openSession(sessionId, client::resumeSession)
-                            state.currentId?.let { id ->
-                                if (state.backend == "codex" && !state.profileBySession.containsKey(id)) {
-                                    state.profiles.firstOrNull()?.let { state.profileBySession[id] = it.id }
-                                }
-                            }
                         }
                     },
                     onBack = { state.currentId = null; state.currentBackendSessionId = null; state.entering = false; state.offlineMirror = false; state.lines.clear(); state.pending = null; state.sessionError = null },
@@ -624,6 +623,30 @@ internal fun ChatTab(
                 }
             }) },
             confirmButton = { TextButton(onClick = { state.showModels = false }) { Text("关闭") } },
+        )
+    }
+    if (state.showEfforts) {
+        AlertDialog(
+            onDismissRequest = { state.showEfforts = false },
+            title = { Text("Codex · 思考强度") },
+            text = { EffortsTab(state, onSelect = { selection ->
+                if (state.busy || !state.connected || state.offlineMirror) return@EffortsTab
+                val sessionId = state.currentId ?: return@EffortsTab
+                state.busy = true
+                scope.launch {
+                    try {
+                        val result = client.modelSelect(sessionId, selection)
+                        if (!result.ok) throw GatewayFailure(result.error?.code ?: "request-failed")
+                        if (state.currentId == sessionId) state.selectedModel = selection
+                        state.showEfforts = false
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (e: Exception) {
+                        state.sessionError = e.message ?: "思考强度切换失败，请重试。"
+                        state.showEfforts = false
+                    } finally { state.busy = false }
+                }
+            }) },
+            confirmButton = { TextButton(onClick = { state.showEfforts = false }) { Text("关闭") } },
         )
     }
     // 列表视图：未选会话且非进入中；否则聊天主视图
@@ -832,9 +855,11 @@ internal fun ChatTab(
                 if (state.lines.isNotEmpty() || state.pending != null) listState.animateScrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
             }
 
-            ConversationControls(state)
+            ConversationControls(state, client)
 
             // 底部输入框（仅聊天视图）
+            if (state.sending) Text("正在电脑端提交…", style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
             ChatComposer(
                 input = state.input,
                 onInput = { state.input = it },
@@ -842,19 +867,24 @@ internal fun ChatTab(
                 onSend = {
                     val id = state.currentId ?: return@ChatComposer
                     state.busy = true
+                    state.sending = true
                     scope.launch {
                         val prompt = state.input
                         try {
-                            val result = client.sessionPrompt(id, prompt, state.profileBySession[id] ?: state.profiles.firstOrNull()?.id)
+                            val result = client.sessionPrompt(id, prompt,
+                                if (state.backend == "codex") null else state.profileBySession[id])
                             if (!result.ok) throw GatewayFailure(result.error?.code ?: "request-failed")
-                            state.lines.add(ChatLine(System.nanoTime(), "user", prompt))
-                            state.input = ""
-                            state.sessionError = null
+                            if (state.currentId == id) {
+                                state.lines.add(ChatLine(System.nanoTime(), "user", prompt))
+                                if (state.input == prompt) state.input = ""
+                                state.sessionError = null
+                            }
                         } catch (cancelled: CancellationException) {
                             throw cancelled
                         } catch (failure: Exception) {
-                            state.sessionError = if (failure is GatewayFailure) failure.message else "发送失败，输入已保留，请重试。"
-                        } finally { state.busy = false }
+                            if (state.currentId == id)
+                                state.sessionError = if (failure is GatewayFailure) failure.message else "发送失败，输入已保留，请重试。"
+                        } finally { state.busy = false; state.sending = false }
                     }
                 },
             )
@@ -864,23 +894,43 @@ internal fun ChatTab(
 
 /** Compact controls keep the conversation visible; choices only appear on demand. */
 @Composable
-internal fun ConversationControls(state: HomeState) {
-    val selectedId = state.currentId?.let { state.profileBySession[it] } ?: state.profiles.firstOrNull()?.id
+internal fun ConversationControls(state: HomeState, client: GatewayClient) {
+    val scope = rememberCoroutineScope()
+    val selectedId = state.currentId?.let { state.profileBySession[it] }
     val selectedProfile = state.profiles.firstOrNull { it.id == selectedId }
     val enabled = state.currentId != null && state.connected && !state.offlineMirror && !state.busy
+    val closePermissions: () -> Unit = {
+        val sessionId = state.currentId
+        state.showProfiles = false
+        state.permissionError = null
+        if (sessionId != null) scope.launch { runCatching { client.permissionMenu(sessionId, false) } }
+    }
     if (state.showProfiles) {
         AlertDialog(
-            onDismissRequest = { state.showProfiles = false },
+            onDismissRequest = closePermissions,
             title = { Text("Codex · 权限") },
             text = {
                 Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+                    if (state.permissionSyncing) Text("正在同步电脑端权限菜单…")
+                    state.permissionError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     state.profiles.forEach { profile ->
                         TextButton(
                             onClick = {
-                                state.currentId?.let { state.profileBySession[it] = profile.id }
-                                state.showProfiles = false
+                                val sessionId = state.currentId ?: return@TextButton
+                                state.permissionSyncing = true
+                                state.permissionError = null
+                                scope.launch {
+                                    try {
+                                        val confirmed = client.permissionSelect(sessionId, profile.id)
+                                        if (confirmed.profileId != profile.id) throw GatewayFailure("native-profile-unavailable")
+                                        if (state.currentId == sessionId) state.profileBySession[sessionId] = profile.id
+                                        closePermissions()
+                                    } catch (cancelled: CancellationException) { throw cancelled }
+                                    catch (e: Exception) { state.permissionError = e.message ?: "权限切换失败，请在电脑端确认。" }
+                                    finally { state.permissionSyncing = false }
+                                }
                             },
-                            enabled = enabled && profile.available,
+                            enabled = enabled && !state.permissionSyncing && profile.available,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Column(Modifier.weight(1f)) {
@@ -893,21 +943,37 @@ internal fun ConversationControls(state: HomeState) {
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { state.showProfiles = false }) { Text("取消") } },
+            confirmButton = { TextButton(onClick = closePermissions) { Text("关闭") } },
         )
     }
     Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (state.backend == "codex") {
             OutlinedButton(
                 shape = RoundedCornerShape(8.dp), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
-                onClick = { state.showProfiles = true },
+                onClick = {
+                    val sessionId = state.currentId ?: return@OutlinedButton
+                    state.showProfiles = true
+                    state.permissionSyncing = true
+                    state.permissionError = null
+                    scope.launch {
+                        try {
+                            val current = client.permissionMenu(sessionId, true)
+                            if (state.currentId == sessionId && current.profileId != null) state.profileBySession[sessionId] = current.profileId
+                            if (!state.showProfiles || state.currentId != sessionId) {
+                                runCatching { client.permissionMenu(sessionId, false) }
+                            }
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (e: Exception) { state.permissionError = e.message ?: "电脑端权限菜单未能打开。" }
+                        finally { state.permissionSyncing = false }
+                    }
+                },
                 enabled = enabled && state.profiles.isNotEmpty(),
                 modifier = Modifier.weight(1f).semantics { contentDescription = "选择权限" },
             ) {
                 val tint = if (selectedId == "full-access") Color(0xFFE87932) else MaterialTheme.colorScheme.primary
                 Icon(Icons.Filled.Security, null, Modifier.size(16.dp), tint = if (enabled) tint else MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.width(6.dp))
-                Text(selectedProfile?.label ?: "权限未就绪", maxLines = 1, overflow = TextOverflow.Ellipsis,
+                Text(selectedProfile?.label ?: "跟随电脑端", maxLines = 1, overflow = TextOverflow.Ellipsis,
                     color = if (enabled) tint else MaterialTheme.colorScheme.onSurfaceVariant)
                 Icon(Icons.Filled.ArrowDropDown, null, Modifier.size(16.dp))
             }
@@ -921,8 +987,20 @@ internal fun ConversationControls(state: HomeState) {
             Spacer(Modifier.width(6.dp))
             val model = state.selectedModel
             val displayModel = model?.displayName ?: state.models.firstOrNull { it.provider == model?.provider && it.model == model.model }?.displayName ?: model?.model
-            Text((displayModel ?: "模型未同步") + (model?.reasoningEffort?.let { " · $it" } ?: ""),
+            Text(displayModel ?: "模型未同步",
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            Icon(Icons.Filled.ArrowDropDown, null, Modifier.size(16.dp))
+        }
+    }
+    if (state.backend == "codex") {
+        OutlinedButton(
+            onClick = { state.showEfforts = true },
+            enabled = enabled && state.selectedModel != null,
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp).semantics { contentDescription = "选择思考强度" },
+        ) {
+            Text("思考强度 · ${effortLabel(state.selectedModel?.reasoningEffort)}")
+            Spacer(Modifier.width(4.dp))
             Icon(Icons.Filled.ArrowDropDown, null, Modifier.size(16.dp))
         }
     }
@@ -1205,18 +1283,54 @@ private fun ModelsTab(state: HomeState, onSelect: (ModelRef) -> Unit) {
     Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
         Text("模型目录（应用于当前会话）", style = MaterialTheme.typography.titleSmall)
         if (state.models.isEmpty()) Text("暂未获取到模型，请确认电脑端 ${state.label} 可用后重试。", modifier = Modifier.padding(top = 12.dp))
-        state.models.forEach { m ->
+        state.models.distinctBy { it.provider to it.model }.forEach { m ->
+            val variants = state.models.filter { it.provider == m.provider && it.model == m.model }
+            val selectedEffort = state.selectedModel?.takeIf { it.model == m.model }?.reasoningEffort
+            val choice = variants.firstOrNull { it.reasoningEffort == selectedEffort }
+                ?: variants.firstOrNull { it.reasoningEffort == "medium" } ?: m
             Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                 Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(m.displayName ?: m.model)
-                        Text("${m.provider} / ${m.model}${m.reasoningEffort?.let { " · 推理 $it" } ?: ""}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${m.provider} / ${m.model}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    TextButton(onClick = { onSelect(m) }, enabled = state.connected && !state.offlineMirror && !state.busy) { Text(if (state.selectedModel == m) "已选" else "应用") }
+                    TextButton(onClick = { onSelect(choice) }, enabled = state.connected && !state.offlineMirror && !state.busy) {
+                        Text(if (state.selectedModel?.model == m.model) "已选" else "应用")
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun EffortsTab(state: HomeState, onSelect: (ModelRef) -> Unit) {
+    val selected = state.selectedModel
+    val variants = state.models.filter { it.provider == selected?.provider && it.model == selected?.model && it.reasoningEffort != null }
+    Column(Modifier.fillMaxWidth().heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+        if (selected == null || variants.isEmpty()) {
+            Text("请先选择支持思考强度的模型。")
+        } else variants.forEach { option ->
+            TextButton(
+                onClick = { onSelect(option) },
+                enabled = state.connected && !state.offlineMirror && !state.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(effortLabel(option.reasoningEffort), modifier = Modifier.weight(1f))
+                if (option.reasoningEffort == selected.reasoningEffort) Text("✓")
+            }
+        }
+    }
+}
+
+private fun effortLabel(value: String?): String = when (value) {
+    "low" -> "低"
+    "medium" -> "中"
+    "high" -> "高"
+    "xhigh" -> "极高"
+    "max" -> "最高"
+    "ultra" -> "超强"
+    else -> value ?: "未同步"
 }
 
 @Composable

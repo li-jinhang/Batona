@@ -203,7 +203,7 @@ class CodexBridge {
         this.log(`Codex 本机桥就绪 http://${this.host}:${this.port}`);
         const compatible = await this.appServer.start();
         this.broadcast({ type: 'bridge-status', available: compatible });
-        if (compatible) this.startPolling();
+        if (compatible) { this.startPolling(); this.nativeControl.warm?.(); }
         resolve(true);
       });
     });
@@ -231,7 +231,7 @@ class CodexBridge {
     if (this.appServer.ready) return true;
     const ok = await this.appServer.start();
     this.broadcast({ type: 'bridge-status', available: ok });
-    if (ok) this.startPolling();
+    if (ok) { this.startPolling(); this.nativeControl.warm?.(); }
     return ok;
   }
 
@@ -286,7 +286,7 @@ class CodexBridge {
         writeJson(res, 200, { thread });
         return;
       }
-      const match = /^\/v1\/sessions\/([^/]+)(?:\/(resume|prompt|cancel|respond|history|model|archive|name))?$/.exec(url.pathname);
+      const match = /^\/v1\/sessions\/([^/]+)(?:\/(resume|prompt|cancel|respond|history|model|archive|name|permission-menu|permission))?$/.exec(url.pathname);
       if (!match) { writeJson(res, 404, { ok: false, error: { code: 'not-found', message: 'not found' } }); return; }
       const threadId = decodeURIComponent(match[1]);
       const action = match[2];
@@ -316,9 +316,18 @@ class CodexBridge {
       }
       if (req.method === 'POST' && action === 'model') {
         const body = await readJson(req);
-        await this.requireAppServerWriter(threadId, 'native-model-control-unavailable');
-        this.threadOptions.set(threadId, modelOptions(body.model));
+        await this.selectModel(threadId, body.model);
         writeJson(res, 200, { accepted: true });
+        return;
+      }
+      if (req.method === 'POST' && action === 'permission-menu') {
+        const body = await readJson(req);
+        writeJson(res, 200, await this.permissionMenu(threadId, body.open === true));
+        return;
+      }
+      if (req.method === 'POST' && action === 'permission') {
+        const body = await readJson(req);
+        writeJson(res, 200, await this.selectPermission(threadId, asString(body.profileId)));
         return;
       }
       if (req.method === 'POST' && action === 'name') {
@@ -392,7 +401,7 @@ class CodexBridge {
       const model = asString(entry?.model) || asString(entry?.id);
       if (!model) return [];
       const efforts = Array.isArray(entry?.supportedReasoningEfforts) && entry.supportedReasoningEfforts.length
-        ? entry.supportedReasoningEfforts.map(asString).filter(Boolean)
+        ? entry.supportedReasoningEfforts.map((effort) => asString(effort?.reasoningEffort ?? effort)).filter(Boolean)
         : [asString(entry?.defaultReasoningEffort)].filter(Boolean);
       const useEfforts = efforts.length ? efforts : [''];
       return useEfforts.map((reasoningEffort) => ({
@@ -454,14 +463,13 @@ class CodexBridge {
     const read = await this.appServer.request('thread/read', { threadId, includeTurns: false });
     if (read?.thread?.id !== threadId) throw Object.assign(new Error('Codex 任务不存在'), { code: 'session-not-found' });
     if (read.thread.originator === 'Codex Desktop') {
-      if (model.model || model.effort) throw Object.assign(new Error('请先在 Codex 电脑端确认模型选择'), { code: 'native-model-control-unavailable' });
       if (this.nativePromptInFlight) throw Object.assign(new Error('原生 Codex 正在提交另一条消息'), { code: 'native-control-busy' });
-      const selectedProfileId = profileId || previous.profileId || 'request-approval';
-      await this.requireProfile(selectedProfileId);
+      const selectedProfileId = profileId || 'keep-current';
+      if (selectedProfileId !== 'keep-current') await this.requireProfile(selectedProfileId);
       this.nativePromptInFlight = true;
       try {
         await this.nativeControl.send(threadId, text, selectedProfileId);
-        this.threadOptions.set(threadId, { ...previous, profileId: selectedProfileId, profile });
+        this.threadOptions.set(threadId, { ...previous, ...(profileId ? { profileId } : {}), profile });
       } finally { this.nativePromptInFlight = false; }
       return;
     }
@@ -478,6 +486,64 @@ class CodexBridge {
       ...model,
     });
     this.threadOptions.set(threadId, { ...previous, profile, ...model });
+  }
+
+  async selectModel(threadId, selection) {
+    const model = modelOptions(selection);
+    const catalog = await this.listModels();
+    const available = asString(selection?.provider) === 'openai' && catalog.find((item) => item.provider === 'openai'
+      && item.model === model.model && item.reasoningEffort === model.effort);
+    if (!available) throw Object.assign(new Error('该模型或思考强度不可用'), { code: 'native-model-invalid' });
+    const read = await this.appServer.request('thread/read', { threadId, includeTurns: false });
+    if (read?.thread?.id !== threadId) throw Object.assign(new Error('Codex 任务不存在'), { code: 'session-not-found' });
+    const previous = this.threadOptions.get(threadId) || {};
+    if (read.thread.originator === 'Codex Desktop') {
+      if (this.nativePromptInFlight) throw Object.assign(new Error('原生 Codex 正在执行另一项操作'), { code: 'native-control-busy' });
+      const efforts = catalog.filter((item) => item.model === model.model);
+      const effortIndex = efforts.findIndex((item) => item.reasoningEffort === model.effort) + 1;
+      this.nativePromptInFlight = true;
+      try {
+        await this.nativeControl.setModel(threadId, {
+          displayName: available.displayName || available.model,
+          effortIndex, effortCount: efforts.length,
+        });
+        this.threadOptions.set(threadId, { ...previous, ...model });
+      } finally { this.nativePromptInFlight = false; }
+      return;
+    }
+    await this.requireAppServerWriter(threadId);
+    this.threadOptions.set(threadId, { ...previous, ...model });
+  }
+
+  async permissionMenu(threadId, open) {
+    const read = await this.appServer.request('thread/read', { threadId, includeTurns: false });
+    if (read?.thread?.id !== threadId) throw Object.assign(new Error('Codex 任务不存在'), { code: 'session-not-found' });
+    if (read.thread.originator !== 'Codex Desktop')
+      return { profileId: this.threadOptions.get(threadId)?.profileId || null };
+    if (this.nativePromptInFlight) throw Object.assign(new Error('原生 Codex 正在执行另一项操作'), { code: 'native-control-busy' });
+    this.nativePromptInFlight = true;
+    try { return await this.nativeControl.permissionMenu(threadId, open); }
+    finally { this.nativePromptInFlight = false; }
+  }
+
+  async selectPermission(threadId, profileId) {
+    const profile = await this.requireProfile(profileId);
+    const read = await this.appServer.request('thread/read', { threadId, includeTurns: false });
+    if (read?.thread?.id !== threadId) throw Object.assign(new Error('Codex 任务不存在'), { code: 'session-not-found' });
+    const previous = this.threadOptions.get(threadId) || {};
+    if (read.thread.originator !== 'Codex Desktop') {
+      await this.requireAppServerWriter(threadId);
+      this.threadOptions.set(threadId, { ...previous, profileId, profile });
+      return { profileId };
+    }
+    if (this.nativePromptInFlight) throw Object.assign(new Error('原生 Codex 正在执行另一项操作'), { code: 'native-control-busy' });
+    this.nativePromptInFlight = true;
+    try {
+      const result = await this.nativeControl.setPermission(threadId, profileId);
+      if (result?.profileId !== profileId) throw Object.assign(new Error('电脑端权限未确认'), { code: 'native-profile-unavailable' });
+      this.threadOptions.set(threadId, { ...previous, profileId, profile });
+      return { profileId };
+    } finally { this.nativePromptInFlight = false; }
   }
 
   async requireAppServerWriter(threadId, nativeCode = 'codex-native-control-unavailable') {
@@ -618,7 +684,7 @@ function decodeWorkspaceId(id) {
 function modelOptions(value) {
   if (!value || typeof value !== 'object') return {};
   const model = asString(value.model);
-  const effort = asString(value.reasoningEffort);
+  const effort = asString(value.reasoningEffort || value.effort);
   return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
 }
 function profileDetails(id) {

@@ -284,6 +284,14 @@ class GatewayClient(
             })
         })
 
+    suspend fun permissionMenu(sessionId: String, open: Boolean): PermissionMenuState =
+        call("session.permissionMenu", buildJsonObject { put("sessionId", sessionId); put("open", open) })
+            .let { json.decodeFromJsonElement(PermissionMenuState.serializer(), it.requireValue()) }
+
+    suspend fun permissionSelect(sessionId: String, profileId: String): PermissionMenuState =
+        call("session.permissionSelect", buildJsonObject { put("sessionId", sessionId); put("profileId", profileId) })
+            .let { json.decodeFromJsonElement(PermissionMenuState.serializer(), it.requireValue()) }
+
     suspend fun deviceList(): List<DeviceInfo> =
         runCatching { call("device.list").let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(DeviceListResult.serializer(), r.value!!).items else emptyList() } }
             .getOrElse { emptyList() }

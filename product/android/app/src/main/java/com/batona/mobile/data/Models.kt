@@ -94,6 +94,9 @@ data class AgentProfile(val id: String, val label: String, val description: Stri
 @Serializable
 data class AgentProfileListResult(val items: List<AgentProfile> = emptyList())
 
+@Serializable
+data class PermissionMenuState(val profileId: String? = null)
+
 /** 设备 */
 @Serializable
 data class DeviceInfo(val deviceId: String, val name: String, val registeredAt: Long, val revoked: Boolean)

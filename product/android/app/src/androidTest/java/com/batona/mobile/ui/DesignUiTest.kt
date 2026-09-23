@@ -106,6 +106,20 @@ class DesignUiTest {
         compose.runOnIdle { assertEquals("allowed-once", response?.get("outcome")?.jsonPrimitive?.content) }
     }
 
+    @Test fun codexThinkingStrengthIsAvailableSeparatelyFromModel() {
+        val state = fixture().apply {
+            currentId = "gateway-session"; currentTitle = "运行测试"; currentWsTitle = "Batona"
+            selectedModel = ModelRef("openai", "gpt-5.6-sol", "high", "GPT-5.6 Sol")
+            models.add(ModelRef("openai", "gpt-5.6-sol", "low", "GPT-5.6 Sol"))
+            models.add(ModelRef("openai", "gpt-5.6-sol", "high", "GPT-5.6 Sol"))
+        }
+        show(state)
+        compose.onNodeWithContentDescription("选择思考强度").performClick()
+        compose.onNodeWithText("Codex · 思考强度").assertIsDisplayed()
+        compose.onNodeWithText("低").assertIsDisplayed()
+        compose.onNodeWithText("高").assertIsDisplayed()
+    }
+
     @Test fun questionsSupportChoicesAndTextWithoutReusingPreviousAnswers() {
         val state = fixture().apply {
             currentId = "gateway-session"; currentTitle = "界面方案"; currentWsTitle = "Batona"

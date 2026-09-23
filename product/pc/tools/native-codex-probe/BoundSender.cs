@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Automation;
 
@@ -21,15 +22,25 @@ namespace Batona.NativeCodexProbe
         private static extern bool CloseDesktop(IntPtr desktop);
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool GetUserObjectInformation(IntPtr handle, int index, StringBuilder info, int length, out int needed);
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr handle);
+        [DllImport("user32.dll")]
+        private static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
 
         private static int Main(string[] args)
         {
             int processId;
             if (args.Length < 3 || !int.TryParse(args[1], out processId)
-                || (args[0] != "inspect" && args[0] != "send"))
+                || (args[0] != "inspect" && args[0] != "send" && args[0] != "open-permission"
+                    && args[0] != "close-permission" && args[0] != "set-permission" && args[0] != "set-model"))
                 return Fail("usage", 2);
             if (args[0] == "inspect" && args.Length != 3) return Fail("usage", 2);
-            if (args[0] == "send" && args.Length != 9) return Fail("usage", 2);
+            if (args[0] == "send" && args.Length != 8) return Fail("usage", 2);
+            if ((args[0] == "open-permission" || args[0] == "close-permission") && args.Length != 6) return Fail("usage", 2);
+            if (args[0] == "set-permission" && args.Length != 7) return Fail("usage", 2);
+            if (args[0] == "set-model" && args.Length != 9) return Fail("usage", 2);
 
             try
             {
@@ -39,10 +50,7 @@ namespace Batona.NativeCodexProbe
                 if (!IsCodexPackage(process.MainModule.FileName)) return Fail("native-process-unverified", 5);
                 IntPtr windowHandle = process.MainWindowHandle;
                 if (windowHandle == IntPtr.Zero) return Fail("native-window-missing", 6);
-                if (args[0] == "send" && !string.Equals(windowHandle.ToInt64().ToString("x"), args[2], StringComparison.OrdinalIgnoreCase))
-                    return Fail("native-window-changed", 7);
-
-                string title = Decode(args[args[0] == "inspect" ? 2 : 3]);
+                string title = Decode(args[2]);
                 if (title.Length == 0) return Fail("native-task-title-missing", 8);
                 AutomationElement root = AutomationElement.FromHandle(windowHandle);
                 if (!OpenUniqueTask(root, title)) return Fail("native-task-ambiguous", 9);
@@ -62,15 +70,45 @@ namespace Batona.NativeCodexProbe
                     return 0;
                 }
 
-                string expectedUserHash = args[4];
-                string expectedAssistantHash = args[5];
+                string identityTitleHash = args[5];
+                if (!Matches(observed, identityTitleHash, args[3], args[4]))
+                    return Fail("native-task-identity-mismatch", 10);
+                if (args[0] == "open-permission" || args[0] == "close-permission")
+                {
+                    if (!PermissionMenu(root, title, args[0] == "open-permission"))
+                        return Fail("native-profile-unavailable", 18);
+                    string currentPermission = CurrentPermission(root);
+                    if (currentPermission.Length == 0) return Fail("native-profile-unavailable", 18);
+                    Console.WriteLine("{\"profileId\":\"" + currentPermission + "\"}");
+                    return 0;
+                }
+                if (args[0] == "set-permission")
+                {
+                    if (!SetPermission(root, title, args[6])) return Fail("native-profile-unavailable", 18);
+                    Console.WriteLine("{\"profileId\":\"" + CurrentPermission(root) + "\"}");
+                    return 0;
+                }
+                if (args[0] == "set-model")
+                {
+                    int effortIndex, effortCount;
+                    if (!int.TryParse(args[7], out effortIndex) || !int.TryParse(args[8], out effortCount)
+                        || effortIndex < 1 || effortIndex > effortCount || effortCount > 8)
+                        return Fail("native-model-invalid", 19);
+                    if (!SetModel(root, title, windowHandle, Decode(args[6]), effortIndex, effortCount))
+                        return Fail("native-model-unavailable", 20);
+                    Console.WriteLine("{\"accepted\":true}");
+                    return 0;
+                }
+
+                string expectedUserHash = args[3];
+                string expectedAssistantHash = args[4];
                 string message = Decode(args[6]);
-                string expectedTitleHash = args[7];
-                string profileId = args[8];
+                string expectedTitleHash = args[5];
+                string profileId = args[7];
                 if (message.Trim().Length == 0 || message.Length > 32000) return Fail("native-message-invalid", 11);
                 if (!Matches(observed, expectedTitleHash, expectedUserHash, expectedAssistantHash))
                     return Fail("native-task-identity-mismatch", 10);
-                if (!SetPermission(root, title, profileId)) return Fail("native-profile-unavailable", 18);
+                if (profileId != "keep-current" && !SetPermission(root, title, profileId)) return Fail("native-profile-unavailable", 18);
 
                 List<AutomationElement> composers = Find(root, ControlType.Edit, "随心输入", false);
                 if (composers.Count != 1) return Fail("native-composer-unavailable", 12);
@@ -170,6 +208,177 @@ namespace Batona.NativeCodexProbe
             catch { }
         }
 
+        private static string CurrentPermission(AutomationElement root)
+        {
+            List<AutomationElement> buttons = Find(root, ControlType.Button, "更改权限", false);
+            if (buttons.Count != 1) return "";
+            if (PermissionIs(buttons[0], "请求批准")) return "request-approval";
+            if (PermissionIs(buttons[0], "帮我批准")) return "assist-approval";
+            if (PermissionIs(buttons[0], "完全访问")) return "full-access";
+            return "";
+        }
+
+        private static bool PermissionMenu(AutomationElement root, string title, bool open)
+        {
+            if (ActiveTitle(root) != title) return false;
+            List<AutomationElement> buttons = Find(root, ControlType.Button, "更改权限", false);
+            if (buttons.Count != 1) return false;
+            object pattern;
+            if (!buttons[0].TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out pattern)) return false;
+            ExpandCollapsePattern menu = (ExpandCollapsePattern)pattern;
+            if (open && menu.Current.ExpandCollapseState != ExpandCollapseState.Expanded) menu.Expand();
+            if (!open && menu.Current.ExpandCollapseState == ExpandCollapseState.Expanded) menu.Collapse();
+            if (ActiveTitle(root) != title) return false;
+            if (!open) return true;
+            for (int attempt = 0; attempt < 10; attempt++)
+            {
+                if (Find(root, ControlType.MenuItem, null, false).Exists(delegate(AutomationElement item)
+                {
+                    try { return (item.Current.Name ?? "").StartsWith("请求批准 ", StringComparison.Ordinal); }
+                    catch { return false; }
+                })) return true;
+                Thread.Sleep(50);
+            }
+            return false;
+        }
+
+        private static AutomationElement ModelButton(AutomationElement root)
+        {
+            List<AutomationElement> buttons = Find(root, ControlType.Button, null, false).FindAll(delegate(AutomationElement button)
+            {
+                try
+                {
+                    object pattern;
+                    string name = button.Current.Name ?? "";
+                    return name != "添加文件等内容" && name != "更改权限"
+                        && (button.Current.ClassName ?? "").IndexOf("h-token-button-composer", StringComparison.Ordinal) >= 0
+                        && button.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out pattern);
+                }
+                catch { return false; }
+            });
+            return buttons.Count == 1 ? buttons[0] : null;
+        }
+
+        private static bool SetModel(AutomationElement root, string title, IntPtr windowHandle,
+            string displayName, int effortIndex, int effortCount)
+        {
+            if (ActiveTitle(root) != title || displayName.Length == 0) return false;
+            AutomationElement button = ModelButton(root);
+            if (button == null) return false;
+            object expandObject;
+            if (!button.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out expandObject)) return false;
+            ExpandCollapsePattern menu = (ExpandCollapsePattern)expandObject;
+            if (menu.Current.ExpandCollapseState != ExpandCollapseState.Expanded) menu.Expand();
+
+            List<AutomationElement> radios = Find(root, ControlType.RadioButton, null, false);
+            if (radios.Count == 0)
+            {
+                List<AutomationElement> choices = Find(root, ControlType.MenuItem, "选择模型", false);
+                object invoke;
+                if (choices.Count != 1 || !choices[0].TryGetCurrentPattern(InvokePattern.Pattern, out invoke)) return false;
+                if (ActiveTitle(root) != title) return false;
+                ((InvokePattern)invoke).Invoke();
+            }
+            string normalizedName = NormalizeModelName(displayName);
+            for (int attempt = 0; attempt < 16; attempt++)
+            {
+                Thread.Sleep(50);
+                radios = Find(root, ControlType.RadioButton, null, false).FindAll(delegate(AutomationElement radio)
+                {
+                    try { return NormalizeModelName(radio.Current.Name ?? "") == normalizedName; }
+                    catch { return false; }
+                });
+                if (radios.Count == 1) break;
+            }
+            object modelInvoke;
+            if (radios.Count != 1 || !radios[0].TryGetCurrentPattern(InvokePattern.Pattern, out modelInvoke)) return false;
+            if (ActiveTitle(root) != title) return false;
+            ((InvokePattern)modelInvoke).Invoke();
+            List<AutomationElement> strengthItems = new List<AutomationElement>();
+            for (int attempt = 0; attempt < 10; attempt++)
+            {
+                Thread.Sleep(80);
+                button = ModelButton(root);
+                if (button == null || !button.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out expandObject)) continue;
+                try
+                {
+                    menu = (ExpandCollapsePattern)expandObject;
+                    if (menu.Current.ExpandCollapseState == ExpandCollapseState.Expanded) menu.Collapse();
+                    button = ModelButton(root);
+                    if (button == null || !button.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out expandObject)) continue;
+                    menu = (ExpandCollapsePattern)expandObject;
+                    if (menu.Current.ExpandCollapseState != ExpandCollapseState.Expanded) menu.Expand();
+                    strengthItems = Find(root, ControlType.MenuItem, "强度", false);
+                    if (strengthItems.Count == 1) break;
+                }
+                catch { }
+            }
+            if (strengthItems.Count != 1) return false;
+            Thread.Sleep(300);
+            int current, count;
+            if (!ReadStrength(root, displayName, out current, out count) || count != effortCount) return false;
+            if (current != effortIndex)
+            {
+                strengthItems = Find(root, ControlType.MenuItem, "强度", false);
+                if (strengthItems.Count != 1) return false;
+                SetForegroundWindow(windowHandle);
+                strengthItems[0].SetFocus();
+                Thread.Sleep(100);
+                if (GetForegroundWindow() != windowHandle) return false;
+                while (current != effortIndex)
+                {
+                    if (!InteractiveDesktop() || ActiveTitle(root) != title || GetForegroundWindow() != windowHandle)
+                        return false;
+                    byte key = current < effortIndex ? (byte)0x27 : (byte)0x25;
+                    keybd_event(key, 0, 0, UIntPtr.Zero);
+                    keybd_event(key, 0, 2, UIntPtr.Zero);
+                    int next = current < effortIndex ? current + 1 : current - 1;
+                    bool moved = false;
+                    for (int attempt = 0; attempt < 10; attempt++)
+                    {
+                        Thread.Sleep(50);
+                        int observed, observedCount;
+                        if (ReadStrength(root, displayName, out observed, out observedCount)
+                            && observedCount == effortCount && observed == next)
+                        { current = observed; moved = true; break; }
+                    }
+                    if (!moved) return false;
+                }
+            }
+            if (ActiveTitle(root) != title) return false;
+            button = ModelButton(root);
+            if (button != null && button.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out expandObject))
+            {
+                menu = (ExpandCollapsePattern)expandObject;
+                if (menu.Current.ExpandCollapseState == ExpandCollapseState.Expanded) menu.Collapse();
+            }
+            return true;
+        }
+
+        private static bool ReadStrength(AutomationElement root, string modelName, out int index, out int count)
+        {
+            index = 0; count = 0;
+            string normalized = NormalizeModelName(modelName);
+            foreach (AutomationElement status in Find(root, ControlType.StatusBar, null, false))
+            {
+                foreach (AutomationElement item in Find(status, ControlType.Text, null, true))
+                {
+                    string name;
+                    try { name = item.Current.Name ?? ""; } catch { continue; }
+                    if (!NormalizeModelName(name).StartsWith(normalized, StringComparison.Ordinal)) continue;
+                    Match match = Regex.Match(name, @"第\s*(\d+)\s*项，共\s*(\d+)\s*项");
+                    if (match.Success && int.TryParse(match.Groups[1].Value, out index)
+                        && int.TryParse(match.Groups[2].Value, out count)) return true;
+                }
+            }
+            return false;
+        }
+
+        private static string NormalizeModelName(string value)
+        {
+            return Regex.Replace(value ?? "", @"[\s\-]", "").ToUpperInvariant();
+        }
+
         private static bool SetPermission(AutomationElement root, string title, string profileId)
         {
             string label;
@@ -258,30 +467,19 @@ namespace Batona.NativeCodexProbe
         private static List<AutomationElement> Find(AutomationElement root, ControlType type, string name, bool allowOffscreen)
         {
             var result = new List<AutomationElement>();
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            var stack = new Stack<AutomationElement>();
-            stack.Push(root);
-            TreeWalker walker = TreeWalker.RawViewWalker;
-            while (stack.Count > 0 && seen.Count < 6000)
+            Condition condition = name == null
+                ? (Condition)new PropertyCondition(AutomationElement.ControlTypeProperty, type)
+                : new AndCondition(
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, type),
+                    new PropertyCondition(AutomationElement.NameProperty, name));
+            AutomationElementCollection matches = root.FindAll(TreeScope.Descendants, condition);
+            foreach (AutomationElement element in matches)
             {
-                AutomationElement element = stack.Pop();
                 try
                 {
-                    string id = string.Join(".", Array.ConvertAll(element.GetRuntimeId(), delegate(int value) { return value.ToString(); }));
-                    if (!seen.Add(id)) continue;
-                    if (element.Current.ControlType == type && (name == null || element.Current.Name == name)
-                        && (allowOffscreen || !element.Current.IsOffscreen)) result.Add(element);
+                    if (allowOffscreen || !element.Current.IsOffscreen) result.Add(element);
                 }
-                catch { continue; }
-                var children = new List<AutomationElement>();
-                AutomationElement child = null;
-                try { child = walker.GetFirstChild(element); } catch { }
-                while (child != null && children.Count < 6000)
-                {
-                    children.Add(child);
-                    try { child = walker.GetNextSibling(child); } catch { child = null; }
-                }
-                for (int index = children.Count - 1; index >= 0; index--) stack.Push(children[index]);
+                catch { }
             }
             return result;
         }

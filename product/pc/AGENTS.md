@@ -14,7 +14,7 @@
 
 ## 托管接入候选版
 
-生产网关 v0.2.0 已于 2026-09-22 切换；Batona PC 当前候选版本为 0.5.1。新安装默认使用 `Batona PC` 产品名与 `%APPDATA%\Batona PC` 数据目录；改名前安装不会因源码改名自动搬迁。当前入口固定 117.72.10.87:443；旧 `binding.json` 不再加载。Windows safeStorage 加密 `access.bin`，保留独立设备身份；原始接入密钥仅用于登录交换，不进 renderer 状态或磁盘。明确 401 清除授权回登录页，网络故障保留授权。配对页面关闭时通知撤销，窗口最小化保持续租（禁止后台节流）。退出账号/解绑/禁用只断远程链路，不停止 DSH/Codex 本地任务。发布或迁移先读 [运维边界](../server/hosted-access-operations.md)。
+生产网关 v0.2.0 已于 2026-09-22 切换；Batona PC 当前候选版本为 0.5.2。新安装默认使用 `Batona PC` 产品名与 `%APPDATA%\Batona PC` 数据目录；改名前安装不会因源码改名自动搬迁。当前入口固定 117.72.10.87:443；旧 `binding.json` 不再加载。Windows safeStorage 加密 `access.bin`，保留独立设备身份；原始接入密钥仅用于登录交换，不进 renderer 状态或磁盘。明确 401 清除授权回登录页，网络故障保留授权。配对页面关闭时通知撤销，窗口最小化保持续租（禁止后台节流）。退出账号/解绑/禁用只断远程链路，不停止 DSH/Codex 本地任务。发布或迁移先读 [运维边界](../server/hosted-access-operations.md)。
 
 ## 端内约束
 
@@ -57,7 +57,7 @@ $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
 - 2026-09-22 定位并经用户授权恢复：3080 的 DSH 进程启动于当天 10:34，Batona PC 缓存仍是前一天 20:47 的令牌，`session/list` 返回 401。仅终止已验证的 DSH 进程，再由 Batona PC 托管启动，16:56 捕获新令牌后同一探针返回 200；Codex 本体未重启。复发时先核验缓存时间、端口所有者和认证结果，再取得重启许可。
 
 - DSH 只有 `session/list` 认证成功才算就绪。旧进程占用端口且缓存 token 失效时，报告认证失败，不重复启动或自动终止未知进程。启动输出按完整行捕获 token；日志必须脱敏，禁止保存分片 token。
-- Codex 打开已有会话使用 `thread/read`。Desktop 持有的任务发送经 `native-codex-control.js` 与受身份绑定的原生窗口操作，不能调用第二个 app-server 的写接口。身份、签名、桌面、权限或控件验证失败时拒绝并保留手机草稿；模型切换与原生交互仍待接入，详见 [ADR 0003](../../docs/adr/0003-native-codex-window-control.md)。
+- Codex 打开已有会话使用 `thread/read`。Desktop 持有的任务发送、模型/思考强度与权限菜单经 `native-codex-control.js` 和受身份绑定的原生窗口操作，不能调用第二个 app-server 的写接口。身份、签名、桌面、权限或控件验证失败时拒绝并保留手机草稿；审批/提问及运行中增量镜像仍待接入，详见 [ADR 0003](../../docs/adr/0003-native-codex-window-control.md)。
 - `node test/live-backends.cjs` 只读探针检查缓存 token 的 DSH 列表、Codex 既有会话打开及历史；不发送 prompt、不输出凭据。PC 确实运行后再执行，401/空历史会让探针失败。
 
 默认启动时，DSH 恢复与“目录/Codex 桥 + 隧道”并行执行：Codex 不应等待 DSH 取得 launch token 或排除遗留端口占用。隧道只经 `/tunnel` 发起出站 WSS 连接；服务器未启用内置隧道时，客户端保持离线并报告原因。发布客户端始终使用系统 CA 校验的 WSS，不读取旧连接串，不接受环境变量关闭 TLS。

@@ -163,6 +163,11 @@ async function main(): Promise<void> {
   r = await call('model.select', { sessionId: g1, model: { provider: 'mock', model: 'mock-reasoner' } });
   check('model.select 受理', r.ok);
 
+  r = await call('session.permissionMenu', { sessionId: g1, open: true });
+  check('不支持原生权限菜单的后端明确拒绝', !r.ok && r.error?.code === 'capability-missing');
+  r = await call('session.permissionSelect', { sessionId: g1, profileId: 'request-approval' });
+  check('不支持原生权限选择的后端明确拒绝', !r.ok && r.error?.code === 'capability-missing');
+
   // ── 7. 会话历史 ────────────────────────────────────────────────────
   r = await call('session.history', { sessionId: g1 });
   check('session.history 返回事件', r.ok && Array.isArray((r.value as any).events) && (r.value as any).events.length > 0);

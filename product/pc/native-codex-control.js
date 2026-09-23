@@ -4,7 +4,7 @@ const { execFile } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { promisify } = require('node:util');
-const { verifyNativeThreadBinding } = require('./tools/native-codex-probe/native-thread-binding');
+const { readNativeThreadExpectation } = require('./tools/native-codex-probe/native-thread-binding');
 
 const execFileAsync = promisify(execFile);
 
@@ -42,7 +42,22 @@ class NativeCodexControl {
     this.executable = executable;
     this.locateWindow = locateWindow;
     this.run = run;
+    this.verifiedProcessId = null;
+    this.locating = null;
   }
+
+  async processId() {
+    if (this.verifiedProcessId) return this.verifiedProcessId;
+    if (!this.locating) {
+      this.locating = this.locateWindow().then((processId) => {
+        this.verifiedProcessId = processId;
+        return processId;
+      }).finally(() => { this.locating = null; });
+    }
+    return this.locating;
+  }
+
+  warm() { void this.processId().catch(() => {}); }
 
   async invoke(args) {
     if (!fs.existsSync(this.executable)) throw controlError('native-control-unavailable');
@@ -57,21 +72,45 @@ class NativeCodexControl {
     }
   }
 
-  async send(threadId, text, profileId) {
-    const processId = await this.locateWindow();
-    const binding = await verifyNativeThreadBinding({
-      threadId,
-      client: this.appServer,
-      inspect: (title) => this.invoke(['inspect', String(processId), Buffer.from(title, 'utf8').toString('base64')]),
-    });
-    const result = await this.invoke([
-      'send', String(binding.processId), binding.windowHandle,
+  async boundInvoke(threadId, operation, extra = []) {
+    const processId = await this.processId();
+    const binding = await readNativeThreadExpectation({ threadId, client: this.appServer });
+    let result;
+    try { result = await this.invoke([
+      operation, String(processId),
       Buffer.from(binding.title, 'utf8').toString('base64'),
       binding.lastUserHash, binding.lastAssistantHash,
-      Buffer.from(text, 'utf8').toString('base64'), binding.titleHash, profileId,
+      binding.titleHash, ...extra,
+    ]); } catch (error) {
+      if (['native-process-unverified', 'native-window-missing', 'native-session-mismatch'].includes(error.code))
+        this.verifiedProcessId = null;
+      throw error;
+    }
+    return result;
+  }
+
+  async send(threadId, text, profileId) {
+    const result = await this.boundInvoke(threadId, 'send', [
+      Buffer.from(text, 'utf8').toString('base64'), profileId || 'keep-current',
     ]);
     if (result?.accepted !== true) throw controlError('native-submit-unconfirmed');
     return result;
+  }
+
+  async setModel(threadId, { displayName, effortIndex, effortCount }) {
+    const result = await this.boundInvoke(threadId, 'set-model', [
+      Buffer.from(displayName, 'utf8').toString('base64'), String(effortIndex), String(effortCount),
+    ]);
+    if (result?.accepted !== true) throw controlError('native-model-unavailable');
+    return result;
+  }
+
+  async permissionMenu(threadId, open) {
+    return this.boundInvoke(threadId, open ? 'open-permission' : 'close-permission');
+  }
+
+  async setPermission(threadId, profileId) {
+    return this.boundInvoke(threadId, 'set-permission', [profileId]);
   }
 }
 

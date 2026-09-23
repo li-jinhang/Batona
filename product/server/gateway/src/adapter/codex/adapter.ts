@@ -130,6 +130,14 @@ export class CodexAdapter implements AgentAdapter {
     return result.items ?? [];
   }
 
+  async permissionMenu(session: AgentSessionRef, open: boolean): Promise<{ profileId?: string | null }> {
+    return this.requireClient().post(`/v1/sessions/${encodeURIComponent(session.backendSessionId)}/permission-menu`, { open });
+  }
+
+  async selectPermission(session: AgentSessionRef, profileId: string): Promise<{ profileId: string }> {
+    return this.requireClient().post(`/v1/sessions/${encodeURIComponent(session.backendSessionId)}/permission`, { profileId });
+  }
+
   async renameSession(session: AgentSessionRef, title: string): Promise<{ title: string }> {
     return this.requireClient().post<{ title: string }>(`/v1/sessions/${encodeURIComponent(session.backendSessionId)}/name`, { name: title });
   }

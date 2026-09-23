@@ -15,9 +15,11 @@ class GatewayFailure(val code: String) : Exception(when (code) {
         "电脑端 Codex 输入控件不可用，输入已保留。请检查电脑端窗口后重试。"
     "native-composer-has-draft" -> "电脑端输入框已有草稿，手机输入已保留。请先处理电脑端草稿。"
     "native-submit-unconfirmed" -> "未能确认电脑端是否已发送。输入已保留，请先查看电脑端或刷新历史，避免重复提交。"
-    "native-model-control-unavailable", "native-profile-unavailable" ->
-        "电脑端模型或权限未能同步，输入已保留。请先在 Codex 电脑端确认设置。"
-    "native-control-busy" -> "电脑端正在提交另一条消息，输入已保留，请稍后重试。"
+    "native-model-control-unavailable", "native-model-unavailable", "native-model-invalid" ->
+        "电脑端模型或思考强度未能确认，请检查 Codex 原生窗口后重试。"
+    "native-profile-unavailable" ->
+        "电脑端权限未能确认。切换到完全访问时，请先在 Codex 电脑端完成确认。"
+    "native-control-busy" -> "电脑端正在执行另一项操作，请稍后重试。"
     "codex-offline", "codex-unavailable" -> "Codex 电脑端未连接，请确认 Batona PC 与 Codex 正在运行。"
     "timeout", "not-connected", "send-failed", "transport-error" -> "连接中断或请求超时，请检查电脑端与网络后重试。"
     else -> "请求未完成，请刷新后重试。"
