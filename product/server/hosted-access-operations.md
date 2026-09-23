@@ -10,6 +10,7 @@
 - 维护期间网关路由临时返回 503，首页保持 200。将旧配置/数据复制到 Batona 目录后核对管理员密钥、vault 主密钥和 vault 文件哈希相同；只改新配置的路径，不重新生成身份。`batona-deploy --tag 3bf2a6f` 成功，`nginx -t` 通过后切换 include 并重载。`dsh-gateway` 已禁用，旧 `dsh-deploy` 已移到上述备份目录；`batona-gateway`、Nginx 活跃，`frps` 停用。
 - 公网系统 CA 校验的 `/healthz` 返回 v0.3.1、hosted、隧道启用；首页 200、`/pair.html` 404、`/remote/` 410。3090 只监听回环，PC 三个本地端口为 3080/3081/3082；公网无 7000/7500。Batona PC 的出站隧道连通，已配对 AVD 无需重新配对。
 - 此次跨代迁移**没有可用的普通 `batona-deploy --rollback` 点**；旧联合快照只能按“回退规则”处理授权撤销与凭据轮换，不能直接覆盖新 vault 后开放入口。
+- 服务器工作树随后快进到仅修改服务端文档的 `bc2284f`，并创建跟踪 `origin/codex/native-ui-probe` 的本地分支；运行网关仍为 `3bf2a6f` 的 v0.3.1。`/usr/local/bin/batona-deploy` 显式设置 `DEPLOY_BRANCH=codex/native-ui-probe`，避免无参数部署误取仍旧的 `main`；后续合并 `main` 时须再调整。
 
 ## 本次备份与部署记录
 
