@@ -25,6 +25,11 @@ This starts a second WebSocket app-server, connects both the probe and the
 Batona PC bridge to it, and checks Batona's `/healthz`, `/v1/sessions`,
 `/v1/models`, and `/v1/profiles`. It does not resume any thread, submit a turn,
 or attach the native Desktop. The listener and bridge stop when the script exits.
+After the native handoff, use `--attach ws://127.0.0.1:45678` instead: it joins
+the existing listener without spawning another server and performs the same
+read-only checks. OS process inspection is still required to confirm Desktop
+is one of that listener's clients. `--test-attach` exercises this mode against
+a temporary server and cleans it up; it does not attach Desktop.
 
 ## 2026-09-23 findings
 
@@ -96,6 +101,8 @@ persistent environment variables.
 
 ```powershell
 pwsh -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1 -Launch
+# After Desktop opens, from this repository root:
+node product/pc/tools/shared-transport-probe/probe.cjs --attach ws://127.0.0.1:45678
 # After the shared-connection test, quit Desktop first:
 pwsh -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1 -Stop
 ```

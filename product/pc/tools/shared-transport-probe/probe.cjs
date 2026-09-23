@@ -1,9 +1,9 @@
 // Throwaway transport probe. Live mode reads the user's profile but never loads a thread.
 // Run: node product/pc/tools/shared-transport-probe/probe.cjs
-// Read-only live-profile check: add --live-readonly (never loads a thread).
+// Read-only live-profile check: --live-readonly starts a server; --attach URL joins one.
 'use strict';
 
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
@@ -105,26 +105,30 @@ async function connect(url, name) {
 }
 
 async function main() {
-  const liveReadOnly = process.argv.includes('--live-readonly');
+  const attachIndex = process.argv.indexOf('--attach');
+  const attachUrl = attachIndex >= 0 ? process.argv[attachIndex + 1] : null;
+  const testAttach = process.argv.includes('--test-attach');
+  if (attachIndex >= 0 && !attachUrl) throw new Error('--attach requires a loopback WebSocket URL');
+  const liveReadOnly = process.argv.includes('--live-readonly') || Boolean(attachUrl) || testAttach;
   let scratch = null;
   if (!liveReadOnly) {
     const scratchBase = path.join(process.cwd(), 'output', '.shared-transport-probe');
     fs.mkdirSync(scratchBase, { recursive: true });
     scratch = fs.mkdtempSync(path.join(scratchBase, 'run-'));
   }
-  const port = await unusedPort();
-  const exe = findCodex();
-  const url = `ws://127.0.0.1:${port}`;
-  const child = spawn(exe, ['-c', 'features.code_mode_host=true', 'app-server', '--listen', url, '--analytics-default-enabled'], {
-    cwd: process.cwd(),
-    env: liveReadOnly ? { ...process.env } : { ...process.env, CODEX_HOME: scratch },
-    windowsHide: true,
-    stdio: ['ignore', 'ignore', 'pipe'],
-  });
-  child.stderr.on('data', () => {});
+  let bridge = attachUrl ? new CodexBridge({ port: 0, websocketUrl: attachUrl, nativeControl: { warm() {} } }) : null;
+  const port = attachUrl ? null : await unusedPort();
+  const url = bridge?.appServer.websocketUrl || `ws://127.0.0.1:${port}`;
+  const child = attachUrl ? null : spawn(findCodex(),
+    ['-c', 'features.code_mode_host=true', 'app-server', '--listen', url, '--analytics-default-enabled'], {
+      cwd: process.cwd(),
+      env: liveReadOnly ? { ...process.env } : { ...process.env, CODEX_HOME: scratch },
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+  child?.stderr.on('data', () => {});
   let a;
   let b;
-  let bridge;
   try {
     let lastError;
     for (let attempt = 0; attempt < 40 && !a; attempt++) {
@@ -132,8 +136,17 @@ async function main() {
       catch (error) { lastError = error; await new Promise(resolve => setTimeout(resolve, 200)); }
     }
     if (!a) throw lastError || new Error('App server did not start');
+    if (testAttach) {
+      const attached = spawnSync(process.execPath, [__filename, '--attach', url], {
+        cwd: process.cwd(), windowsHide: true, encoding: 'utf8', timeout: 30_000,
+      });
+      if (attached.error || attached.status !== 0) throw new Error(`Attach mode failed: ${attached.error?.message || attached.stderr || attached.status}`);
+      const result = JSON.parse(attached.stdout);
+      console.log(JSON.stringify({ ...result, mode: 'test-attach', sharedServerReused: true }, null, 2));
+      return;
+    }
     if (liveReadOnly) {
-      bridge = new CodexBridge({ port: 0, websocketUrl: url, nativeControl: { warm() {} } });
+      bridge ||= new CodexBridge({ port: 0, websocketUrl: url, nativeControl: { warm() {} } });
       if (!await bridge.start() || !bridge.appServer.ready) throw new Error('Batona WebSocket bridge did not initialize');
       const bridgeUrl = `http://127.0.0.1:${bridge.server.address().port}`;
       const responses = await Promise.all(['/healthz', '/v1/sessions', '/v1/models', '/v1/profiles']
@@ -146,14 +159,14 @@ async function main() {
       });
       const blockedWriteBody = await blockedWrite.json();
       const checks = {
-        mode: 'live-readonly',
-        codeModeHost: true,
+        mode: attachUrl ? 'attach-readonly' : 'live-readonly',
+        codeModeHost: attachUrl ? 'unknown' : true,
         health: responses[0].status === 200 && responses[0].body.ok === true,
         threadListReadable: responses[1].status === 200 && Array.isArray(responses[1].body.threads),
         modelsAvailable: responses[2].status === 200 && responses[2].body.items.length > 0,
         profilesReadable: responses[3].status === 200 && Array.isArray(responses[3].body.items),
         writesBlocked: blockedWrite.status === 400 && blockedWriteBody.error?.code === 'shared-transport-readonly',
-        nativeDesktopAttached: false,
+        nativeDesktopAttached: attachUrl ? 'unverified' : false,
       };
       const passed = checks.health && checks.threadListReadable && checks.modelsAvailable
         && checks.profilesReadable && checks.writesBlocked;
@@ -207,8 +220,10 @@ async function main() {
     await bridge?.stop();
     a?.close();
     b?.close();
-    child.kill();
-    await new Promise(resolve => { if (child.exitCode !== null) resolve(); else child.once('exit', resolve); });
+    if (child) {
+      child.kill();
+      await new Promise(resolve => { if (child.exitCode !== null) resolve(); else child.once('exit', resolve); });
+    }
     // Keep isolated scratch state for inspection. It is under ignored output/.
   }
 }
