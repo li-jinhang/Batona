@@ -78,7 +78,7 @@ async function verifyNativeThreadBinding({ threadId, client, inspect }) {
   });
   if (!Array.isArray(turns?.data) || turns.data.length !== 1) throw bindingError('native-task-history-incomplete');
   const expected = latestPair(turns.data[0]);
-  const observed = await inspect();
+  const observed = await inspect(title);
   if (!observed || observed.sidebarMatches !== 1 || observed.titleHash !== fingerprint(title)
     || observed.hasUser !== true || observed.hasAssistant !== true || observed.assistantComplete !== true
     || observed.lastUserHash !== expected.userHash || observed.lastAssistantHash !== expected.assistantHash) {
@@ -90,6 +90,7 @@ async function verifyNativeThreadBinding({ threadId, client, inspect }) {
   }
   return Object.freeze({
     threadId,
+    title,
     processId: observed.processId,
     windowHandle: observed.windowHandle,
     titleHash: observed.titleHash,

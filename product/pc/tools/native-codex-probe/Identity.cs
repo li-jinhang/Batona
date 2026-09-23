@@ -25,9 +25,21 @@ namespace Batona.NativeCodexProbe
                 Process process = Process.GetProcessById(processId);
                 if (process.MainWindowHandle == IntPtr.Zero) return Fail("window-missing", 3);
                 AutomationElement root = AutomationElement.FromHandle(process.MainWindowHandle);
+                Evidence evidence = Capture(root, processId, process.MainWindowHandle);
+                Console.WriteLine(evidence.ToJson());
+                return 0;
+            }
+            catch (Exception error)
+            {
+                return Fail("identity-inspection-failed:" + error.GetType().Name, 6);
+            }
+        }
+
+        internal static Evidence Capture(AutomationElement root, int processId, IntPtr windowHandle)
+        {
                 AutomationElement document = root.FindFirst(TreeScope.Descendants,
                     new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document));
-                if (document == null) return Fail("document-missing", 4);
+                if (document == null) throw new InvalidOperationException("document-missing");
                 object textPattern;
                 if (document.TryGetCurrentPattern(TextPattern.Pattern, out textPattern))
                 {
@@ -38,7 +50,7 @@ namespace Batona.NativeCodexProbe
                 List<AutomationElement> elements = Walk(document);
                 elements = Walk(document);
                 string title = SafeName(document);
-                if (title.Length == 0) return Fail("task-title-missing", 5);
+                if (title.Length == 0) throw new InvalidOperationException("task-title-missing");
 
                 int sidebarMatches = 0;
                 AutomationElement lastUser = null;
@@ -64,20 +76,46 @@ namespace Batona.NativeCodexProbe
                 string userText = ReadUser(lastUser);
                 bool assistantComplete;
                 string assistantText = ReadAssistant(lastAssistant, out assistantComplete);
-                Console.WriteLine("{\"processId\":" + processId.ToString(CultureInfo.InvariantCulture)
-                    + ",\"windowHandle\":\"" + process.MainWindowHandle.ToInt64().ToString("x", CultureInfo.InvariantCulture)
-                    + "\",\"titleHash\":\"" + Hash(title)
-                    + "\",\"sidebarMatches\":" + sidebarMatches.ToString(CultureInfo.InvariantCulture)
-                    + ",\"lastUserHash\":\"" + Hash(userText)
-                    + "\",\"lastAssistantHash\":\"" + Hash(assistantText)
-                    + "\",\"hasUser\":" + (userText.Length > 0 ? "true" : "false")
-                    + ",\"hasAssistant\":" + (assistantText.Length > 0 ? "true" : "false")
-                    + ",\"assistantComplete\":" + (assistantComplete ? "true" : "false") + "}");
-                return 0;
-            }
-            catch (Exception error)
+                return new Evidence(processId, windowHandle, title, sidebarMatches, userText, assistantText, assistantComplete);
+        }
+
+        internal sealed class Evidence
+        {
+            internal readonly int ProcessId;
+            internal readonly IntPtr WindowHandle;
+            internal readonly string Title;
+            internal readonly int SidebarMatches;
+            internal readonly string LastUserHash;
+            internal readonly string LastAssistantHash;
+            internal readonly bool HasUser;
+            internal readonly bool HasAssistant;
+            internal readonly bool AssistantComplete;
+
+            internal Evidence(int processId, IntPtr windowHandle, string title, int sidebarMatches,
+                string lastUser, string lastAssistant, bool assistantComplete)
             {
-                return Fail("identity-inspection-failed:" + error.GetType().Name, 6);
+                ProcessId = processId;
+                WindowHandle = windowHandle;
+                Title = title;
+                SidebarMatches = sidebarMatches;
+                LastUserHash = Hash(lastUser);
+                LastAssistantHash = Hash(lastAssistant);
+                HasUser = lastUser.Length > 0;
+                HasAssistant = lastAssistant.Length > 0;
+                AssistantComplete = assistantComplete;
+            }
+
+            internal string ToJson()
+            {
+                return "{\"processId\":" + ProcessId.ToString(CultureInfo.InvariantCulture)
+                    + ",\"windowHandle\":\"" + WindowHandle.ToInt64().ToString("x", CultureInfo.InvariantCulture)
+                    + "\",\"titleHash\":\"" + Hash(Title)
+                    + "\",\"sidebarMatches\":" + SidebarMatches.ToString(CultureInfo.InvariantCulture)
+                    + ",\"lastUserHash\":\"" + LastUserHash
+                    + "\",\"lastAssistantHash\":\"" + LastAssistantHash
+                    + "\",\"hasUser\":" + (HasUser ? "true" : "false")
+                    + ",\"hasAssistant\":" + (HasAssistant ? "true" : "false")
+                    + ",\"assistantComplete\":" + (AssistantComplete ? "true" : "false") + "}";
             }
         }
 
@@ -216,7 +254,7 @@ namespace Batona.NativeCodexProbe
         {
             return (value ?? "").Replace("\r\n", "\n").Replace("\r", "\n").Trim();
         }
-        private static string Hash(string value)
+        internal static string Hash(string value)
         {
             using (SHA256 sha = SHA256.Create())
             {

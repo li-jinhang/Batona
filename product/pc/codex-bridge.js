@@ -13,6 +13,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const { WebSocketServer, WebSocket } = require('ws');
+const { NativeCodexControl } = require('./native-codex-control');
 
 const MAX_BODY_BYTES = 64 * 1024;
 const HISTORY_EVENT_LIMIT = 200;
@@ -150,11 +151,14 @@ class AppServerClient extends EventEmitter {
 }
 
 class CodexBridge {
-  constructor({ host = '127.0.0.1', port = 3082, userDataDir, executable, log = () => {} } = {}) {
+  constructor({ host = '127.0.0.1', port = 3082, userDataDir, executable, nativeControl, log = () => {} } = {}) {
     this.host = host;
     this.port = port;
     this.log = log;
     this.appServer = new AppServerClient({ executable, log });
+    this.nativeControl = nativeControl || new NativeCodexControl({ appServer: this.appServer });
+    this.nativePromptInFlight = false;
+    this.bridgeOwnedThreads = new Set();
     this.server = null;
     this.wss = null;
     this.starting = null;
@@ -299,6 +303,7 @@ class CodexBridge {
         return;
       }
       if (req.method === 'POST' && action === 'cancel') {
+        await this.requireAppServerWriter(threadId);
         await this.appServer.request('turn/interrupt', { threadId });
         writeJson(res, 200, { accepted: true });
         return;
@@ -311,6 +316,7 @@ class CodexBridge {
       }
       if (req.method === 'POST' && action === 'model') {
         const body = await readJson(req);
+        await this.requireAppServerWriter(threadId, 'native-model-control-unavailable');
         this.threadOptions.set(threadId, modelOptions(body.model));
         writeJson(res, 200, { accepted: true });
         return;
@@ -319,12 +325,14 @@ class CodexBridge {
         const body = await readJson(req);
         const name = asString(body.name).trim();
         if (!name) throw Object.assign(new Error('会话标题不能为空'), { code: 'bad-request' });
+        await this.requireAppServerWriter(threadId);
         await this.appServer.request('thread/name/set', { threadId, name });
         this.broadcast({ type: 'agent-event', threadId, event: { type: 'session/title', title: redactText(name) } });
         writeJson(res, 200, { title: redactText(name) });
         return;
       }
       if (req.method === 'POST' && action === 'archive') {
+        await this.requireAppServerWriter(threadId);
         await this.appServer.request('thread/archive', { threadId });
         writeJson(res, 200, { archived: true });
         return;
@@ -418,6 +426,7 @@ class CodexBridge {
       ...model,
     });
     const thread = normalizeThread(result?.thread || {});
+    if (thread.id) this.bridgeOwnedThreads.add(thread.id);
     this.threadOptions.set(thread.id, { profile, ...model });
     this.broadcast({ type: 'thread-status', thread });
     return thread;
@@ -442,6 +451,24 @@ class CodexBridge {
     const previous = this.threadOptions.get(threadId) || {};
     const profile = profileId ? await this.requireProfile(profileId) : previous.profile;
     const model = body?.model ? modelOptions(body.model) : modelOptions(previous);
+    const read = await this.appServer.request('thread/read', { threadId, includeTurns: false });
+    if (read?.thread?.id !== threadId) throw Object.assign(new Error('Codex 任务不存在'), { code: 'session-not-found' });
+    if (read.thread.originator === 'Codex Desktop') {
+      if (model.model || model.effort) throw Object.assign(new Error('请先在 Codex 电脑端确认模型选择'), { code: 'native-model-control-unavailable' });
+      if (this.nativePromptInFlight) throw Object.assign(new Error('原生 Codex 正在提交另一条消息'), { code: 'native-control-busy' });
+      const selectedProfileId = profileId || previous.profileId || 'request-approval';
+      await this.requireProfile(selectedProfileId);
+      this.nativePromptInFlight = true;
+      try {
+        await this.nativeControl.send(threadId, text, selectedProfileId);
+        this.threadOptions.set(threadId, { ...previous, profileId: selectedProfileId, profile });
+      } finally { this.nativePromptInFlight = false; }
+      return;
+    }
+    if (!this.bridgeOwnedThreads.has(threadId) && read.thread.originator !== 'batona'
+      && read.thread.originator !== 'Batona PC') {
+      throw Object.assign(new Error('无法确认此 Codex 任务的写入来源'), { code: 'codex-native-control-unavailable' });
+    }
     await this.appServer.request('thread/resume', { threadId, excludeTurns: true });
     // App Server 的 turn/start 原生调度决定是否排队/steer；Batona PC 不另造队列。
     await this.appServer.request('turn/start', {
@@ -451,6 +478,16 @@ class CodexBridge {
       ...model,
     });
     this.threadOptions.set(threadId, { ...previous, profile, ...model });
+  }
+
+  async requireAppServerWriter(threadId, nativeCode = 'codex-native-control-unavailable') {
+    const read = await this.appServer.request('thread/read', { threadId, includeTurns: false });
+    if (read?.thread?.id !== threadId) throw Object.assign(new Error('Codex 任务不存在'), { code: 'session-not-found' });
+    if (read.thread.originator === 'Codex Desktop')
+      throw Object.assign(new Error('该操作尚未接入 Codex 原生窗口'), { code: nativeCode });
+    if (!this.bridgeOwnedThreads.has(threadId) && read.thread.originator !== 'batona'
+      && read.thread.originator !== 'Batona PC')
+      throw Object.assign(new Error('无法确认此 Codex 任务的写入来源'), { code: 'codex-native-control-unavailable' });
   }
 
   async history(threadId) {
@@ -469,6 +506,7 @@ class CodexBridge {
   }
 
   async respond(threadId, body) {
+    await this.requireAppServerWriter(threadId);
     const rpcId = body?.rpcId;
     const pending = this.pendingRequests.get(String(rpcId));
     if (!pending || pending.threadId !== threadId) throw Object.assign(new Error('该请求已处理或不属于当前会话'), { code: 'interaction-resolved' });
