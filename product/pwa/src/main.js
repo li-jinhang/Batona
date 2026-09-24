@@ -2,8 +2,11 @@ import './style.css';
 import jsQR from 'jsqr';
 import { credentialStore } from './storage.js';
 import { GatewayClient } from './gateway.js';
+import { backendIdAllowed, visibleBackendIds } from './backend-policy.js';
+import { newestSessionsFirst } from './session-order.js';
 
 const BASE = import.meta.env.BASE_URL;
+const E2E_MODE = import.meta.env.MODE === 'e2e';
 const app = document.querySelector('#app');
 const connectionPill = document.querySelector('#connection-state');
 const toastNode = document.querySelector('#toast');
@@ -117,7 +120,7 @@ function capabilities(backend) {
   return state.hello?.adapters?.find(adapter => adapter.id === backend)?.capabilities ?? {};
 }
 function backendReady(backend) {
-  return Boolean(state.hello?.adapters?.some(adapter => adapter.id === backend));
+  return backendIdAllowed(backend, E2E_MODE) && Boolean(state.hello?.adapters?.some(adapter => adapter.id === backend));
 }
 
 async function start() {
@@ -153,7 +156,8 @@ async function start() {
 
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
-  navigator.serviceWorker.register(`${BASE}sw.js`, { scope: BASE }).catch(() => {
+  const appBase = new URL(BASE, document.baseURI);
+  navigator.serviceWorker.register(new URL('sw.js', appBase), { scope: appBase.pathname }).catch(() => {
     state.notice = '离线应用外壳暂未缓存；联网功能仍可继续使用。';
   });
 }
@@ -193,9 +197,9 @@ async function boot() {
       render();
     });
     state.hello = await state.client.connect(state.credentials.token);
-    state.backends = ['dsh', 'codex'];
-    if (state.hello?.adapters?.some(adapter => adapter.id === 'mock')) state.backends.push('mock');
-    if (['dsh', 'codex', 'mock'].includes(state.hello?.defaultBackend)) state.backend = state.hello.defaultBackend;
+    state.backends = visibleBackendIds(state.hello?.adapters, E2E_MODE);
+    if (state.backends.includes(state.hello?.defaultBackend)) state.backend = state.hello.defaultBackend;
+    else if (!backendIdAllowed(state.backend, E2E_MODE)) state.backend = 'dsh';
     state.view = 'home';
     state.online = true;
     setConnection('online', '电脑已连接');
@@ -708,10 +712,10 @@ function renderWorkspaces() {
   if (!state.tree.length) return `<div class="section-bar"><h2>工作区</h2><button class="text-action" type="button" data-action="new-workspace" ${!capabilities(state.backend).workspace ? 'disabled' : ''}>＋ 添加工作区</button></div><div class="empty-state"><strong>还没有工作区</strong>可以从电脑浏览目录并登记工作区，也可以直接创建一个不归属工作区的新会话。</div>`;
   const cards = state.tree.map(item => {
     const workspace = item.workspace ?? {};
-    const sessions = (item.sessions ?? []).map(node => {
+    const sessions = newestSessionsFirst((item.sessions ?? []).map(node => {
       const session = state.sessions.find(entry => entry.id === node.sessionId || entry.backendSessionId === node.sessionId);
       return session ? { ...node, sessionId: session.id, backend: session.backend, title: session.title || node.title } : node;
-    }).filter(node => node.sessionId);
+    }).filter(node => node.sessionId));
     const visible = state.showOlder.has(workspace.workspaceId) ? sessions : sessions.slice(0, 5);
     return `<details class="paper-card workspace-card" open><summary class="workspace-title"><span class="folder-symbol" aria-hidden="true">⌂</span><span class="workspace-title-main"><b>${esc(workspace.title || basename(workspace.path))}</b><small>${esc(workspace.path)}</small></span><span class="chevron" aria-hidden="true">›</span></summary><div class="workspace-session-list">${visible.length ? visible.map(sessionRow).join('') : `<div class="empty-state">此工作区还没有可显示的会话。</div>`}${sessions.length > 5 && !state.showOlder.has(workspace.workspaceId) ? `<button class="text-action" type="button" data-action="older" data-workspace="${esc(workspace.workspaceId)}">查看更早的 ${sessions.length - 5} 个会话</button>` : ''}<div class="button-row"><button class="button secondary small" type="button" data-action="create-in-workspace" data-workspace="${esc(workspace.workspaceId)}" data-path="${esc(workspace.path)}">＋ 在这里新建会话</button><button class="button ghost small" type="button" data-action="remove-workspace" data-workspace="${esc(workspace.workspaceId)}">移除工作区</button></div></div></details>`;
   }).join('');

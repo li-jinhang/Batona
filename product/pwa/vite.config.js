@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  base: '/projects/dsh-link/pwa/',
+  base: './',
   publicDir: 'public',
   build: {
     outDir: 'dist',

@@ -5,25 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#f7f3ea" />
     <meta name="description" content="在 iPhone 上继续电脑中的 DSH 与 Codex 会话。" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' ws: wss:; worker-src 'self'; manifest-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' wss://117.72.10.87 ws://127.0.0.1:* ws://localhost:*; worker-src 'self'; manifest-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="DSH Link" />
-    <link rel="apple-touch-icon" href="/projects/dsh-link/pwa/icons/icon-180.png" />
-    <link rel="icon" type="image/svg+xml" href="/projects/dsh-link/pwa/icons/icon.svg" />
-    <link rel="manifest" href="/projects/dsh-link/pwa/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icons/icon-180.png" />
+    <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
+    <link rel="manifest" href="./manifest.webmanifest" />
     <title>DSH Link · 手机工作台</title>
   </head>
   <body>
     <div class="app-frame">
       <header class="topbar">
-        <a class="brand" href="/projects/dsh-link/pwa/" aria-label="DSH Link 首页"><span class="brand-mark" aria-hidden="true">↗</span><span>DSH <b>Link</b></span></a>
+        <a class="brand" href="./" aria-label="DSH Link 首页"><span class="brand-mark" aria-hidden="true">↗</span><span>DSH <b>Link</b></span></a>
         <span class="connection-pill" id="connection-state" role="status"><i></i><span>正在连接</span></span>
       </header>
       <main id="app" tabindex="-1" aria-live="polite"></main>
       <footer class="app-footer"><span>YOUR DESKTOP · YOUR CONTEXT</span><span>工作仍在电脑上执行</span></footer>
       <div id="toast" class="toast" role="status" aria-live="assertive" hidden></div>
     </div>
-    <script type="module" src="/src/main.js"></script>
+    <script type="module" src="./src/main.js"></script>
   </body>
 </html>

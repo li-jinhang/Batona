@@ -7,16 +7,27 @@ import { tmpdir } from 'node:os';
 import { join, extname, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { chromium } from 'playwright';
+import { backendIdAllowed, visibleBackendIds } from '../src/backend-policy.js';
+import { newestSessionsFirst } from '../src/session-order.js';
 import { HostedGateway } from '../../server/gateway/src/hosted/gateway.ts';
 
 const require = createRequire(import.meta.url);
 const { TunnelClient } = require('../../pc/tunnel/client.js');
-const BASE_PATH = '/projects/dsh-link/pwa/';
+const BASE_PATH = '/site-prefix/projects/dsh-link/pwa/';
 const DIST = resolve('dist');
 const TEMP = mkdtempSync(join(tmpdir(), 'batona-pwa-e2e-'));
 const adminKey = randomBytes(32).toString('hex');
 const delivery = [];
 const publicKey = 'A'.repeat(87), privateKey = 'B'.repeat(43);
+assert.deepEqual(visibleBackendIds([{ id: 'mock' }, { id: 'dsh' }, { id: 'codex' }, { id: 'claude' }]), ['dsh', 'codex']);
+assert.deepEqual(visibleBackendIds([{ id: 'mock' }, { id: 'dsh' }], true), ['dsh', 'mock']);
+assert.equal(backendIdAllowed('mock'), false);
+assert.equal(backendIdAllowed('mock', true), true);
+assert.deepEqual(newestSessionsFirst([
+  { sessionId: 'older', updatedAt: 10 },
+  { sessionId: 'newest', updatedAt: 30 },
+  { sessionId: 'middle', updatedAt: 20 },
+]).map(session => session.sessionId), ['newest', 'middle', 'older']);
 const gateway = new HostedGateway({
   dataDir: TEMP,
   adminKey,
@@ -160,6 +171,10 @@ try {
     try { outgoing.push(JSON.parse(String(payload))); } catch { /* ignore non-JSON frames */ }
   }));
   await page.goto(origin + BASE_PATH);
+  const policy = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content');
+  const connectPolicy = policy.split(';').find(directive => directive.trim().startsWith('connect-src'));
+  assert.match(connectPolicy, /wss:\/\/117\.72\.10\.87/);
+  assert.doesNotMatch(connectPolicy, /(?:^|\s)wss?:(?:\s|$)/);
   await page.getByRole('heading', { name: /把这部手机/ }).waitFor();
   await page.locator('#pair-code').fill(replacementPair.code);
   await page.getByRole('button', { name: /申请配对/ }).click();
@@ -260,7 +275,7 @@ try {
       postMessage: message => client.postMessage(message),
     })) });
     const waits = [];
-    const notification = { data: { url: self.location.origin + '/projects/dsh-link/pwa/' }, close() {} };
+    const notification = { data: { url: new URL('./', self.location).href }, close() {} };
     const event = new Event('notificationclick');
     Object.defineProperty(event, 'notification', { value: notification });
     event.waitUntil = promise => waits.push(promise);

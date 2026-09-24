@@ -6,8 +6,9 @@
   "engines": { "node": ">=18" },
   "scripts": {
     "build": "vite build && node scripts/write-service-worker.mjs",
+    "build:e2e": "vite build --mode e2e && node scripts/write-service-worker.mjs",
     "typecheck": "node --check src/main.js && node --check src/gateway.js && node --check src/storage.js && node --check scripts/write-service-worker.mjs",
-    "test:e2e": "npm run typecheck && npm run build && node test/e2e.mjs"
+    "test:e2e": "npm run typecheck && npm run build:e2e && node test/e2e.mjs"
   },
   "dependencies": {
     "jsqr": "1.4.0"
