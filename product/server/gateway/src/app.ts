@@ -11,6 +11,11 @@ async function main() {
     dataDir: cfg.dataDir, webDir: cfg.webDir,
     adminKey: readFileSync(cfg.access.adminKeyFile, 'utf8').trim(),
     vaultKey: Buffer.from(readFileSync(cfg.access.vaultKeyFile, 'utf8').trim(), 'hex'),
+    ...(cfg.webPush ? { webPush: {
+      subject: cfg.webPush.subject,
+      publicKey: readFileSync(cfg.webPush.publicKeyFile, 'utf8').trim(),
+      privateKey: readFileSync(cfg.webPush.privateKeyFile, 'utf8').trim(),
+    } } : {}),
   });
   gateway.server.listen(cfg.port, cfg.host, () => console.log('[gateway] hosted access listening; no legacy login routes'));
   let closing = false;

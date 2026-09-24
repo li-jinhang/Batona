@@ -5,8 +5,9 @@ import { isIP } from 'node:net';
 import { WebSocketServer } from 'ws';
 import { AccountStore, AccessError, digest, equal, required, secret, type Account } from './store.ts';
 import { PcRuntime } from './runtime.ts';
+import { createPushSender, notificationPayload, parsePushSubscription, type PushCategory, type PushSender, type WebPushConfig } from './push.ts';
 
-export interface HostedOptions { dataDir: string; adminKey: string; vaultKey: Buffer; webDir: string; mock?: boolean; now?: () => number }
+export interface HostedOptions { dataDir: string; adminKey: string; vaultKey: Buffer; webDir: string; mock?: boolean; now?: () => number; webPush?: WebPushConfig; pushSender?: PushSender }
 interface Pairing {
   accountId: string; pcId: string; pcToken: string; code: string;
   request?: { id: string; proof: string; secretHash: string; name: string };
@@ -21,8 +22,10 @@ export class HostedGateway {
   private waiting = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   private limits = new Map<string, { count: number; until: number }>();
   private timer;
+  private pushSender?: PushSender;
   constructor(opts: HostedOptions) {
     if (opts.adminKey.length < 32) throw new Error('admin-key-too-short');
+    if (opts.webPush) this.pushSender = opts.pushSender ?? createPushSender(opts.webPush);
     this.opts = opts; this.store = new AccountStore(opts.dataDir, opts.vaultKey, opts.now);
     this.server = createServer((req, res) => { void (async () => {
       res.setHeader('cache-control', 'no-store');
@@ -117,7 +120,7 @@ export class HostedGateway {
     let pending = this.runtimes.get(a.id);
     if (!pending) {
       const runtime = new PcRuntime(this.store, a.id, a.pc.id, () => { this.clearPairs(a.id); runtime.ws?.disconnectInvalid(); });
-      pending = runtime.start(this.store, this.server, !!this.opts.mock).then(() => runtime).catch(async e => {
+      pending = runtime.start(this.store, this.server, !!this.opts.mock, category => { void this.deliverPush(a, category); }).then(() => runtime).catch(async e => {
         this.runtimes.delete(a.id); await runtime.close(); throw e;
       });
       this.runtimes.set(a.id, pending);
@@ -130,6 +133,20 @@ export class HostedGateway {
     const old = this.runtimes.get(id); this.runtimes.delete(id);
     if (old) await (await old).close();
   }
+  private async deliverPush(account: Account, category: PushCategory): Promise<void> {
+    const subscription = account.phone && account.pushSubscription;
+    if (!subscription || !this.pushSender || account.disabled) return;
+    try {
+      await this.pushSender(subscription, notificationPayload(category));
+    } catch (error) {
+      const status = (error as { statusCode?: unknown }).statusCode;
+      if (status === 404 || status === 410) {
+        try { this.store.change(() => { if (account.pushSubscription?.endpoint === subscription.endpoint) delete account.pushSubscription; }); }
+        catch { console.error('[push] expired-subscription-cleanup-failed'); }
+      }
+      console.error(`[push] delivery-failed category=${category} status=${typeof status === 'number' ? status : 'unavailable'}`);
+    }
+  }
   private async admin(op: string, token: string, b: Record<string, unknown>): Promise<object> {
     if (!equal(token, this.opts.adminKey)) throw new AccessError('unauthorized', 401);
     if (op === 'create') return this.store.change(() => { const a = this.store.create(String(b.remark ?? '').slice(0, 100)); return { ...this.store.summary(a), key: a.key }; });
@@ -139,7 +156,7 @@ export class HostedGateway {
     if (op === 'remark') return this.store.change(() => { a.remark = String(b.remark ?? '').slice(0, 100); return this.store.summary(a); });
     if (!['disable', 'reset', 'delete'].includes(op)) throw new AccessError('not-found', 404);
     const result = this.store.change(() => {
-      if (op === 'disable') { a.disabled = true; this.store.revoke(a); return {}; }
+      if (op === 'disable') { a.disabled = true; this.store.revoke(a); delete a.pushSubscription; return {}; }
       this.store.remove(a);
       if (op === 'reset') { const fresh = this.store.create(a.remark); return { ...this.store.summary(fresh), key: fresh.key }; }
       return {};
@@ -175,12 +192,29 @@ export class HostedGateway {
     if (!info) throw new AccessError('unauthorized', 401);
     const a = info.account;
     if (op === 'logout') {
-      this.store.change(() => this.store.revoke(a, info.kind));
+      this.store.change(() => { this.store.revoke(a, info.kind); if (info.kind === 'phone') delete a.pushSubscription; });
       if (info.kind === 'pc') await this.stopRuntime(a.id);
       else (await this.runtimes.get(a.id))?.ws.disconnectInvalid();
       return {};
     }
     if (op === 'status') return { accountId: a.id, deviceId: info.device.id, pcOnline: (await this.runtimes.get(a.id))?.online() ?? false };
+    if (op === 'push-key' || op === 'push-status' || op === 'push-subscribe' || op === 'push-unsubscribe') {
+      if (info.kind !== 'phone') throw new AccessError('phone-required', 403);
+      if (op === 'push-key' || op === 'push-status') return {
+        configured: Boolean(this.pushSender && this.opts.webPush?.publicKey),
+        publicKey: this.pushSender ? this.opts.webPush?.publicKey ?? null : null,
+        subscribed: Boolean(a.pushSubscription),
+      };
+      if (op === 'push-unsubscribe') {
+        this.store.change(() => { delete a.pushSubscription; });
+        return { subscribed: false };
+      }
+      if (!this.pushSender) throw new AccessError('push-not-configured', 503);
+      let subscription;
+      try { subscription = parsePushSubscription(b.subscription); }
+      catch { throw new AccessError('invalid-push-subscription', 400); }
+      return this.store.change(() => { a.pushSubscription = subscription; return { subscribed: true }; });
+    }
     if (info.kind !== 'pc') throw new AccessError('pc-required', 403);
     const rt = await this.runtime(a);
     if (!this.store.validate(token, 'pc')) throw new AccessError('unauthorized', 401);
@@ -191,7 +225,7 @@ export class HostedGateway {
     }
     if (op === 'rename-phone') return this.store.change(() => { if (!a.phone) throw new AccessError('phone-not-found', 404); a.phone.name = required(b.name, 1, 100); return {}; });
     if (op === 'unbind-phone') {
-      this.store.change(() => { this.store.revoke(a, 'phone'); delete a.phone; }); this.clearPairs(a.id); rt.ws.disconnectInvalid(); return {};
+      this.store.change(() => { this.store.revoke(a, 'phone'); delete a.phone; delete a.pushSubscription; }); this.clearPairs(a.id); rt.ws.disconnectInvalid(); return {};
     }
     if (op === 'pair-open') {
       if (!rt.online()) throw new AccessError('pc-offline', 409);

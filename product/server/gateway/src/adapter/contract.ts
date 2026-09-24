@@ -45,6 +45,7 @@ export type AgentEvent =
   | { type: 'question/requested'; questionRpcId: string; questions: AskUserQuestionItem[]; rpcId?: string }
   | { type: 'question/resolved'; questionRpcId: string; outcome: 'answered' | 'cancelled' }
   | { type: 'interaction/resolved'; rpcId: string }
+  | { type: 'session/settings'; model?: ModelRef; profileId?: string | null }
   | { type: 'session/permissionPreset'; permissionPresetId: string }
   | { type: 'session/title'; title: string }
   | { type: 'error'; code: string; message: string }
@@ -89,7 +90,7 @@ export interface SessionPermissionPresetOption {
 export interface SessionPermissionPresetState {
   /** false 表示运行中的 DSH 没有提供 permissions 投影。 */
   supported: boolean;
-  /** DSH 投影给出的实际值；custom 表示不匹配固定预设。 */
+  /** DSH 投影给出的实际值；`custom` 表示不匹配固定预设。 */
   currentValue: string | null;
   options: SessionPermissionPresetOption[];
 }

@@ -19,6 +19,7 @@ import {
 } from '../proto/envelope.ts';
 import { err, foldError, ok, type RpcResult } from '../proto/result.ts';
 import type { AgentEvent, AskUserQuestionItem } from '../adapter/contract.ts';
+import { attentionCategory, type PushCategory } from '../hosted/push.ts';
 
 interface PendingAnswer {
   gatewaySessionId: string;
@@ -29,6 +30,7 @@ export interface WsOptions {
   dirUrl?: string;
   hosted?: boolean;
   accepted?: () => void;
+  onAttention?: (category: PushCategory) => void;
 }
 
 export class GatewayWsServer {
@@ -79,6 +81,10 @@ export class GatewayWsServer {
 
     // 事件扇出：所有已认证连接（单人场景；FR-18 多设备广播）
     this.router.onEvent((gatewaySessionId, event) => {
+      const category = attentionCategory(event);
+      if (category) {
+        try { this.opts.onAttention?.(category); } catch { /* attention delivery cannot block session events */ }
+      }
       this.broadcast(this.buildPushFrame(gatewaySessionId, event));
     });
   }

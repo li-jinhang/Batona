@@ -72,6 +72,25 @@ npm run start:prod                    # node dist/app.mjs
 | `auth.initialUser` | 无（首启随机生成并打印） | 初始账号 |
 | `adapters.*.enabled` | mock 开 / dsh 关 | 后端适配器开关 |
 | `agentKey` | 空（通道关闭） | PC 上报 DSH launch token 的共享密钥（`x-dsh-agent-key`） |
+| `webPush` | `null` | 可选 Web Push 配置；默认关闭，公钥与私钥文件路径应位于受保护目录 |
+
+### iOS PWA Web Push
+
+生产部署只在用户主动订阅后为该账号登记 iPhone 的 Apple Push 订阅。服务器推送只包含 `approval`、`question`、`completed` 或 `failed` 事件类别，不发送会话、工具、账号或问题正文。仅允许 HTTPS `*.push.apple.com` 订阅端点；404/410 会清除过期订阅，手机退出、电脑解绑手机及管理员禁用账号也会清理订阅。
+
+部署网关代码后，以受控服务器终端运行一次 VAPID 密钥初始化脚本：
+
+```bash
+cd /www/wwwroot/117.72.10.87/26-009DSHlink
+node product/server/gateway/scripts/init-web-push.mjs \
+  /etc/batona-gateway/config.json \
+  /etc/batona-gateway/web-push \
+  'mailto:<实际运维邮箱>'
+```
+
+脚本会将密钥放入给定目录（权限 0700；密钥文件权限 0600），把文件路径与 VAPID subject 写入配置，并在首次修改前保存 `config.json.before-web-push`。重复运行会保留现有密钥；不匹配或位于受保护目录外的路径会被拒绝。不要把密钥文件、配置备份或私钥复制进 Git、静态网站或普通日志。账号库含有订阅密钥材料；VAPID 私钥应与 `/var/lib/batona-gateway/access.vault` 一起备份和恢复，遗失私钥会使已有订阅无法投递。
+
+完成后平滑重启 Gateway，并用 HTTPS 健康检查核验服务恢复。部署主机须能通过出站 HTTPS 访问 Apple Push 服务。真实 iPhone 的 Web Push 投递、主屏幕安装及通知点击仍须按 iOS PWA 验收清单在设备上验证；浏览器端自动化不会证明 Apple 实机投递。
 
 ## 前端协议 v1 速查（WebSocket /ws?token=…）
 
@@ -89,13 +108,15 @@ npm run start:prod                    # node dist/app.mjs
 | `session.permissionPresetList` / `session.permissionPresetSelect` | DSH 当前会话原生权限预设；只读 DSH 投影并只允许固定三档，完全访问需二次确认 |
 | `device.list` / `device.revoke` | 设备管理（吊销后令牌立即失效） |
 
-下行 `server-request` 推送：`session/event`（归一化 AgentEvent）、`approval/requested`（可应答）、`question/requested`（可应答）。
+下行 `server-request` 推送：`session/event`（归一化 AgentEvent，包含 DSH 权限预设状态更新）、`approval/requested`（可应答）、`question/requested`（可应答）。
 
 ## 测试
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm run smoke       # 21 项端到端断言（Mock 后端）
+npm run smoke       # Mock 会话、工作区、模型与协议端到端断言
+npm run test:hosted # Hosted 配对、隔离、数据保护与 Push 生命周期
+npm run test:web-push-keys # VAPID 生成、幂等、保密输出与路径约束
 
 # 需真实 DSH 的回归探针（显式传 launch token，会真实调用模型，故不进 CI）
 node test/probe-live.ts <launch-token> http://127.0.0.1:3080 basic|approval|question

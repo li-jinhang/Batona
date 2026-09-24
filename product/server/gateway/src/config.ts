@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 
 export interface GatewayConfig {
   access?: { adminKeyFile: string; vaultKeyFile: string };
+  webPush?: { subject: string; publicKeyFile: string; privateKeyFile: string } | null;
   host: string;
   port: number;
   dataDir: string;

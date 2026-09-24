@@ -54,6 +54,7 @@ export class SessionRouter {
     if (g) {
       const next = stateFromEvent(event);
       if (next) g.state = next;
+      if (event.type === 'session/settings' && event.model) g.model = event.model;
     }
     for (const s of this.sinks) s(gid, event);
   }
