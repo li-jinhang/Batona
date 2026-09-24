@@ -36,7 +36,7 @@ const state = {
   modelChoices: [],
   profiles: [],
   permissionPresets: null,
-  push: { configured: false, subscribed: false, denied: false },
+  push: { configured: false, publicKey: null, subscribed: false, denied: false },
   dir: { open: false, path: '', roots: [], dirs: [], loading: false },
   modal: null,
   requestBusy: false,
@@ -138,6 +138,8 @@ async function start() {
   });
   navigator.serviceWorker?.addEventListener('message', event => {
     if (event.data?.type === 'refresh-authoritative-state' && state.credentials?.token) {
+      if (!navigator.onLine) return;
+      if (!state.online) { void boot(); return; }
       void Promise.all([refreshBackend(true), refreshPendingInteractions()]);
     }
   });
@@ -201,9 +203,13 @@ async function boot() {
     });
     state.hello = await state.client.connect(state.credentials.token);
     state.backends = visibleBackendIds(state.hello?.adapters, E2E_MODE);
-    if (state.backends.includes(state.hello?.defaultBackend)) state.backend = state.hello.defaultBackend;
-    else if (!backendIdAllowed(state.backend, E2E_MODE)) state.backend = 'dsh';
-    state.view = 'home';
+    if (state.current && state.backends.includes(state.current.backend)) state.backend = state.current.backend;
+    else {
+      if (state.current) { state.current = null; state.events = []; }
+      if (state.backends.includes(state.hello?.defaultBackend)) state.backend = state.hello.defaultBackend;
+      else if (!backendIdAllowed(state.backend, E2E_MODE)) state.backend = 'dsh';
+    }
+    state.view = state.current ? 'session' : 'home';
     state.online = true;
     setConnection('online', '电脑已连接');
     await Promise.all([refreshBackend(true), refreshPushState(), refreshPendingInteractions()]);
@@ -569,9 +575,8 @@ async function enableNotifications() {
   if (!state.credentials?.token || !state.online) return;
   if (state.ios && !state.standalone) { showToast('请先从主屏幕打开 DSH Link，再开启通知。'); return; }
   if (!('Notification' in window) || !('serviceWorker' in navigator)) { showToast('此浏览器不支持系统通知。'); return; }
+  if (!state.push.configured || !state.push.publicKey) { showToast('服务器暂未配置 Web Push；你仍可在应用内查看任务状态。'); return; }
   try {
-    const keys = await api('push-key');
-    if (!keys.configured || !keys.publicKey) { showToast('服务器暂未配置 Web Push；你仍可在应用内查看任务状态。'); return; }
     const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
     if (permission !== 'granted') {
       state.push.denied = permission === 'denied';
@@ -581,6 +586,8 @@ async function enableNotifications() {
       render();
       return;
     }
+    const keys = await api('push-key');
+    if (!keys.configured || !keys.publicKey) { showToast('服务器暂未配置 Web Push；你仍可在应用内查看任务状态。'); return; }
     const registration = await navigator.serviceWorker.ready;
     const subscription = await registration.pushManager.getSubscription() ?? await registration.pushManager.subscribe({
       userVisibleOnly: true,
@@ -608,6 +615,7 @@ async function refreshPushState() {
   try {
     const push = await api('push-key');
     state.push.configured = push.configured === true;
+    state.push.publicKey = typeof push.publicKey === 'string' ? push.publicKey : null;
     const registration = await navigator.serviceWorker?.ready;
     const local = registration ? await registration.pushManager.getSubscription() : null;
     state.push.subscribed = push.subscribed === true && Boolean(local);

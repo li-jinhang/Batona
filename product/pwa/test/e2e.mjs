@@ -133,16 +133,38 @@ try {
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'standalone', { configurable: true, value: true });
     window.__sentFrames = [];
+    window.__gatewaySocket = null;
     const nativeSend = WebSocket.prototype.send;
     WebSocket.prototype.send = function (data) {
       try { window.__sentFrames.push(JSON.parse(String(data))); } catch { /* ignore non-JSON frames */ }
       return nativeSend.call(this, data);
     };
+    const NativeWebSocket = window.WebSocket;
+    window.WebSocket = class extends NativeWebSocket {
+      constructor(...args) {
+        super(...args);
+        window.__gatewaySocket = this;
+      }
+    };
     window.__permissionChoice = 'granted';
+    window.__permissionGestureActive = false;
+    window.__pushKeyRequested = false;
+    window.__permissionRequestedAfterPushKey = false;
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (new URL(url, location.href).pathname.endsWith('/api/access/push-key')) window.__pushKeyRequested = true;
+      return nativeFetch(input, init);
+    };
     window.__fakePushSubscription = null;
     class FakeNotification {
       static permission = 'default';
-      static async requestPermission() { this.permission = window.__permissionChoice; return this.permission; }
+      static async requestPermission() {
+        window.__permissionGestureActive = navigator.userActivation.isActive;
+        window.__permissionRequestedAfterPushKey = window.__pushKeyRequested;
+        this.permission = window.__permissionChoice;
+        return this.permission;
+      }
     }
     Object.defineProperty(window, 'Notification', { configurable: true, value: FakeNotification });
     Object.defineProperty(ServiceWorkerRegistration.prototype, 'pushManager', {
@@ -227,13 +249,18 @@ try {
 
   await page.evaluate(() => { window.__permissionChoice = 'denied'; });
   await page.getByRole('button', { name: '返回会话列表' }).click();
+  await page.evaluate(() => { window.__pushKeyRequested = false; });
   await page.getByRole('button', { name: '开启通知' }).click();
   await page.locator('#app .notice[role="status"]').waitFor();
   assert.match(await page.locator('#app .notice[role="status"]').innerText(), /通知权限已关闭/);
+  assert.equal(await page.evaluate(() => window.__permissionRequestedAfterPushKey), false, 'notification permission should be requested before a network request');
   assert.ok(await page.getByRole('heading', { name: /工作还在继续/ }).count(), 'permission denial must not block session use');
   await page.evaluate(() => { window.__permissionChoice = 'granted'; Notification.permission = 'default'; });
+  await page.evaluate(() => { window.__pushKeyRequested = false; });
   await page.getByRole('button', { name: '开启通知' }).click();
   await page.locator('#app .notice.success').waitFor({ timeout: 10000 });
+  assert.equal(await page.evaluate(() => window.__permissionGestureActive), true, 'notification permission should be requested during the user gesture');
+  assert.equal(await page.evaluate(() => window.__permissionRequestedAfterPushKey), false, 'the permission prompt must precede push-key network I/O');
 
   await page.getByRole('button', { name: /在这里新建会话/ }).click();
   await page.getByLabel(/发送文字请求/).waitFor();
@@ -309,6 +336,13 @@ try {
   assert.match(notification[0]?.body ?? '', /等待你的批准/);
   assert.equal(JSON.stringify(notification).includes('DO-NOT-PUSH'), false);
   const refreshCount = await page.evaluate(() => window.__sentFrames.filter(frame => frame.method === 'session.list').length);
+  const authCount = await page.evaluate(() => window.__sentFrames.filter(frame => frame.method === 'auth.hello').length);
+  await page.evaluate(() => {
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    window.setTimeout = (callback, delay, ...args) => nativeSetTimeout(callback, delay === 400 ? 30000 : delay, ...args);
+  });
+  await page.evaluate(() => window.__gatewaySocket.close());
+  await page.waitForFunction(() => document.querySelector('#connection-state span')?.textContent === '连接中断');
   const clientsFound = await serviceWorker.evaluate(async () => {
     const actualClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     Object.defineProperty(self.clients, 'matchAll', { configurable: true, value: async () => actualClients.map(client => ({
@@ -326,6 +360,7 @@ try {
     return actualClients.map(client => client.url);
   });
   assert.ok(clientsFound.some(url => url.startsWith(origin + BASE_PATH)), 'notification click should target the installed PWA client');
+  await page.waitForFunction(count => window.__sentFrames.filter(frame => frame.method === 'auth.hello').length > count, authCount, { timeout: 10000 });
   await page.waitForFunction(count => window.__sentFrames.filter(frame => frame.method === 'session.list').length > count, refreshCount);
 
   await page.getByRole('button', { name: '返回会话列表' }).click();

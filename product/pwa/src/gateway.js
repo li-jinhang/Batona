@@ -74,7 +74,7 @@ export class GatewayClient {
     }, wait);
   }
 
-  request(method, payload = {}, duringHandshake = false) {
+  request(method, payload = {}) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error('电脑未连接，请稍后重试'));
     const rpcId = crypto.randomUUID();
     return new Promise((resolve, reject) => {
