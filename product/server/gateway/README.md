@@ -102,6 +102,7 @@ node product/server/gateway/scripts/init-web-push.mjs \
 | `session.list` / `session.create` / `session.resume` | 会话管理（create 支持 backend/agentPreset/workspacePath/model） |
 | `session.prompt` | `{sessionId, parts[], queueAction}`（文本 + base64 图片） |
 | `session.cancel` / `session.history` | 取消 / 历史（归一化 AgentEvent[]） |
+| `interaction.pendingList` | `{}` → `{interactions: ServerRequest[]}`；返回当前网关进程内尚未解决的审批/提问帧，供已认证客户端重连后恢复 |
 | `respond` | `{sessionId, serverRequestRpcId, payload}` — 审批 `{outcome}` / 提问 `{answer}` |
 | `workspace.list` / `workspace.create` | 工作区（DSH: workspace.*；目录需已存在） |
 | `model.list` / `model.select` | 模型目录 / 会话级选择 |

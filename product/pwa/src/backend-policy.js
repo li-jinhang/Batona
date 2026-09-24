@@ -1,4 +1,4 @@
-const PRODUCT_BACKENDS = ['dsh', 'codex'];
+export const PRODUCT_BACKENDS = ['dsh', 'codex'];
 
 export function backendIdAllowed(id, includeTestBackend = false) {
   return PRODUCT_BACKENDS.includes(id) || (includeTestBackend && id === 'mock');

@@ -4,8 +4,8 @@
 
 本次改名同时更新了 PC appId、Android applicationId、本地安全存储别名、配对 URI、账号密钥前缀和服务器运行标识。Batona PC 与 Batona Mobile 使用新的本地数据空间；2026-09-23 已完成服务器运行标识迁移并保留现有托管授权，迁移证据见运维记录。
 
-Batona 让 Android 手机通过公网网关远程操控笔记本上的 DeepSeek Harness（DSH）或 Codex。
-Agent、LLM 与工具执行始终留在 PC；服务器只提供认证、会话路由和 PC 的出站隧道。
+Batona 让 Android 手机或 iPhone 上安装的 PWA 通过公网网关远程操控笔记本上的 DeepSeek Harness（DSH）或 Codex。
+Agent、LLM 与工具执行始终留在 PC；服务器只提供认证、会话路由与 PC 出站隧道转发。用户主动订阅 iOS PWA 通知后，服务器还可向 Apple Push 发送不含正文或标识符的事件类别。
 
 ## 文档边界
 
@@ -69,8 +69,8 @@ PC 登录并连通隧道后打开手机配对页，显示随机手动码和 `bat
 
 手机连接 `wss://117.72.10.87/ws`，设备令牌仅在首帧 `auth.hello.payload.token` 传递；认证前无业务推送。协议版本为 v1，使用四象限信封：`client-request`、`server-response`、`server-request`、`client-response`。
 
-- 上行：`auth.hello`、`session.list/create/resume/prompt/cancel/history/rename`、`workspace.*`、`model.*`、`agent.profile.list`、`respond`；设备管理仅走 PC 的 `/api/access/*` REST。
-- 下行：`session/event`、`approval/requested`、`question/requested`。审批/提问必须用原始 `serverRequestRpcId` 经 `respond` 回答。
+- 上行：`auth.hello`、`session.list/create/resume/prompt/cancel/history/rename`、`interaction.pendingList`、`workspace.*`、`model.*`、`agent.profile.list`、`respond`；设备管理仅走 PC 的 `/api/access/*` REST。`interaction.pendingList` 在认证后的 WS 连接上返回网关进程内尚未解决的审批/提问帧，供手机重连或页面重载后恢复。
+- 下行：`session/event`、`approval/requested`、`question/requested`。审批/提问必须用原始 `serverRequestRpcId` 经 `respond` 回答；其待处理帧仅在网关进程运行期间保留，不写入持久化会话数据。
 - 实验共享 Codex 审批另发 `interaction/resolved`，携带当前网关会话的 `requestRpcIds[]`；原生 Desktop 先处理时，手机只关闭编号匹配的待审批/提问卡。此事件不携带批准结果，也不表示已授权。
 - 任何字段、方法、事件或兼容策略变更都必须同步检查 Android、PC、服务器，并更新本文件与受影响端的 `AGENTS.md`。
 
