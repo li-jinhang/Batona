@@ -1,18 +1,18 @@
 {
-  "id": "/projects/dsh-link/pwa/",
+  "id": "./",
   "name": "DSH Link · 手机工作台",
   "short_name": "DSH Link",
   "description": "在 iPhone 上查看并继续电脑中的 DSH 与 Codex 会话。",
   "lang": "zh-CN",
-  "start_url": "/projects/dsh-link/pwa/",
-  "scope": "/projects/dsh-link/pwa/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "display_override": ["standalone"],
   "orientation": "portrait",
   "background_color": "#f7f3ea",
   "theme_color": "#f7f3ea",
   "icons": [
-    { "src": "/projects/dsh-link/pwa/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/projects/dsh-link/pwa/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ]
 }

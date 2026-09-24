@@ -1,6 +1,6 @@
 # Batona iOS PWA
 
-This browser client is published at `https://117.72.10.87/projects/dsh-link/pwa/`. Its source stays in this product repository; generated static assets are copied to the separate WebMainIndex site repository for publication.
+This browser client is currently published at `https://117.72.10.87/projects/dsh-link/pwa/`. Its source stays in this product repository; generated static assets are copied to the separate WebMainIndex site repository for publication. Page, manifest, icon, and Service Worker URLs resolve relative to the PWA directory so the static folder also works below a site path prefix.
 
 ## Build and browser verification
 
@@ -15,7 +15,7 @@ npm run test:e2e
 
 The end-to-end fixture starts an isolated Hosted Gateway, an in-process simulated PC tunnel, and a same-origin reverse proxy. It uses no production accounts, real Agent sessions, model calls, or Apple Push service. It verifies the installation gate, PC-approved pairing and occupied phone slot, backend/session behavior, notification subscription cleanup, category-only push, notification-click refresh, and offline shell.
 
-Build the production files with `npm run build`. The Vite base path and Service Worker scope are intentionally fixed to `/projects/dsh-link/pwa/`; do not publish this build under a different path without changing and verifying both.
+Build the production files with `npm run build`. Vite emits relative asset URLs, and the Service Worker derives its scope from its own location. Keep the static folder and its `index.html` together when copying it to a publication path.
 
 ## Static publication
 

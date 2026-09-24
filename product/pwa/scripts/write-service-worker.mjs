@@ -3,7 +3,6 @@ import { deflateSync } from 'node:zlib';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 
-const BASE = '/projects/dsh-link/pwa/';
 const output = resolve('dist');
 const iconDirectory = join(output, 'icons');
 mkdirSync(iconDirectory, { recursive: true });
@@ -66,27 +65,28 @@ function walk(directory) {
 
 const shell = walk(output).filter(file => file !== 'sw.js').sort();
 shell.push('index.html');
-const urls = [...new Set(shell)].map(file => `${BASE}${file}`);
-urls.push(BASE);
+const urls = [...new Set(shell)].map(file => `./${file}`);
+urls.push('./');
 const fingerprint = [...new Set(shell)].map(file => `${file}:${createHash('sha256').update(readFileSync(join(output, file))).digest('hex')}`).join('\n');
 const version = createHash('sha256').update(`${urls.join('\n')}\n${fingerprint}`).digest('hex').slice(0, 12);
 const worker = `const CACHE = 'batona-pwa-shell-${version}';
 const PREFIX = 'batona-pwa-shell-';
-const BASE = '${BASE}';
-const SHELL = ${JSON.stringify(urls)};
+const BASE_URL = new URL('./', self.location).href;
+const BASE_PATH = new URL(BASE_URL).pathname;
+const SHELL = ${JSON.stringify(urls)}.map(url => new URL(url, self.location).href);
 self.addEventListener('install', event => { event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', event => { event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith(PREFIX) && key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', event => {
   const request = event.request;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
-  if (url.origin !== self.location.origin || !url.pathname.startsWith(BASE)) return;
+  if (url.origin !== self.location.origin || !url.pathname.startsWith(BASE_PATH)) return;
   if (url.pathname.startsWith('/api/') || url.pathname === '/ws' || url.pathname === '/tunnel') return;
   if (request.mode === 'navigate') {
     event.respondWith(fetch(request).then(response => {
-      if (response.ok) { const copy = response.clone(); void caches.open(CACHE).then(cache => cache.put(BASE, copy)); }
+      if (response.ok) { const copy = response.clone(); void caches.open(CACHE).then(cache => cache.put(BASE_URL, copy)); }
       return response;
-    }).catch(async () => (await caches.match(BASE)) || (await caches.match(BASE + 'index.html')) || Response.error()));
+    }).catch(async () => (await caches.match(BASE_URL)) || (await caches.match(new URL('index.html', BASE_URL))) || Response.error()));
     return;
   }
   event.respondWith(caches.match(request).then(cached => cached || fetch(request)));
@@ -101,16 +101,16 @@ self.addEventListener('push', event => {
     failed: ['Batona Link', '电脑上的任务遇到问题，请打开查看。'],
   }[category];
   if (!copy) return;
-  event.waitUntil(self.registration.showNotification(copy[0], { body: copy[1], icon: BASE + 'icons/icon-192.png', badge: BASE + 'icons/icon-192.png', tag: 'batona-' + category, data: { url: BASE } }));
+  event.waitUntil(self.registration.showNotification(copy[0], { body: copy[1], icon: new URL('icons/icon-192.png', BASE_URL).href, badge: new URL('icons/icon-192.png', BASE_URL).href, tag: 'batona-' + category, data: { url: BASE_URL } }));
 });
 self.addEventListener('notificationclick', event => {
   event.notification.close();
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    for (const client of windows) if (client.url.startsWith(self.location.origin + BASE) && 'focus' in client) {
+    for (const client of windows) if (client.url.startsWith(BASE_URL) && 'focus' in client) {
       await client.focus(); client.postMessage({ type: 'refresh-authoritative-state' }); return;
     }
-    const client = await self.clients.openWindow(BASE);
+    const client = await self.clients.openWindow(BASE_URL);
     client?.postMessage({ type: 'refresh-authoritative-state' });
   })());
 });

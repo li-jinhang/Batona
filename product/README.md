@@ -84,6 +84,9 @@ PC 登录并连通隧道后打开手机配对页，显示随机手动码和 `bat
 - 实验分支另提供**同一**回环 WebSocket app-server 的共享传输：Desktop 与 Batona 可同时订阅原生任务，显式本机开关下可直接提交文本和转发审批。其模型/权限设置界面同步、手机全链路和升级兼容尚未验收，当前安装版仍采用上一条的窗口代理，不能把共享传输当作已发布功能。详见 [共享传输探针](pc/tools/shared-transport-probe/README.md)。
 - 手机上的 `请求批准`、`帮我审批`、`完全访问` 是 PC 校验后的固定档；Batona 自建任务映射到允许的 App Server permission profile，Desktop 原生任务经窗口权限控件选择。原生“完全访问”若需要桌面确认，远程提交会拒绝，不能代用户确认。手机不能自定义底层权限。所有镜像事件先在 PC 脱敏，且只接受文本输入。
 - `session.permissionMenu`（`{sessionId,open}`）与 `session.permissionSelect`（`{sessionId,profileId}`）通过网关转至 PC 桥；返回 `{profileId}` 表示原生窗口确认的当前权限。手机弹窗立即展示，PC 菜单异步开合；原生界面验证失败时不把本地选择冒充为成功。模型及思考强度沿用 `model.select`。
+- DSH 的 `session.permissionPresetList` / `session.permissionPresetSelect` 独立于 Codex 权限档：按当前 DSH 会话读取 `permissions` 投影，只提供只读、工作区写入、完全访问三个固定预设。网关校验投影选项与 DSH `/permission` 命令后再提交，并读取新投影确认切换成功；没有投影或未开放的预设不可切换。完全访问要求 Android 二次确认，网关也拒绝缺少确认标记的请求。
+- Codex 的 `session/settings` 会话事件携带模型/强度及可识别的权限档 ID；网关更新会话模型快照并把事件推送给手机。未知权限组合清除手机端旧档位，避免显示过期的权限状态。该事件不包含原始 `threadSettings`、工作目录或审批详情。
+- iOS PWA 的推送操作仅供已绑定手机使用：`POST /api/access/push-key` 与 `push-status` 读取配置，`push-subscribe` / `push-unsubscribe` 管理订阅；订阅在手机退出、解绑、电脑替换或账号禁用时清理。系统通知只包含 `approval`、`question`、`completed`、`failed` 类别，不包含会话正文。
 - 手机只在本地缓存每个工作区最近 5 个 Codex 会话和每个会话最多 200 条已脱敏历史；断网只能浏览、不可排队发送，注销或重新绑定会清空缓存。通知仅提示等待审批、等待回答、完成或失败，且不含对话、命令、路径或凭据。
 
 ### PC ↔ 服务器隧道与 launch token
