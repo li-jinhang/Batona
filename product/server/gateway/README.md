@@ -86,6 +86,7 @@ npm run start:prod                    # node dist/app.mjs
 | `respond` | `{sessionId, serverRequestRpcId, payload}` — 审批 `{outcome}` / 提问 `{answer}` |
 | `workspace.list` / `workspace.create` | 工作区（DSH: workspace.*；目录需已存在） |
 | `model.list` / `model.select` | 模型目录 / 会话级选择 |
+| `session.permissionPresetList` / `session.permissionPresetSelect` | DSH 当前会话原生权限预设；只读 DSH 投影并只允许固定三档，完全访问需二次确认 |
 | `device.list` / `device.revoke` | 设备管理（吊销后令牌立即失效） |
 
 下行 `server-request` 推送：`session/event`（归一化 AgentEvent）、`approval/requested`（可应答）、`question/requested`（可应答）。

@@ -16,7 +16,7 @@
  */
 
 import type {
-  AgentAdapter, AgentEvent, AgentSessionRef, AdapterCapabilities, AdapterConfig,
+  AgentAdapter, AgentEvent, AgentSessionRef, AdapterCapabilities, AdapterConfig, SessionPermissionPresetState,
   AskUserQuestionItem, CreateSessionOpts, ModelRef, PromptPart, SessionState, WorkspaceTree, WorkspaceView,
 } from '../contract.ts';
 import { DshApiClient } from './client.ts';
@@ -47,7 +47,14 @@ interface PendingInteraction {
 interface Snapshot {
   records: DshSessionWireEvent[];
   hasMore: boolean;
+  projections?: Record<string, unknown>;
 }
+
+const SESSION_PERMISSION_PRESETS = [
+  { id: 'read-only', label: '只读', description: '只读权限，不允许修改工作区文件。' },
+  { id: 'workspace-write', label: '工作区写入', description: '允许在工作区内修改；需要审批的操作仍会请求确认。' },
+  { id: 'danger-full-access', label: '完全访问', description: '移除沙箱限制并跳过工具审批。' },
+] as const;
 
 /** 每个会话的流式增量连续性状态（与 DSH 官方 SessionAssistantStreamAccumulator 同规则） */
 interface StreamProgress {
@@ -119,6 +126,7 @@ export class DshAdapter implements AgentAdapter {
   private toolNames = new Map<string, string>();
   /** 每个会话的流式增量连续性状态（丢弃重复/乱序的 reasoning/text delta） */
   private streamProgress = new Map<string, StreamProgress>();
+  private permissionStates = new Map<string, SessionPermissionPresetState>();
 
   // ── 连接 ────────────────────────────────────────────────────────────
 
@@ -429,7 +437,16 @@ export class DshAdapter implements AgentAdapter {
     if (frame.type === 'snapshot') {
       const records = (frame.records ?? []).map((r) => r.event).filter(Boolean);
       f.cursor = typeof frame.cursor === 'number' ? frame.cursor : null;
-      f.snapshot = { records, hasMore: frame.hasMore === true };
+      f.snapshot = {
+        records,
+        hasMore: frame.hasMore === true,
+        projections: frame.projections?.values,
+      };
+      const permissions = sessionPermissionState(f.snapshot.projections?.permissions);
+      this.permissionStates.set(sessionId, permissions);
+      if (permissions.supported && permissions.currentValue !== null) {
+        this.emit(sessionId, { type: 'session/permissionPreset', permissionPresetId: permissions.currentValue });
+      }
       // 标题在 projections.values.title（0.1.5 投影键）——顺手补一次缓存
       const title = (frame.projections?.values as { title?: unknown } | undefined)?.title;
       if (typeof title === 'string' && title) this.sessionTitles.set(sessionId, title);
@@ -493,6 +510,15 @@ export class DshAdapter implements AgentAdapter {
   /** 一条会话事件 → 状态更新 + 归一化 AgentEvent 推送 */
   private onSessionEvent(sessionId: string, ev: DshSessionWireEvent): void {
     if (!ev || typeof ev !== 'object') return;
+    if (ev.type === 'permission/preset') {
+      const selected = (ev.data as { preset?: unknown } | undefined)?.preset;
+      const current = this.permissionStates.get(sessionId);
+      if (typeof selected === 'string' && current?.options.some((option) => option.id === selected && option.available)) {
+        const next = { ...current, currentValue: selected };
+        this.permissionStates.set(sessionId, next);
+        this.emit(sessionId, { type: 'session/permissionPreset', permissionPresetId: selected });
+      }
+    }
     if (ev.type === 'session/title') {
       const t = String((ev.data as { title?: unknown } | undefined)?.title ?? '');
       if (t) this.sessionTitles.set(sessionId, t);
@@ -795,6 +821,60 @@ export class DshAdapter implements AgentAdapter {
     if (!r.ok) throw toError(r.error.code, r.error.message);
   }
 
+  async sessionPermissionPresets(session: AgentSessionRef): Promise<SessionPermissionPresetState> {
+    const f = this.ensureFollower(session.backendSessionId, true);
+    const snapshot = await this.waitForSnapshot(f, 30_000);
+    const state = sessionPermissionState(snapshot.projections?.permissions);
+    this.permissionStates.set(session.backendSessionId, state);
+    return state;
+  }
+
+  async selectSessionPermissionPreset(
+    session: AgentSessionRef,
+    presetId: string,
+    confirmed: boolean,
+  ): Promise<SessionPermissionPresetState> {
+    if (!SESSION_PERMISSION_PRESETS.some((preset) => preset.id === presetId)) {
+      throw toError('bad-request', '不支持的 DSH 权限预设');
+    }
+    if (presetId === 'danger-full-access' && !confirmed) {
+      throw toError('permission-confirmation-required', '完全访问必须先在手机端二次确认');
+    }
+
+    const sessionId = session.backendSessionId;
+    const before = await this.sessionPermissionPresets(session);
+    if (!before.supported) throw toError('capability-missing', '当前 DSH 未提供会话权限预设投影');
+    if (!before.options.some((option) => option.id === presetId && option.available)) {
+      throw toError('capability-missing', '当前 DSH 会话未开放此权限预设');
+    }
+
+    const listed = await this.requireClient().call<{ name: string; description: string }[]>('commands/list', { agentId: sessionId });
+    if (!listed.ok) throw toError(listed.error.code, listed.error.message);
+    if (!Array.isArray(listed.value) || !listed.value.some((command) => command?.name === 'permission')) {
+      throw toError('capability-missing', '当前 DSH 未提供权限切换命令');
+    }
+
+    const executed = await this.requireClient().call<{
+      commandId: string;
+      result: { kind: 'success'; text?: string } | { kind: 'error'; text: string };
+    } | undefined>('commands/execute', {
+      agentId: sessionId,
+      line: `/permission ${presetId}`,
+      submittedAttachments: [],
+    });
+    if (!executed.ok) throw toError(executed.error.code, executed.error.message);
+    if (!executed.value) throw toError('dsh-command-unavailable', 'DSH 未执行权限切换命令');
+    if (executed.value.result?.kind !== 'success') {
+      throw toError('dsh-command-rejected', executed.value.result?.text ?? 'DSH 拒绝了权限切换');
+    }
+
+    const after = await this.sessionPermissionPresets(session);
+    if (after.currentValue !== presetId) {
+      throw toError('permission-sync-pending', 'DSH 尚未确认新的权限状态，请刷新后重试');
+    }
+    return after;
+  }
+
   async renameSession(session: AgentSessionRef, title: string): Promise<{ title: string }> {
     const r = await this.requireClient().call<{ title: string }>('session/rename', {
       request: { sessionId: session.backendSessionId, title },
@@ -809,6 +889,7 @@ export class DshAdapter implements AgentAdapter {
     this.listeners.clear();
     this.pending.clear();
     this.states.clear();
+    this.permissionStates.clear();
     for (const f of this.followers.values()) this.clearFollowerTimers(f);
     this.followers.clear();
     const mux = this.mux;
@@ -821,6 +902,23 @@ export class DshAdapter implements AgentAdapter {
 export function createDshAdapter(_cfg: AdapterConfig): AgentAdapter {
   return new DshAdapter();
 }
+
+function sessionPermissionState(value: unknown): SessionPermissionPresetState {
+  const projection = value && typeof value === 'object' ? value as { options?: unknown; currentValue?: unknown } : undefined;
+  const rawOptions = Array.isArray(projection?.options) ? projection.options : [];
+  const supported = !!projection && typeof projection.currentValue === 'string' && Array.isArray(projection.options);
+  const availableIds = new Set(rawOptions.flatMap((option) => {
+    if (!option || typeof option !== 'object') return [];
+    const id = (option as { value?: unknown }).value;
+    return typeof id === 'string' ? [id] : [];
+  }));
+  return {
+    supported,
+    currentValue: typeof projection?.currentValue === 'string' ? projection.currentValue : null,
+    options: SESSION_PERMISSION_PRESETS.map((preset) => ({ ...preset, available: supported && availableIds.has(preset.id) })),
+  };
+}
+
 // ── 归一化：DSH 会话事件 → AgentEvent ─────────────────────────────────
 
 /** 一条 session 事件 → AgentEvent[]（对齐 DSH SessionEvent 词汇；不含状态与推送） */

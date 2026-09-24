@@ -175,6 +175,10 @@ async function main(): Promise<void> {
   check('不支持原生权限菜单的后端明确拒绝', !r.ok && r.error?.code === 'capability-missing');
   r = await call('session.permissionSelect', { sessionId: g1, profileId: 'request-approval' });
   check('不支持原生权限选择的后端明确拒绝', !r.ok && r.error?.code === 'capability-missing');
+  r = await call('session.permissionPresetList', { sessionId: g1 });
+  check('非 DSH 后端不能读取 DSH 会话权限预设', !r.ok && r.error?.code === 'capability-missing');
+  r = await call('session.permissionPresetSelect', { sessionId: g1, presetId: 'danger-full-access', confirmed: true });
+  check('非 DSH 后端不能切换 DSH 会话权限预设', !r.ok && r.error?.code === 'capability-missing');
 
   // ── 7. 会话历史 ────────────────────────────────────────────────────
   r = await call('session.history', { sessionId: g1 });
