@@ -45,6 +45,8 @@ export type AgentEvent =
   | { type: 'question/requested'; questionRpcId: string; questions: AskUserQuestionItem[]; rpcId?: string }
   | { type: 'question/resolved'; questionRpcId: string; outcome: 'answered' | 'cancelled' }
   | { type: 'interaction/resolved'; rpcId: string }
+  | { type: 'session/settings'; model?: ModelRef; profileId?: string | null }
+  | { type: 'session/permissionPreset'; permissionPresetId: string }
   | { type: 'session/title'; title: string }
   | { type: 'error'; code: string; message: string }
   | { type: 'done' };
@@ -75,6 +77,22 @@ export interface AgentProfile {
   label: string;
   description: string;
   available: boolean;
+}
+
+/** DSH 会话级权限预设：选项必须来自该会话的 DSH permissions 投影。 */
+export interface SessionPermissionPresetOption {
+  id: 'read-only' | 'workspace-write' | 'danger-full-access';
+  label: string;
+  description: string;
+  available: boolean;
+}
+
+export interface SessionPermissionPresetState {
+  /** false 表示运行中的 DSH 没有提供 permissions 投影。 */
+  supported: boolean;
+  /** DSH 投影给出的实际值；`custom` 表示不匹配固定预设。 */
+  currentValue: string | null;
+  options: SessionPermissionPresetOption[];
 }
 
 /** 适配器能力声明（网关据此路由 workspace.* / model.* / respond） */
@@ -166,6 +184,10 @@ export interface AgentAdapter {
   /** Codex Desktop 的原生权限菜单；其它后端不提供此能力。 */
   permissionMenu?(session: AgentSessionRef, open: boolean): Promise<{ profileId?: string | null }>;
   selectPermission?(session: AgentSessionRef, profileId: string): Promise<{ profileId: string }>;
+  /** DSH 当前会话的原生权限预设，不同于 PC 定义的 AgentProfile。 */
+  sessionPermissionPresets?(session: AgentSessionRef): Promise<SessionPermissionPresetState>;
+  /** 只接受投影验证过的固定 DSH 预设；完全访问必须由调用方明确确认。 */
+  selectSessionPermissionPreset?(session: AgentSessionRef, presetId: string, confirmed: boolean): Promise<SessionPermissionPresetState>;
   /** 重命名会话（DSH：session.rename，标题以 session/title 事件持久化） */
   renameSession?(session: AgentSessionRef, title: string): Promise<{ title: string }>;
 

@@ -3,6 +3,7 @@
   "port": 3090,
   "dataDir": "./data",
   "webDir": "./web",
+  "webPush": null,
   "agentKey": "",
   "tunnel": {
     "enabled": false,

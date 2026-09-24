@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { StoredPushSubscription } from './push.ts';
 
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export const secret = () => randomBytes(32).toString('base64url');
@@ -17,6 +18,7 @@ export interface Device { id: string; secretHash: string; name: string; lastSeen
 export interface Account {
   id: string; key: string; remark: string; disabled: boolean; createdAt: number;
   pc?: Device; phone?: Device; counts: [number, number][];
+  pushSubscription?: StoredPushSubscription;
   countUncertainAt?: number;
 }
 interface Token { accountId: string; deviceId: string; kind: 'pc' | 'phone' }
@@ -87,7 +89,7 @@ export class AccountStore {
     const hash = digest(deviceSecret);
     if (a.pc && a.pc.secretHash !== hash) {
       if (!replace) throw new AccessError('replace-confirmation-required', 409);
-      this.revoke(a); delete a.pc; delete a.phone;
+      this.revoke(a); delete a.pc; delete a.phone; delete a.pushSubscription;
     }
     a.pc ??= { id: randomUUID(), secretHash: hash, name, lastSeen: this.now() };
     a.pc.name = name; a.pc.lastSeen = this.now();

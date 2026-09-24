@@ -1,6 +1,6 @@
 {
   "name": "batona-gateway",
-  "version": "0.3.2",
+  "version": "0.3.4",
   "private": true,
   "type": "module",
   "description": "Batona 多 Agent 远程接入网关",
@@ -10,21 +10,25 @@
   "scripts": {
     "start": "node src/app.ts",
     "start:prod": "node dist/app.mjs",
-    "build": "esbuild src/app.ts --bundle --platform=node --format=esm --outfile=dist/app.mjs --external:ws",
+    "build": "esbuild src/app.ts --bundle --platform=node --format=esm --outfile=dist/app.mjs --external:ws --external:web-push",
     "typecheck": "tsc --noEmit",
     "smoke": "node test/smoke.ts",
     "codex-offline": "node test/codex-offline.ts",
     "session-model": "node test/session-model.ts",
+    "dsh-permissions": "node test/dsh-permissions.ts",
     "tunnel-protocol": "node test/tunnel-protocol.ts",
     "tunnel": "node test/tunnel-e2e.ts",
-    "test:hosted": "node test/hosted-access.ts && node test/hosted-isolation.ts && node test/hosted-provision.ts && node test/dsh-authority.ts",
+    "test:hosted": "node test/hosted-access.ts && node test/hosted-isolation.ts && node test/hosted-provision.ts && node test/hosted-push.ts && node test/dsh-authority.ts",
+    "test:web-push-keys": "node test/init-web-push.ts",
     "test:tls": "node test/hosted-tls.ts"
   },
   "dependencies": {
+    "web-push": "3.6.7",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/web-push": "^3.6.4",
     "@types/ws": "^8.5.13",
     "esbuild": "^0.28.2",
     "typescript": "^5.6.0"

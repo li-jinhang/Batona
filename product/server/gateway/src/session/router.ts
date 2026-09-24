@@ -7,7 +7,7 @@
  */
 
 import type {
-  AgentAdapter, AgentEvent, AgentSessionRef, CreateSessionOpts, ModelRef, PromptPart, SessionState, WorkspaceTree, WorkspaceView,
+  AgentAdapter, AgentEvent, AgentSessionRef, CreateSessionOpts, ModelRef, PromptPart, SessionPermissionPresetState, SessionState, WorkspaceTree, WorkspaceView,
 } from '../adapter/contract.ts';
 import type { AdapterRegistry } from '../adapter/registry.ts';
 import { RpcId } from '../proto/envelope.ts';
@@ -54,6 +54,7 @@ export class SessionRouter {
     if (g) {
       const next = stateFromEvent(event);
       if (next) g.state = next;
+      if (event.type === 'session/settings' && event.model) g.model = event.model;
     }
     for (const s of this.sinks) s(gid, event);
   }
@@ -225,6 +226,20 @@ export class SessionRouter {
     const a = this.adapters.require(g.backend);
     if (!a.selectPermission) throw Object.assign(new Error('backend has no native permission control'), { code: 'capability-missing' });
     return a.selectPermission(refOf(g), profileId);
+  }
+
+  async sessionPermissionPresets(gatewaySessionId: string): Promise<SessionPermissionPresetState> {
+    const g = this.requireSession(gatewaySessionId);
+    const a = this.adapters.require(g.backend);
+    if (!a.sessionPermissionPresets) throw Object.assign(new Error('backend has no session permission presets'), { code: 'capability-missing' });
+    return a.sessionPermissionPresets(refOf(g));
+  }
+
+  async selectSessionPermissionPreset(gatewaySessionId: string, presetId: string, confirmed: boolean): Promise<SessionPermissionPresetState> {
+    const g = this.requireSession(gatewaySessionId);
+    const a = this.adapters.require(g.backend);
+    if (!a.selectSessionPermissionPreset) throw Object.assign(new Error('backend has no session permission preset control'), { code: 'capability-missing' });
+    return a.selectSessionPermissionPreset(refOf(g), presetId, confirmed);
   }
 
   async rename(backendSessionId: string, title: string, backendId?: string): Promise<{ title: string }> {

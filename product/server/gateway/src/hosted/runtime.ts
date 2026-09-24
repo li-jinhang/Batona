@@ -7,6 +7,7 @@ import { SessionRouter } from '../session/router.ts';
 import { GatewayWsServer } from '../server/ws.ts';
 import { TunnelServer } from '../tunnel/server.ts';
 import type { AccountStore } from './store.ts';
+import type { PushCategory } from './push.ts';
 
 /** One PC's private adapter/router/tunnel graph. No global ports, sessions or launch tokens. */
 export class PcRuntime {
@@ -28,7 +29,7 @@ export class PcRuntime {
       log: () => {},
     });
   }
-  async start(store: AccountStore, server: Server, mock: boolean) {
+  async start(store: AccountStore, server: Server, mock: boolean, onAttention?: (category: PushCategory) => void) {
     const ports = await this.tunnel.start();
     if (!ports.ok) throw new Error('private-tunnel-bind-failed');
     const [dsh, dir, codex] = ports.bound.map(x => 'http://' + x);
@@ -45,6 +46,7 @@ export class PcRuntime {
       listDevices: () => [], revokeDevice: () => false,
     }, this.registry, new SessionRouter(this.registry), {
       hosted: true, dirUrl: dir + '/list', accepted: () => store.count(this.accountId),
+      onAttention,
     });
     this.ws.attach(server);
   }
