@@ -221,11 +221,11 @@ export class SessionRouter {
     return a.permissionMenu(refOf(g), open);
   }
 
-  async selectPermission(gatewaySessionId: string, profileId: string): Promise<{ profileId: string }> {
+  async selectPermission(gatewaySessionId: string, profileId: string, confirmed = false): Promise<{ profileId: string }> {
     const g = this.requireSession(gatewaySessionId);
     const a = this.adapters.require(g.backend);
     if (!a.selectPermission) throw Object.assign(new Error('backend has no native permission control'), { code: 'capability-missing' });
-    return a.selectPermission(refOf(g), profileId);
+    return a.selectPermission(refOf(g), profileId, confirmed);
   }
 
   async sessionPermissionPresets(gatewaySessionId: string): Promise<SessionPermissionPresetState> {

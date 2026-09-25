@@ -183,7 +183,7 @@ export interface AgentAdapter {
   listPermissionProfiles?(): Promise<AgentProfile[]>;
   /** Codex Desktop 的原生权限菜单；其它后端不提供此能力。 */
   permissionMenu?(session: AgentSessionRef, open: boolean): Promise<{ profileId?: string | null }>;
-  selectPermission?(session: AgentSessionRef, profileId: string): Promise<{ profileId: string }>;
+  selectPermission?(session: AgentSessionRef, profileId: string, confirmed: boolean): Promise<{ profileId: string }>;
   /** DSH 当前会话的原生权限预设，不同于 PC 定义的 AgentProfile。 */
   sessionPermissionPresets?(session: AgentSessionRef): Promise<SessionPermissionPresetState>;
   /** 只接受投影验证过的固定 DSH 预设；完全访问必须由调用方明确确认。 */
