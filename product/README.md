@@ -1,6 +1,8 @@
 # Batona — 三端工程导航与共享契约
 
-当前联调组合为生产 Batona Gateway 0.3.2、本机 Batona PC 0.5.4 与 Batona Mobile 0.3.4（测试 AVD）。PC 0.5.5 共享连接测试包已构建但尚未切换运行；手机仍走原有 PC 路径。生产发布、迁移与回退先读 [托管接入运维](server/hosted-access-operations.md)，验收记录见 [实施证据](../docs/plans/hosted-access/evidence.md)。
+截至 2026-09-25，生产网关为 Batona Gateway 0.3.5（部署 commit `92417dd`）；本机运行 Batona PC 0.5.20，已复用 Codex Desktop 当前共享回环 WebSocket；PC 0.5.20 加入交接输出隔离、只读连接核验和现有共享连接复用，安装版与便携版已构建。测试 AVD `dsh_hosted_qa` 已覆盖安装 Batona Mobile 0.3.13。共享权限直接后台切换已构建并切换，手机及 Desktop 持有任务的下一轮执行仍待现场复测。生产发布、迁移与回退先读 [托管接入运维](server/hosted-access-operations.md)，验收记录见 [实施证据](../docs/plans/hosted-access/evidence.md)。
+
+PC 0.5.6 源码含并行 Codex 测试 profile：在 `product/pc/` 执行 `npm run start:codex-test` 会创建独立 `%APPDATA%\Batona PC Codex Test`、监听 3181/3182，并跳过 DSH。首次登录需使用独立测试账号，保留常规实例的授权和隧道。
 
 本次改名同时更新了 PC appId、Android applicationId、本地安全存储别名、配对 URI、账号密钥前缀和服务器运行标识。Batona PC 与 Batona Mobile 使用新的本地数据空间；2026-09-23 已完成服务器运行标识迁移并保留现有托管授权，迁移证据见运维记录。
 
@@ -50,7 +52,7 @@ Batona Mobile ── HTTPS / WSS ──▶ Batona Gateway ◀── WSS 隧道 �
 | 服务器 | TLS 后认证、设备管理、协议适配、会话路由、隧道服务端 | 执行 Agent/LLM/工具、主动连入用户内网 PC |
 
 - 公网只暴露反向代理后的 TLS 入口；网关监听 `127.0.0.1:3090`，DSH 只在 PC 回环地址运行。
-- 每台 PC 的隧道、适配器、会话路由与推送独立，服务器分配动态回环端口；PC 本机服务仍为 3080/3081/3082。仅使用自研 WSS。
+- 每台 PC 的隧道、适配器、会话路由与推送独立，服务器分配动态回环端口；PC 常规本机服务为 3080/3081/3082，Codex-only 测试 profile 使用 3181/3182。仅使用自研 WSS。
 - `trustedHosts` 仅是 DSH 的防重绑栅栏，不是认证；认证由独立的管理员密钥、账号接入密钥和 PC/手机设备授权承担，三者不可互用。
 
 ## 跨端绑定与连接契约
@@ -71,6 +73,8 @@ PC 登录并连通隧道后打开手机配对页，显示随机手动码和 `bat
 
 - 上行：`auth.hello`、`session.list/create/resume/prompt/cancel/history/rename`、`workspace.*`、`model.*`、`agent.profile.list`、`respond`；设备管理仅走 PC 的 `/api/access/*` REST。
 - 下行：`session/event`、`approval/requested`、`question/requested`。审批/提问必须用原始 `serverRequestRpcId` 经 `respond` 回答。
+- `session/event.payload.sessionId` 是网关会话 ID；`workspace.tree` 中的 `sessions[].sessionId` 是后端会话 ID。Android 须使用已恢复会话的 `backendSessionId` 映射状态，聊天事件仍按网关 ID 路由。Codex 的 `session/thinking` 来自实际推理事件，`session/reconnecting` 来自 App Server `error.willRetry`；只有后端提供次数时才带 `attempt/maxAttempts`。
+- `workspace.tree` 返回真实工作区 `items[]` 和可选的 `ungroupedSessions[]`。两者中的会话互斥，未分组集合不是工作区；旧客户端可忽略此字段。`model.select` 成功响应带后端确认后的 `model`，手机应核对模型和思考强度后再显示所选值。
 - 实验共享 Codex 审批另发 `interaction/resolved`，携带当前网关会话的 `requestRpcIds[]`；原生 Desktop 先处理时，手机只关闭编号匹配的待审批/提问卡。此事件不携带批准结果，也不表示已授权。
 - 任何字段、方法、事件或兼容策略变更都必须同步检查 Android、PC、服务器，并更新本文件与受影响端的 `AGENTS.md`。
 
@@ -78,13 +82,15 @@ PC 登录并连通隧道后打开手机配对页，显示随机手动码和 `bat
 
 - `session.create/resume/list` 的会话对象可携带 `model: { provider, model, reasoningEffort?, displayName? }`。该值来自后端会话快照，缺失表示尚未同步；手机打开或切换会话时刷新此值，不能沿用上一会话的选择或拿模型目录第一项冒充。旧客户端忽略可选字段，旧网关下新版手机显示“模型未同步”。
 
-- PC 的 `codex-bridge.js` 仅监听 `127.0.0.1:3082`，通过本机 Codex `app-server` 的 stdio JSON-RPC 工作；网关只能经既有隧道访问它。不能配置公网 listener，也不能把 App Server 原始帧、认证资料或未脱敏工具输出转给服务器。
+- PC 的 `codex-bridge.js` 仅绑定 loopback：常规实例监听 `127.0.0.1:3082`，隔离测试 profile 监听 `127.0.0.1:3182`；两者都经本机 Codex `app-server` 工作，网关按 PC 服务名与独立隧道路由访问。不能配置公网 listener，也不能把 App Server 原始帧、认证资料或未脱敏工具输出转给服务器。
 - Codex 会话与 DSH 会话是不同 backend；手机切换后只显示当前 backend 的工作区树。Codex 工作区按 PC 上会话的 `cwd` 分组；用户通过现有目录浏览服务选择任意本机目录，新建空工作区仅登记路径，不创建或删除磁盘目录。
-- Codex App Server 的 `thread/list` 发现桌面端已有任务，打开/历史浏览使用 `thread/read` 与 `thread/turns/list`，不取得第二个 writer。Desktop 持有任务的文本发送、模型/思考强度切换、权限菜单开合与权限选择经 PC 的原生窗口代理：先将 thread id 与唯一标题、最近完整轮次及原生窗口指纹绑定，再在操作前复核；失败时保留手机草稿或原设置。Batona 自建任务仍由其 app-server 写入。原生任务的审批/提问交互与运行中增量同步尚未接入；不能将历史可读或文本发送成功视为完整双向同步，也不能以 fork、抢锁或 `codex exec` 替代。详见 [ADR 0003](../docs/adr/0003-native-codex-window-control.md)。
-- 实验分支另提供**同一**回环 WebSocket app-server 的共享传输：Desktop 与 Batona 可同时订阅原生任务，显式本机开关下可直接提交文本和转发审批。其模型/权限设置界面同步、手机全链路和升级兼容尚未验收，当前安装版仍采用上一条的窗口代理，不能把共享传输当作已发布功能。详见 [共享传输探针](pc/tools/shared-transport-probe/README.md)。
-- 手机上的 `请求批准`、`帮我审批`、`完全访问` 是 PC 校验后的固定档；Batona 自建任务映射到允许的 App Server permission profile，Desktop 原生任务经窗口权限控件选择。原生“完全访问”若需要桌面确认，远程提交会拒绝，不能代用户确认。手机不能自定义底层权限。所有镜像事件先在 PC 脱敏，且只接受文本输入。
-- `session.permissionMenu`（`{sessionId,open}`）与 `session.permissionSelect`（`{sessionId,profileId}`）通过网关转至 PC 桥；返回 `{profileId}` 表示原生窗口确认的当前权限。手机弹窗立即展示，PC 菜单异步开合；原生界面验证失败时不把本地选择冒充为成功。模型及思考强度沿用 `model.select`。
+- 无法确认 `cwd` 的 Codex 会话在 PC 读回目录后仍为空时进入未分组集合；DSH 从未被工作区 `sessionIds` 关联的非归档会话进入同一集合。手机把它显示在真实工作区之后，可展开较早会话，但不提供工作区管理操作。
+- Codex App Server 的 `thread/list` 发现桌面端已有任务，打开/历史浏览使用 `thread/read` 与 `thread/turns/list`，不取得第二个 writer。未共享模式仍经已绑定原生窗口代理操作；失败时保留手机草稿或原设置。Batona 自建任务仍由其 app-server 写入。原生任务的审批/提问交互与运行中增量同步尚未接入；不能将历史可读或文本发送成功视为完整双向同步，也不能以 fork、抢锁或 `codex exec` 替代。详见 [ADR 0003](../docs/adr/0003-native-codex-window-control.md)。
+- 实验分支另提供**同一**回环 WebSocket app-server 的共享传输：Desktop 与 Batona 可同时订阅原生任务。本机显式开关下，模型/强度和权限档/审批策略分别通过单次 `thread/settings/update` 原子修改；目标任务由 `threadId` 指定，无需 Desktop 显示该任务。后台设置由匹配的 `thread/settings/updated` 或共享服务回读确认，再同步到手机。完全访问需手机二次确认。隔离任务实测后台权限改变了下一轮工作区外写入的执行结果；Desktop 持有任务的下一轮执行与标签刷新仍待现场验收。该设置接口是实验协议，共享写入默认关闭。详见 [共享传输探针](pc/tools/shared-transport-probe/README.md) 与 [ADR 0003](../docs/adr/0003-native-codex-window-control.md)。
+- 手机上的 `请求批准`、`帮我审批`、`完全访问` 是 PC 校验后的固定档；Batona 自建任务映射到允许的 App Server permission profile，共享模式下 Desktop 原生任务按 `threadId` 修改后台权限；未共享模式仍经窗口权限控件选择。手机选择“完全访问”须先二次确认，PC 仅在收到该确认标记后写入后台；确认失败不报告切换成功。手机不能自定义底层权限。所有镜像事件先在 PC 脱敏，且只接受文本输入。
+- `session.permissionMenu`（`{sessionId,open}`）与 `session.permissionSelect`（`{sessionId,profileId,confirmed}`）通过网关转至 PC 桥；共享模式从 `thread/resume` 读取当前权限，选择固定档后须由共享服务设置事件或回读确认后台档位和审批策略才返回 `{profileId}`。未共享模式由原生窗口确认。`full-access` 要求 `confirmed:true`，该值只由手机二次确认动作发出；旧客户端缺少标记时明确拒绝。模型与思考强度沿用 `model.select`。
 - DSH 的 `session.permissionPresetList` / `session.permissionPresetSelect` 独立于 Codex 权限档：按当前 DSH 会话读取 `permissions` 投影，只提供只读、工作区写入、完全访问三个固定预设。网关校验投影选项与 DSH `/permission` 命令后再提交，并读取新投影确认切换成功；没有投影或未开放的预设不可切换。完全访问要求 Android 二次确认，网关也拒绝缺少确认标记的请求。
+- DSH 的 `model.list` 按 `session/modelCatalog` 中每个模型实际支持的 `reasoning.efforts` 返回同一模型的强度变体；支持强度的模型通常提供 `off / low / high / max`，不支持的模型只返回一个无强度选项。Android 将模型与思考强度分开选择，二者都调用 `model.select`；网关通过 DSH `session/selectModel` 返回的 `selected` 核对模型及强度后才报告成功。
 - Codex 的 `session/settings` 会话事件携带模型/强度及可识别的权限档 ID；网关更新会话模型快照并把事件推送给手机。未知权限组合清除手机端旧档位，避免显示过期的权限状态。该事件不包含原始 `threadSettings`、工作目录或审批详情。
 - iOS PWA 的推送操作仅供已绑定手机使用：`POST /api/access/push-key` 与 `push-status` 读取配置，`push-subscribe` / `push-unsubscribe` 管理订阅；订阅在手机退出、解绑、电脑替换或账号禁用时清理。系统通知只包含 `approval`、`question`、`completed`、`failed` 类别，不包含会话正文。
 - 手机只在本地缓存每个工作区最近 5 个 Codex 会话和每个会话最多 200 条已脱敏历史；断网只能浏览、不可排队发送，注销或重新绑定会清空缓存。通知仅提示等待审批、等待回答、完成或失败，且不含对话、命令、路径或凭据。

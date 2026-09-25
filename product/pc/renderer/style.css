@@ -336,26 +336,35 @@ main {
   padding: 14px;
   display: flex;
   gap: 14px;
+  cursor: pointer;
+}
+.backend-card:hover {
+  border-color: #a5c8fa;
+  background: #f8fbff;
+}
+.backend-card:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
 }
 .backend-logo {
   height: 48px;
   width: 48px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: #f6f8fb;
+  border-radius: 8px;
+  overflow: hidden;
   flex: none;
 }
-.backend-logo .icon {
-  height: 27px;
-  width: 27px;
+.backend-logo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
-.backend-logo.dsh {
-  font-size: 30px;
-  font-weight: 800;
-  color: var(--blue);
-  background: #f4f9ff;
+.backend-logo.codex {
+  padding: 6px;
+  background: #fff;
+  border: 1px solid var(--border);
 }
 .backend-content {
   min-width: 0;
@@ -668,6 +677,9 @@ dialog .muted {
   letter-spacing: 4px;
   margin: 10px 0;
 }
+#btn-pair-copy {
+  margin: 0 0 16px;
+}
 #pair-pending {
   padding: 10px;
   background: var(--pale);
@@ -683,6 +695,50 @@ dialog .row {
   margin-top: 16px;
   font-size: 13px;
 }
+.control-panel {
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--pale);
+}
+.control-panel[hidden] { display: none; }
+.dsh-detail-buttons { display: flex; flex-wrap: wrap; gap: 10px; }
+#dsh-detail-result { margin: 10px 0 0; }
+.control-panel h3 { margin: 0 0 12px; font-size: 15px; }
+.control-options { display: grid; gap: 8px; }
+.control-option {
+  width: 100%;
+  min-height: 62px;
+  padding: 11px 13px;
+  justify-content: space-between;
+  text-align: left;
+  border: 1px solid #cbd9ed;
+  border-radius: 8px;
+  background: #fff;
+}
+.control-option:hover { background: #f8fbff; border-color: #83b2fa; }
+.control-option[aria-pressed="true"] { border-color: var(--blue); background: #f6faff; }
+.control-option-copy { display: grid; gap: 2px; }
+.control-option-copy strong { font-size: 14px; }
+.control-option-copy small { color: var(--muted); font-size: 12px; font-weight: 400; }
+.control-check {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: 50%;
+  background: var(--blue);
+  color: #fff;
+  opacity: 0;
+}
+.control-option[aria-pressed="true"] .control-check { opacity: 1; }
+.control-check .icon { width: 15px; height: 15px; stroke-width: 3; }
+#codex-control-result { margin-top: 10px; color: var(--green); }
+.restart-description { margin: 14px 0 20px; color: var(--muted); line-height: 1.75; }
+.restart-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.restart-actions button { min-width: 86px; }
 .toast {
   position: fixed;
   bottom: 25px;
@@ -735,9 +791,6 @@ dialog .row {
   .overview-grid {
     grid-template-columns: minmax(0, 1fr) 225px;
     gap: 10px;
-  }
-  .backend-logo {
-    display: none;
   }
   .backend-card {
     padding: 12px;

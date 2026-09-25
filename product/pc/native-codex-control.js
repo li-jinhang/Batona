@@ -4,7 +4,7 @@ const { execFile } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { promisify } = require('node:util');
-const { readNativeThreadExpectation } = require('./tools/native-codex-probe/native-thread-binding');
+const { readNativeThreadExpectation, readNativeThreadTitleExpectation } = require('./tools/native-codex-probe/native-thread-binding');
 
 const execFileAsync = promisify(execFile);
 
@@ -30,6 +30,11 @@ function controlError(code) {
   return Object.assign(new Error(code), { code });
 }
 
+function isStaleProcessError(error) {
+  return ['native-process-unverified', 'native-window-missing', 'native-session-mismatch'].includes(error?.code)
+    || error?.code === 'native-control-failed:process-lookup:ArgumentException';
+}
+
 function nativeExecutable() {
   return process.resourcesPath && process.versions.electron && !process.defaultApp
     ? path.join(process.resourcesPath, 'native-codex-bound-sender.exe')
@@ -44,6 +49,7 @@ class NativeCodexControl {
     this.run = run;
     this.verifiedProcessId = null;
     this.locating = null;
+    this.progressBindings = new Map();
   }
 
   async processId() {
@@ -73,20 +79,37 @@ class NativeCodexControl {
   }
 
   async boundInvoke(threadId, operation, extra = []) {
-    const processId = await this.processId();
-    const binding = await readNativeThreadExpectation({ threadId, client: this.appServer });
-    let result;
-    try { result = await this.invoke([
+    const binding = operation === 'set-permission'
+      ? await readNativeThreadTitleExpectation({ threadId, client: this.appServer })
+      : await readNativeThreadExpectation({ threadId, client: this.appServer });
+    const argsFor = (processId) => [
       operation, String(processId),
       Buffer.from(binding.title, 'utf8').toString('base64'),
-      binding.lastUserHash, binding.lastAssistantHash,
+      binding.lastUserHash || '-', binding.lastAssistantHash || '-',
       binding.titleHash, ...extra,
-    ]); } catch (error) {
-      if (['native-process-unverified', 'native-window-missing', 'native-session-mismatch'].includes(error.code))
-        this.verifiedProcessId = null;
-      throw error;
+    ];
+    try {
+      return await this.invoke(argsFor(await this.processId()));
+    } catch (error) {
+      if (operation === 'set-permission' && error?.code === 'native-task-identity-mismatch') {
+        // The set-permission binary reports this only before touching a UI
+        // control. A title can briefly disappear while Desktop redraws its
+        // permission dialog, so one delayed retry is safe and idempotent.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        return this.invoke(argsFor(await this.processId()));
+      }
+      if (!isStaleProcessError(error)) throw error;
+      // A cached Desktop PID can become invalid after Codex restarts. These
+      // errors happen before the controller interacts with the UI, so retrying
+      // once with a freshly verified signed window cannot duplicate a write.
+      this.verifiedProcessId = null;
+      try {
+        return await this.invoke(argsFor(await this.processId()));
+      } catch (retryError) {
+        if (isStaleProcessError(retryError)) this.verifiedProcessId = null;
+        throw retryError;
+      }
     }
-    return result;
   }
 
   async send(threadId, text, profileId) {
@@ -105,12 +128,24 @@ class NativeCodexControl {
     return result;
   }
 
+  async readProgress(threadId) {
+    let entry = this.progressBindings.get(threadId);
+    if (!entry || Date.now() - entry.checkedAt > 30_000) {
+      const binding = await readNativeThreadTitleExpectation({ threadId, client: this.appServer });
+      entry = { binding, checkedAt: Date.now() };
+      this.progressBindings.set(threadId, entry);
+    }
+    const { title, titleHash } = entry.binding;
+    return this.invoke(['status', String(await this.processId()),
+      Buffer.from(title, 'utf8').toString('base64'), '-', '-', titleHash]);
+  }
+
   async permissionMenu(threadId, open) {
     return this.boundInvoke(threadId, open ? 'open-permission' : 'close-permission');
   }
 
-  async setPermission(threadId, profileId) {
-    return this.boundInvoke(threadId, 'set-permission', [profileId]);
+  async setPermission(threadId, profileId, confirmedFullAccess = false) {
+    return this.boundInvoke(threadId, 'set-permission', [profileId, confirmedFullAccess ? 'confirmed' : 'unconfirmed']);
   }
 }
 

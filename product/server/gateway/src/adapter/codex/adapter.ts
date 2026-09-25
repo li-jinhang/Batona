@@ -110,10 +110,10 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   async workspaceTree(): Promise<WorkspaceTree> {
-    const result = await this.requireClient().get<{ items?: WorkspaceTree['items'] }>('/v1/workspaces');
+    const result = await this.requireClient().get<WorkspaceTree>('/v1/workspaces');
     const items = result.items ?? [];
     for (const item of items) this.workspacePaths.set(item.workspace.workspaceId, item.workspace.path);
-    return { items };
+    return { items, ungroupedSessions: result.ungroupedSessions ?? [] };
   }
 
   async listModels(): Promise<ModelRef[]> {
@@ -122,7 +122,11 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   async selectModel(session: AgentSessionRef, model: ModelRef): Promise<void> {
-    await this.requireClient().post(`/v1/sessions/${encodeURIComponent(session.backendSessionId)}/model`, { model });
+    const result = await this.requireClient().post<{ accepted?: boolean; model?: ModelRef }>(
+      `/v1/sessions/${encodeURIComponent(session.backendSessionId)}/model`, { model });
+    if (result.accepted !== true || result.model?.provider !== model.provider
+      || result.model.model !== model.model || result.model.reasoningEffort !== model.reasoningEffort)
+      throw Object.assign(new Error('Codex 后端模型与思考强度未确认'), { code: 'native-model-unconfirmed' });
   }
 
   async listPermissionProfiles(): Promise<AgentProfile[]> {
@@ -134,8 +138,8 @@ export class CodexAdapter implements AgentAdapter {
     return this.requireClient().post(`/v1/sessions/${encodeURIComponent(session.backendSessionId)}/permission-menu`, { open });
   }
 
-  async selectPermission(session: AgentSessionRef, profileId: string): Promise<{ profileId: string }> {
-    return this.requireClient().post(`/v1/sessions/${encodeURIComponent(session.backendSessionId)}/permission`, { profileId });
+  async selectPermission(session: AgentSessionRef, profileId: string, confirmed: boolean): Promise<{ profileId: string }> {
+    return this.requireClient().post(`/v1/sessions/${encodeURIComponent(session.backendSessionId)}/permission`, { profileId, confirmed });
   }
 
   async renameSession(session: AgentSessionRef, title: string): Promise<{ title: string }> {

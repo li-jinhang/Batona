@@ -24,11 +24,13 @@ This starts a second WebSocket app-server, connects both the probe and the
 Batona PC bridge to it, and checks Batona's `/healthz`, `/v1/sessions`,
 `/v1/models`, and `/v1/profiles`. It does not resume any thread, submit a turn,
 or attach the native Desktop. The listener and bridge stop when the script exits.
-After the native handoff, use `--attach ws://127.0.0.1:45678` instead: it joins
-the existing listener without spawning another server and performs the same
-read-only checks. OS process inspection is still required to confirm Desktop
-is one of that listener's clients. `--test-attach` exercises this mode against
-a temporary server and cleans it up; it does not attach Desktop.
+After the native handoff, use the `BATONA_SHARED_WS_URL` printed by `-Launch`
+with `--attach`: it joins the existing listener without spawning another server
+and performs the same read-only checks. The default is `ws://127.0.0.1:45678`;
+if that port has an unverified listener, `-Launch` chooses a free loopback port
+and prints the replacement URL. OS process inspection is still required to
+confirm Desktop is one of that listener's clients. `--test-attach` exercises
+this mode against a temporary server and cleans it up; it does not attach Desktop.
 Add `--thread <thread-id>` to verify Batona's session-open endpoint subscribes
 to that existing task's live notifications on the shared server. The probe
 still blocks prompt/model/permission writes.
@@ -111,14 +113,14 @@ still blocks prompt/model/permission writes.
 ## Decision gate
 
 Native attachment, bidirectional turn events, HTTP text submission, and
-approval broadcast are proven on local probes. Shared writes are still a
-local opt-in pilot. The remaining gates are native composer model/effort
-display, permission profile behavior, actual Android→gateway→PC delivery,
-and phone/Desktop approval race handling. Model and permission selection
-remain blocked in shared mode. Gateway 0.3.2 now contains the approval-resolution
-mapping and Android 0.3.4 is on the test AVD, but the running PC is still 0.5.4;
-the built 0.5.5 pilot has not been activated. The installed Android/PC pair
-still follows the previous UI Automation route.
+approval broadcast are proven on local probes. Source version 0.5.6 now routes
+shared model+effort and fixed permission profile changes through
+`thread/settings/update`, then waits for `thread/settings/updated`; shared writes
+remain a local opt-in. The remaining gates are native composer visual
+confirmation, permission profile behavior on a Desktop-owned task, actual
+Android→gateway→PC delivery, and phone/Desktop approval race handling. These
+new direct settings routes have not yet been exercised from the installed
+Batona PC/Android pair. Production Gateway remains 0.3.2; gateway source is 0.3.3 and Android source is 0.3.7.
 
 The following scripts require an explicit loopback URL and, for native turns,
 the designated task UUID. They do not install or deploy Batona:
@@ -131,8 +133,10 @@ node product/pc/tools/shared-transport-probe/bridge-pilot.cjs --attach ws://127.
 
 The [handoff script](native-handoff.ps1) provides a read-only status check:
 
+It uses the Windows PowerShell 5.1 included with Windows; PowerShell 7 is not required.
+
 ```powershell
-pwsh -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1 -Status
+powershell.exe -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1 -Status
 ```
 
 After saving work and quitting Codex Desktop, run `-Launch` from an external
@@ -141,21 +145,28 @@ available, even if Desktop's PID has changed. Otherwise it starts a matching
 CLI server, waits for `/readyz`, and starts packaged Desktop with
 `CODEX_APP_SERVER_WS_URL` in **its process environment**. It waits for the new
 Desktop process to establish a connection to that listener before reporting
-success. It refuses to launch while Desktop is running, never terminates it,
-and refuses to attach to a port owned by an unknown process. The ordinary
-Codex shortcut does not inherit this temporary environment setting; use
-`-Launch` for each shared-mode Desktop start. `-Stop` is only needed when
+success. It refuses to launch while Desktop is running and never terminates it.
+It will not attach to an unknown listener; if the default port is occupied, it
+selects a free loopback port instead. The ordinary Codex shortcut does not
+inherit this temporary environment setting; use `-Launch` for each shared-mode
+Desktop start. `-Stop` is only needed when
 ending the experiment or replacing the server after a Codex update, and
 requires Desktop to be closed. The script does not set persistent environment
 variables.
 
+The PC confirmation dialog uses `-Restart`: it checks the installed Desktop
+process, requests a normal close, waits up to 15 seconds, then ends only the
+same verified root process if it remains running. It verifies Desktop has exited
+before using the shared server launch path. Save work before confirming.
+
 ```powershell
-pwsh -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1 -Launch
+powershell.exe -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1 -Launch
 # After Desktop opens, from this repository root:
-node product/pc/tools/shared-transport-probe/probe.cjs --attach ws://127.0.0.1:45678
+$sharedUrl = 'ws://127.0.0.1:45678' # replace with the BATONA_SHARED_WS_URL printed by -Launch
+node product/pc/tools/shared-transport-probe/probe.cjs --attach $sharedUrl
 # On the next Desktop restart, quit it and run -Launch again; the same verified
 # listener is reused. When finished with the experiment, quit Desktop first:
-pwsh -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1 -Stop
+powershell.exe -NoProfile -File product/pc/tools/shared-transport-probe/native-handoff.ps1 -Stop
 ```
 
 For Batona's second connection, a newly built PC client must start with

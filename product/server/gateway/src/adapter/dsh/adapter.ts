@@ -786,15 +786,22 @@ export class DshAdapter implements AgentAdapter {
   async workspaceTree(): Promise<WorkspaceTree> {
     const [wslist, seslist] = await Promise.all([this.listWorkspaces(), this.listSessions()]);
     const byId = new Map(seslist.map((s) => [s.backendSessionId, s]));
+    const assigned = new Set<string>();
     const items = wslist.map((w) => ({
       workspace: { workspaceId: w.workspaceId, path: w.path, title: w.title, createdAt: w.createdAt },
       sessions: w.sessionIds.flatMap((id) => {
         if (this.archivedSessions.has(id)) return [];   // 归档会话：从工作区树隐藏
         const s = byId.get(id);
-        return s ? [{ sessionId: id, title: s.title, state: s.state, updatedAt: s.createdAt }] : [];
+        if (!s || assigned.has(id)) return [];
+        assigned.add(id);
+        return [{ sessionId: id, title: s.title, state: s.state, updatedAt: s.createdAt }];
       }),
     }));
-    return { items };
+    const ungroupedSessions = seslist.filter((s) => !assigned.has(s.backendSessionId)
+      && !this.archivedSessions.has(s.backendSessionId))
+      .map((s) => ({ sessionId: s.backendSessionId, title: s.title, state: s.state, updatedAt: s.createdAt }))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    return { items, ungroupedSessions };
   }
 
   async listModels(): Promise<ModelRef[]> {
@@ -803,7 +810,15 @@ export class DshAdapter implements AgentAdapter {
     const out: ModelRef[] = [];
     for (const g of r.value.groups ?? []) {
       for (const m of g.models ?? []) {
-        out.push({ provider: g.id, model: m.id, displayName: m.name, reasoningEffort: m.reasoning?.defaultEffort });
+        const available = [...new Set((m.reasoning?.efforts ?? []).map((effort) => effort.id).filter(Boolean))];
+        if (available.length === 0) {
+          out.push({ provider: g.id, model: m.id, displayName: m.name, reasoningEffort: m.reasoning?.defaultEffort });
+          continue;
+        }
+        const defaultEffort = m.reasoning?.defaultEffort;
+        const ordered = defaultEffort && available.includes(defaultEffort)
+          ? [defaultEffort, ...available.filter((effort) => effort !== defaultEffort)] : available;
+        for (const reasoningEffort of ordered) out.push({ provider: g.id, model: m.id, displayName: m.name, reasoningEffort });
       }
     }
     return out;
@@ -819,6 +834,11 @@ export class DshAdapter implements AgentAdapter {
       },
     });
     if (!r.ok) throw toError(r.error.code, r.error.message);
+    const selected = r.value.selected;
+    if (selected?.provider !== model.provider || selected?.model !== model.model ||
+        (model.reasoningEffort != null && selected.reasoningEffort !== model.reasoningEffort)) {
+      throw toError('model-select-unconfirmed', 'DSH 未确认所选模型与思考强度');
+    }
   }
 
   async sessionPermissionPresets(session: AgentSessionRef): Promise<SessionPermissionPresetState> {

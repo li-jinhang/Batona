@@ -233,9 +233,9 @@ class GatewayClient(
         runCatching { call("workspace.list", backendPayload(backend)).let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(WorkspaceListResult.serializer(), r.value!!).items else emptyList() } }
             .getOrElse { emptyList() }
 
-    suspend fun workspaceTree(backend: String? = null): List<WorkspaceNode> =
+    suspend fun workspaceTree(backend: String? = null): WorktreeResult =
         json.decodeFromJsonElement(WorktreeResult.serializer(),
-            call("workspace.tree", backendPayload(backend)).requireValue()).items
+            call("workspace.tree", backendPayload(backend)).requireValue())
 
     suspend fun workspaceDelete(workspaceId: String, backend: String? = null) =
         call("workspace.delete", buildJsonObject { put("workspaceId", workspaceId); backend?.let { put("backend", it) } })
@@ -288,9 +288,20 @@ class GatewayClient(
         call("session.permissionMenu", buildJsonObject { put("sessionId", sessionId); put("open", open) })
             .let { json.decodeFromJsonElement(PermissionMenuState.serializer(), it.requireValue()) }
 
-    suspend fun permissionSelect(sessionId: String, profileId: String): PermissionMenuState =
-        call("session.permissionSelect", buildJsonObject { put("sessionId", sessionId); put("profileId", profileId) })
+    suspend fun permissionSelect(sessionId: String, profileId: String, confirmed: Boolean = false): PermissionMenuState =
+        call("session.permissionSelect", buildJsonObject {
+            put("sessionId", sessionId); put("profileId", profileId); put("confirmed", confirmed)
+        })
             .let { json.decodeFromJsonElement(PermissionMenuState.serializer(), it.requireValue()) }
+
+    suspend fun sessionPermissionPresetList(sessionId: String): SessionPermissionPresetState =
+        call("session.permissionPresetList", buildJsonObject { put("sessionId", sessionId) })
+            .let { json.decodeFromJsonElement(SessionPermissionPresetState.serializer(), it.requireValue()) }
+
+    suspend fun sessionPermissionPresetSelect(sessionId: String, presetId: String, confirmed: Boolean): SessionPermissionPresetState =
+        call("session.permissionPresetSelect", buildJsonObject {
+            put("sessionId", sessionId); put("presetId", presetId); put("confirmed", confirmed)
+        }).let { json.decodeFromJsonElement(SessionPermissionPresetState.serializer(), it.requireValue()) }
 
     suspend fun deviceList(): List<DeviceInfo> =
         runCatching { call("device.list").let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(DeviceListResult.serializer(), r.value!!).items else emptyList() } }

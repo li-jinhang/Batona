@@ -6,6 +6,11 @@ function commandExists(command) {
   return spawnSync('where.exe', [command], { stdio: 'ignore', windowsHide: true }).status === 0;
 }
 
+function hasNodeRuntime(run = spawnSync) {
+  const result = run('node.exe', ['--version'], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+  return result.status === 0 && /^v\d+\.\d+\.\d+/.test(String(result.stdout || '').trim());
+}
+
 /**
  * 确定 DSH 启动器。
  *
@@ -41,4 +46,4 @@ function createDshOutputParser(onToken, onLine) {
   };
 }
 
-module.exports = { resolveDshLauncher, isDshAuthenticated, createDshOutputParser };
+module.exports = { resolveDshLauncher, hasNodeRuntime, isDshAuthenticated, createDshOutputParser };

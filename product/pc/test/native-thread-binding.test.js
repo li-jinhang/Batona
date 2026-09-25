@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { verifyNativeThreadBinding, fingerprint } = require('../tools/native-codex-probe/native-thread-binding');
+const { verifyNativeThreadBinding, readNativeThreadTitleExpectation, fingerprint } = require('../tools/native-codex-probe/native-thread-binding');
 
 const threadId = 'thread-a';
 const title = '运行测试';
@@ -50,6 +50,11 @@ async function rejects(code, options, observed = observation) {
   });
   assert.equal(bound.threadId, threadId);
   assert.equal(bound.windowHandle, observation.windowHandle);
+  const titleBound = await readNativeThreadTitleExpectation({ threadId, client: clientFor({ turnItems: [] }) });
+  assert.equal(titleBound.titleHash, fingerprint(title));
+  await assert.rejects(readNativeThreadTitleExpectation({ threadId,
+    client: clientFor({ list: [{ id: threadId, name: title }, { id: 'other', name: title }] }),
+  }), (error) => error.code === 'native-task-ambiguous');
   await rejects('native-task-ambiguous', { list: [{ id: threadId, name: title }, { id: 'thread-b', name: title }] });
   await rejects('native-task-ambiguous', { secondPage: true });
   await rejects('native-task-not-listed', { list: [{ id: 'other', name: '别的任务' }] });

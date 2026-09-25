@@ -55,6 +55,11 @@ data class AgentEvent(
     val code: String? = null,
     val message: String? = null,
     val reasoning: String? = null,
+    val model: ModelRef? = null,
+    val profileId: String? = null,
+    val permissionPresetId: String? = null,
+    val attempt: Int? = null,
+    val maxAttempts: Int? = null,
 )
 
 @Serializable
@@ -82,7 +87,8 @@ data class WorkspaceCreateResult(val workspace: WorkspaceView? = null, val creat
 
 /** 模型 */
 @Serializable
-data class ModelRef(val provider: String, val model: String, val reasoningEffort: String? = null, val displayName: String? = null)
+data class ModelRef(val provider: String, val model: String, val reasoningEffort: String? = null, val displayName: String? = null,
+    val defaultReasoningEffort: String? = null)
 
 @Serializable
 data class ModelListResult(val items: List<ModelRef> = emptyList())
@@ -97,6 +103,22 @@ data class AgentProfileListResult(val items: List<AgentProfile> = emptyList())
 @Serializable
 data class PermissionMenuState(val profileId: String? = null)
 
+/** DSH 当前会话的原生权限预设；available 由 DSH permissions 投影验证。 */
+@Serializable
+data class SessionPermissionPresetOption(
+    val id: String,
+    val label: String,
+    val description: String,
+    val available: Boolean = false,
+)
+
+@Serializable
+data class SessionPermissionPresetState(
+    val supported: Boolean = false,
+    val currentValue: String? = null,
+    val options: List<SessionPermissionPresetOption> = emptyList(),
+)
+
 /** 设备 */
 @Serializable
 data class DeviceInfo(val deviceId: String, val name: String, val registeredAt: Long, val revoked: Boolean)
@@ -110,7 +132,7 @@ data class HistoryResult(val events: List<AgentEvent> = emptyList())
 
 /** 工作区树（工作区 → 会话层级） */
 @Serializable
-data class WorktreeResult(val items: List<WorkspaceNode> = emptyList())
+data class WorktreeResult(val items: List<WorkspaceNode> = emptyList(), val ungroupedSessions: List<SessionNode> = emptyList())
 
 /** 目录浏览结果：path 当前目录；roots 盘符根（path 为空时）；dirs 子目录（path 非空时） */
 @Serializable
@@ -134,4 +156,5 @@ data class CodexMirrorCache(
     val worktree: List<WorkspaceNode> = emptyList(),
     val histories: Map<String, List<AgentEvent>> = emptyMap(),
     val savedAt: Long = 0,
+    val ungroupedSessions: List<SessionNode> = emptyList(),
 )

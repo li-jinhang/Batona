@@ -1,10 +1,15 @@
 'use strict';
 const assert = require('node:assert/strict');
-const { classifySoftware } = require('../software-status');
+const { execFileSync } = require('node:child_process');
+const { classifySoftware, sharedDesktopPathPattern } = require('../software-status');
 assert.deepEqual(classifySoftware([]), { dshProcess: false, codexDesktop: false });
 assert.equal(classifySoftware([{ ExecutablePath: 'C:\\OpenAI\\Codex\\bin\\version\\codex.exe', CommandLine: 'codex.exe app-server' }]).codexDesktop, false);
 assert.equal(classifySoftware([{ ExecutablePath: 'C:\\WindowsApps\\OpenAI.Codex_26_x64__abc\\app\\ChatGPT.exe' }]).codexDesktop, true);
 assert.equal(classifySoftware([{ ExecutablePath: 'C:\\WindowsApps\\OpenAI.ChatGPT_26_x64__abc\\app\\ChatGPT.exe' }]).codexDesktop, false);
 assert.equal(classifySoftware([{ CommandLine: 'node "C:\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" web' }]).dshProcess, true);
 assert.equal(classifySoftware([{ CommandLine: 'node other-server.js --port 3080' }]).dshProcess, false);
+if (process.platform === 'win32') {
+  const command = `$path = 'C:\\WindowsApps\\OpenAI.Codex_26_x64__abc\\app\\ChatGPT.exe'; [bool]($path -match '${sharedDesktopPathPattern}')`;
+  assert.equal(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' }).trim(), 'True');
+}
 console.log('PASS software status distinguishes DSH, Codex Desktop and bridge processes');

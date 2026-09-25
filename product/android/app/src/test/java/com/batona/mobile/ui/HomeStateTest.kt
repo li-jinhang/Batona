@@ -1,6 +1,7 @@
 package com.batona.mobile.ui
 
 import com.batona.mobile.data.ModelRef
+import com.batona.mobile.data.AgentEvent
 import com.batona.mobile.data.ServerRequest
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -12,11 +13,190 @@ import org.junit.Test
 import kotlinx.coroutines.runBlocking
 import com.batona.mobile.data.GatewayFailure
 import com.batona.mobile.data.GatewaySession
+import com.batona.mobile.data.WorkspaceMini
+import com.batona.mobile.data.WorkspaceNode
+import com.batona.mobile.data.SessionNode
 import com.batona.mobile.data.RpcError
 import com.batona.mobile.data.RpcResult
+import com.batona.mobile.data.SessionPermissionPresetOption
+import com.batona.mobile.data.SessionPermissionPresetState
 import com.batona.mobile.data.requireValue
 
 class HomeStateTest {
+    @Test fun gatewayEventsUpdateBackendSessionAndProgressOnlyForCurrentChat() {
+        val state = HomeState("codex").apply {
+            currentId = "gateway-one"
+            currentBackendSessionId = "thread-one"
+            gatewaySessionIds.addAll(listOf("gateway-one", "gateway-two"))
+            backendSessionByGateway["gateway-one"] = "thread-one"
+            backendSessionByGateway["gateway-two"] = "thread-two"
+            worktree.add(WorkspaceNode(WorkspaceMini("ws", "C:/repo", "Repo", ""),
+                listOf(SessionNode("thread-one"), SessionNode("thread-two"))))
+        }
+        state.handlePush(event("gateway-one", "turn/start"))
+        assertEquals("running", state.worktree[0].sessions[0].state)
+        assertEquals("running", state.progress)
+        state.handlePush(event("gateway-two", "turn/end"))
+        assertEquals("done", state.worktree[0].sessions[1].state)
+        assertEquals("running", state.progress)
+        state.handlePush(event("gateway-one", "session/thinking"))
+        assertEquals("thinking", state.progress)
+        state.handlePush(event("gateway-one", "session/reconnecting"))
+        assertEquals("reconnecting", state.progress)
+        state.handlePush(ServerRequest(rpcId = "retry", method = "session/event", payload = buildJsonObject {
+            put("sessionId", "gateway-one")
+            putJsonObject("event") { put("type", "session/reconnecting"); put("attempt", 2); put("maxAttempts", 5) }
+        }))
+        assertEquals("reconnecting:2/5", state.progress)
+        state.handlePush(event("gateway-one", "turn/end"))
+        assertNull(state.progress)
+        assertEquals("done", state.worktree[0].sessions[0].state)
+    }
+    @Test fun consecutiveReasoningAndToolsBecomeOneExpandableProcessUntilVisibleReply() {
+        val items = conversationItems(listOf(
+            ChatLine(1, "assistant", reasoning = "先定位文件"),
+            ChatLine(2, "tool", "读取文件", "read", toolPhase = "call"),
+            ChatLine(3, "tool", "读取完成", "read", toolPhase = "result"),
+            ChatLine(4, "assistant", "找到原因。", reasoning = "核对结果"),
+            ChatLine(5, "tool", "运行测试", "test", toolPhase = "call"),
+            ChatLine(6, "user", "继续"),
+        ))
+        assertEquals(listOf("analysis-1", "message-4", "analysis-5", "message-6"), items.map { it.key })
+        val first = items[0] as ConversationItem.Analysis
+        assertEquals(listOf("思考过程", "工具调用 · read", "工具结果 · read", "思考过程"), first.entries.map { it.label })
+        assertEquals("找到原因。", (items[1] as ConversationItem.Message).line.text)
+        assertEquals("", (items[1] as ConversationItem.Message).line.reasoning)
+    }
+
+    @Test fun historySkeletonDoesNotSplitAnalysisProcess() {
+        val state = HomeState("dsh")
+        state.replaceHistory(listOf(
+            AgentEvent("assistant/message", reasoning = "检查实现"),
+            AgentEvent("step/end"),
+            AgentEvent("tool/call", toolName = "read"),
+            AgentEvent("tool/result", toolName = "read", summary = "完成"),
+            AgentEvent("assistant/message", text = "已完成"),
+        ))
+        val items = conversationItems(state.lines)
+        assertEquals(2, items.size)
+        assertEquals(3, (items[0] as ConversationItem.Analysis).entries.size)
+        assertEquals("已完成", (items[1] as ConversationItem.Message).line.text)
+    }
+
+    @Test fun changingCodexModelKeepsCurrentEffort() {
+        val state = HomeState("codex")
+        state.selectedModel = ModelRef("openai", "first", "high")
+        val choices = listOf(ModelRef("openai", "second", "low"), ModelRef("openai", "second", "medium"), ModelRef("openai", "second", "high"))
+        assertEquals("high", state.modelChoice(choices)?.reasoningEffort)
+        assertEquals("low", state.modelChoice(choices.dropLast(1))?.reasoningEffort)
+        state.selectedModel = null
+        assertEquals("low", state.modelChoice(choices)?.reasoningEffort)
+        val withDefault = choices.map { it.copy(defaultReasoningEffort = "medium") }
+        assertEquals("medium", state.modelChoice(withDefault)?.reasoningEffort)
+    }
+
+    @Test fun modelSelectionNeedsConfirmedPair() {
+        val requested = ModelRef("openai", "gpt-test", "medium")
+        val confirmed: RpcResult<kotlinx.serialization.json.JsonElement> = RpcResult(ok = true, value = buildJsonObject {
+            putJsonObject("model") { put("provider", "openai"); put("model", "gpt-test"); put("reasoningEffort", "medium") }
+        })
+        assertEquals(requested.reasoningEffort, confirmedModelSelection(confirmed, requested).reasoningEffort)
+        assertThrows(GatewayFailure::class.java) {
+            confirmedModelSelection(RpcResult<kotlinx.serialization.json.JsonElement>(ok = true, value = buildJsonObject { put("accepted", true) }), requested)
+        }
+    }
+
+    @Test fun changingDshModelKeepsEffortWhenSupportedAndUsesCatalogDefaultOtherwise() {
+        val state = HomeState("dsh")
+        state.selectedModel = ModelRef("dsh", "first", "high")
+        val choices = listOf(ModelRef("dsh", "second", "off"), ModelRef("dsh", "second", "high"))
+        assertEquals("high", state.modelChoice(choices)?.reasoningEffort)
+        assertEquals("off", state.modelChoice(choices.take(1))?.reasoningEffort)
+    }
+
+    @Test fun codexSendAppearsImmediatelyAndFailureRestoresDraft() {
+        val state = HomeState("codex").apply { currentId = "session"; input = "hello" }
+        val lineId = state.beginSend("session")
+        assertNotNull(lineId)
+        assertEquals("hello", state.lines.last().text)
+        assertEquals("", state.input)
+        state.failSend("session", lineId!!)
+        assertTrue(state.lines.isEmpty())
+        assertEquals("hello", state.input)
+    }
+
+    @Test fun oldSendFailureCannotClearNewSessionProgress() {
+        val state = HomeState("codex").apply { currentId = "old"; input = "old request" }
+        val oldLine = state.beginSend("old")!!
+        state.currentId = "new"
+        state.clearSessionActivity()
+        state.input = "new request"
+        val newLine = state.beginSend("new")!!
+        state.progress = "thinking"
+        state.failSend("old", oldLine)
+        state.finishSend("old", oldLine)
+        assertEquals("thinking", state.progress)
+        assertTrue(state.busy)
+        assertTrue(state.sending)
+        state.finishSend("new", newLine)
+        assertFalse(state.busy)
+    }
+
+    @Test fun newCodexHistoryArrivesWithoutReopeningAndDoesNotDuplicatePush() {
+        val state = HomeState("codex").apply { currentId = "session" }
+        state.replaceHistory(listOf(AgentEvent("user/message", text = "hello")))
+        state.appendEvent(AgentEvent("assistant/message", text = "reply"))
+        state.reconcileHistory(listOf(AgentEvent("user/message", text = "hello"), AgentEvent("assistant/message", text = "reply")))
+        assertEquals(listOf("hello", "reply"), state.lines.map { it.text })
+    }
+
+    @Test fun historyReconcileDoesNotDuplicateAlreadyPushedTurn() {
+        val state = HomeState("codex").apply { currentId = "session" }
+        state.replaceHistory(emptyList())
+        state.appendEvent(AgentEvent("user/message", text = "hello"))
+        state.appendEvent(AgentEvent("assistant/message", text = "reply"))
+        state.reconcileHistory(listOf(AgentEvent("user/message", text = "hello"), AgentEvent("assistant/message", text = "reply")))
+        assertEquals(listOf("hello", "reply"), state.lines.map { it.text })
+    }
+
+    @Test fun initialHistoryDoesNotErasePendingSend() {
+        val state = HomeState("codex").apply { currentId = "session"; input = "hello" }
+        val lineId = state.beginSend("session")!!
+        state.finishSend("session", lineId)
+        state.replaceHistory(emptyList())
+        assertEquals(listOf("hello"), state.lines.map { it.text })
+        state.reconcileHistory(listOf(AgentEvent("user/message", text = "hello"), AgentEvent("assistant/message", text = "reply")))
+        assertEquals(listOf("hello", "reply"), state.lines.map { it.text })
+    }
+
+    @Test fun lateEchoAfterHistoryDoesNotDuplicateOptimisticUserMessage() {
+        val state = HomeState("codex").apply { currentId = "session"; input = "hello" }
+        val lineId = state.beginSend("session")!!
+        state.replaceHistory(listOf(AgentEvent("user/message", text = "hello"), AgentEvent("assistant/message", text = "reply")))
+        state.finishSend("session", lineId)
+        state.appendEvent(AgentEvent("user/message", text = "hello"))
+        assertEquals(1, state.lines.count { it.kind == "user" && it.text == "hello" })
+    }
+
+    @Test fun sendingSameTextTwiceStillShowsBothTurns() {
+        val state = HomeState("codex").apply { currentId = "session"; input = "hello" }
+        val first = state.beginSend("session")!!
+        state.appendEvent(AgentEvent("user/message", text = "hello"))
+        state.finishSend("session", first)
+        state.input = "hello"
+        val second = state.beginSend("session")!!
+        state.appendEvent(AgentEvent("user/message", text = "hello"))
+        state.finishSend("session", second)
+        assertEquals(2, state.lines.count { it.kind == "user" && it.text == "hello" })
+    }
+
+    @Test fun interveningStatusDoesNotMakeDshEchoDuplicateOptimisticUserMessage() {
+        val state = HomeState("dsh").apply { currentId = "session"; input = "hello" }
+        state.beginSend("session")
+        state.appendEvent(AgentEvent("tool/call", toolName = "demo"))
+        state.appendEvent(AgentEvent("user/message", text = "hello"))
+        assertEquals(1, state.lines.count { it.kind == "user" && it.text == "hello" })
+    }
     @Test fun openingExistingSessionUsesReportedModelAndClearsPreviousSelection() = runBlocking {
         val state = HomeState("codex")
         state.selectedModel = ModelRef("openai", "other-session-model")
@@ -88,6 +268,27 @@ class HomeStateTest {
         assertEquals("Codex title", codex.currentTitle)
         assertEquals(0, dshRefreshes)
         assertEquals(1, codexRefreshes)
+    }
+
+    @Test fun dshPermissionPresetPushUpdatesCurrentSessionState() {
+        val state = HomeState("dsh").apply {
+            currentId = "gateway-dsh"
+            dshPermissionBySession[currentId!!] = SessionPermissionPresetState(
+                supported = true,
+                currentValue = "read-only",
+                options = listOf(SessionPermissionPresetOption("read-only", "只读", "", true)),
+            )
+        }
+        val frame = ServerRequest(rpcId = "event-1", method = "session/event", payload = buildJsonObject {
+            put("sessionId", "gateway-dsh")
+            putJsonObject("event") {
+                put("type", "session/permissionPreset")
+                put("permissionPresetId", "workspace-write")
+            }
+        })
+        state.handlePush(frame)
+        assertEquals("workspace-write", state.dshPermissionBySession["gateway-dsh"]?.currentValue)
+        assertTrue(state.lines.isEmpty())
     }
 
     @Test fun previouslyOpenedSessionNotifiesOnceEvenAfterReturningToList() {

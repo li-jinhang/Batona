@@ -7,12 +7,15 @@
 ## 当前实现
 
 - 网关核心位于 `gateway/`：Node.js ESM + 原生 TypeScript 源码，生产构建为 `gateway/dist/app.mjs`；Node 基线为 18+。
+- DSH `model.list` 应逐项转发模型目录中的 `reasoning.efforts`，`model.select` 仅在 `session/selectModel` 返回的模型和强度与请求一致时确认；不要把目录默认强度当成全部可选档位。
 - 托管入口/加密账号库/按 PC 隔离运行时在 `gateway/src/hosted/`，共享 WS 在 `gateway/src/server/`；旧 `gateway/src/auth/` 仅供旧基线测试，生产 App 不挂载它，会话路由在 `gateway/src/session/`，DSH、Codex 与 mock 适配器在 `gateway/src/adapter/`。
 - 内置 WSS 隧道服务端在 `gateway/src/tunnel/`；它是 PC 出站隧道的对端，不依赖对公网开放 DSH 端口。
 - `install.sh` 负责首次安装与运行时配置，`deploy.sh` 负责 Git 拉取、构建、健康检查、失败回滚；两者必须来自同一提交。
 - 持久配置在 `/etc/batona-gateway`，数据与部署状态在 `/var/lib/batona-gateway`，运行应用在 `/opt/batona-gateway/app`；更新时不得误删配置或数据。
 
 ## 托管接入发布边界
+
+截至 2026-09-26，生产网关为 0.3.7（commit `daf6390`），回滚点为 `c281feb`；新增 `workspace.tree.ungroupedSessions` 与已确认模型响应，保留 0.3.6 的 DSH 模型目录思考强度。部署前本地 typecheck、build、smoke、隧道协议与端到端测试通过；`batona-deploy` 健康检查、版本和配置/数据保留核验通过。后续网关源码改动自动运行适用测试与 `npm run build`，发布时按本文件的提交、推送、部署流程执行。
 
 托管 v0.2.0 于 2026-09-22 切换生产；Batona Gateway 0.3.1 已于 2026-09-23 按 [hosted-access-operations.md](hosted-access-operations.md) 完成运行标识联合迁移，随后将包含共享 Codex 审批解决事件映射的 0.3.2 部署至生产，部署 commit 为 `c5161f8`，回退点为 `3bf2a6f`。管理员密钥与 AES-GCM 主密钥分开保存在配置目录的受保护文件，账号库 `access.vault` 保留了迁移前的密钥与授权状态。损坏/缺少主密钥时停止，不创建空库或替代密钥。每个 PC 的隧道、适配器、路由与推送域独立；失效授权在 HTTP、WS 输入/输出及隧道连接时检查。
 
@@ -30,6 +33,8 @@
 ### 首页与下载站点
 
 WebMainIndex 负责面向用户的首页及后续 PC/Android 下载入口；后台网关继续承担认证、RPC 和隧道。更新首页时保留客户端接口的路径、端口、WebSocket 升级头以及既有其他项目的反代规则。DSH 全站 `location /` 反代会遮住首页，应使用上述分流配置。
+
+2026-09-25 已在该站发布 Windows 0.5.21 安装版/便携版和 Android 0.3.16 Debug 签名内测 APK。后续安装包更新先读本机 WebMainIndex 仓库根目录 `AGENTS.md` 的“Windows / Android 安装包更新工作流”；先校验并发布版本化二进制，再切换站点下载数据和首页更新记录。该静态站发布独立于 `batona-deploy`，不得为更新安装包重启网关。
 
 2026-09-22 已恢复首页，并同步本机 WebMainIndex 的 `index.html`、`scripts/index.js`、`data/updates.json`。切换前备份在服务器 `/var/backups/dsh-homepage/20260922-134152/`，包括原 DSH include 和这三个静态文件。此次仅平滑重载 Nginx，网关与 frps 的 PID 均保持不变；已核验首页文件哈希、静态依赖、HTTP→HTTPS、未授权接口响应、`/ws` 101 握手以及 `/remote/`。未进行真实手机登录或模型调用。既有 `/Easyplay/` 和 `/RateConverter/` 在切换前后均为 502，应作为独立上游问题排查。
 
@@ -100,13 +105,15 @@ Git 永不提交 `frpc.toml`、frpc/exe、APK、PC `dist/`、`node_modules/`、�
 ## 端内约束
 
 - 会话模型须经 `AgentSessionRef.model` → `GatewaySession.model` 透传；Codex 取 PC `thread/read` 的模型，DSH 取公开 `modelSelection.next/lastUsed` 投影，只复制模型字段。模型缺失时清除旧快照，不用模型目录猜测。`node test/session-model.ts` 覆盖桥→适配器→路由及投影白名单。
+- `workspace.tree` 返回真实工作区 `items` 和可选的 `ungroupedSessions`；DSH 从未被工作区关联且未归档的会话生成后者，Codex 从 PC 确认无 `cwd` 的任务生成后者。集合之间保持会话 ID 唯一。Codex 的 `model.select` 必须由 PC 桥响应确认模型与强度，网关才更新会话快照；响应中的 `model` 供手机核对。
 
 - 服务器只做 TLS 后的认证、会话路由、协议适配和隧道转发。不得把 Agent、LLM 或工具执行迁到服务器，也不能令服务器主动接入用户内网 PC。
-- 托管 Codex adapter 的 `baseUrl` 由该 PC 运行时分配为服务器动态回环端口，隧道目标仍是 PC 的 3082；PC 需具备桥和可枚举的 App Server。不能把 3082 加入公网监听或安全组，也不能用 `codex exec` 代替桌面会话控制。
+- 托管 Codex adapter 的 `baseUrl` 由该 PC 运行时分配为服务器动态回环端口；常规 PC 桥在本机 3082，隔离 Codex 测试 profile 在本机 3182，隧道按 `codex` 服务名映射，无需固定服务器端口。PC 需具备桥和可枚举的 App Server。本机端口不能加入公网监听或安全组，也不能用 `codex exec` 代替桌面会话控制。
 - 公网入口只应为反向代理后的 TLS；网关服务监听 `127.0.0.1:3090`，各 PC 的动态隧道端口只绑定回环。`trustedHosts` 不是认证；管理员、账号与设备授权严格分域。
 - 不记录或回显账号密码、连接串、`agentKey`、launch token、TOTP 秘钥或设备令牌。更改认证、限速、吊销或数据结构时要考虑已有数据的迁移与失效策略。
 - 跨端 RPC、连接串、二维码、launch-token 上报和隧道帧以 `../README.md` 的跨端契约为准。修改协议须同步检查 Android 与 PC 的兼容性，并保持旧客户端的明确行为。
 - 共享 Codex 连接的实验审批由 app-server 向多个订阅客户端广播同一请求 ID。PC 发出 `interaction/resolved` 后，网关把适配器请求 ID 映射为手机侧 `requestRpcIds` 并移除待应答映射；手机仅关闭匹配的弹窗。此事件不授予权限，也不代表审批结果为允许。
+- DSH 会话权限通过 `session.permissionPresetList` / `session.permissionPresetSelect` 暴露：适配器按当前 session/follow 的 `permissions` 投影校验固定预设，再用 DSH `commands/list` + `commands/execute` 执行唯一允许的 `/permission <id>` 命令并从新投影确认。不要把通用 slash-command 执行开放给手机；`danger-full-access` 需要客户端确认标记。
 - 部署更改必须维持：从同一 Git commit 安装 `install.sh` 与 `gateway/`、健康检查版本一致、失败自动回滚、配置/数据保留。不要用手工 tar 覆盖流程替代 `deploy.sh`。
 
 ## 验证

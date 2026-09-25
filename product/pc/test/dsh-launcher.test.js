@@ -1,7 +1,11 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { resolveDshLauncher, isDshAuthenticated, createDshOutputParser } = require('../dsh-launcher.js');
+const { resolveDshLauncher, hasNodeRuntime, isDshAuthenticated, createDshOutputParser } = require('../dsh-launcher.js');
+
+assert.equal(hasNodeRuntime(() => ({ status: 0, stdout: 'v22.12.0\n' })), true);
+assert.equal(hasNodeRuntime(() => ({ status: 1, stdout: '' })), false);
+assert.equal(hasNodeRuntime(() => ({ status: null, error: new Error('ENOENT') })), false);
 
 assert.deepEqual(
   resolveDshLauncher({}, (command) => command === 'npx'),

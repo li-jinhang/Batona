@@ -12,18 +12,24 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -36,11 +42,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.batona.mobile.data.Binding
 import com.batona.mobile.data.ConnectionParser
@@ -105,19 +115,46 @@ fun BindScreen(onBound: (Binding) -> Unit) {
             }
         }
 
-        if (scanning) {
-            Card(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
-                Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    CameraScanner(
-                        onDetected = { text ->
-                            scanning = false
-                            val b = ConnectionParser.parse(text)
-                            if (b != null) { error = ""; onBound(b) } else error = "二维码不是有效的 Batona Mobile 连接串"
-                        },
-                        modifier = Modifier.fillMaxWidth().height(260.dp),
-                    )
-                    OutlinedButton(onClick = { scanning = false }, modifier = Modifier.padding(top = 8.dp)) { Text("关闭扫码") }
+    }
+    if (scanning) {
+        FullScreenScanner(
+            onDetected = { text ->
+                scanning = false
+                val b = ConnectionParser.parse(text)
+                if (b != null) { error = ""; onBound(b) } else error = "二维码不是有效的 Batona Mobile 连接串"
+            },
+            onDismiss = { scanning = false },
+            title = "扫描服务器连接二维码",
+            hint = "将服务器连接二维码放入框内",
+        )
+    }
+}
+
+@Composable
+internal fun FullScreenScanner(
+    onDetected: (String) -> Unit,
+    onDismiss: () -> Unit,
+    title: String = "扫描配对二维码",
+    hint: String = "将电脑上的配对二维码放入框内",
+) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        Box(Modifier.fillMaxSize().background(Color.Black).testTag("scanner-fullscreen")) {
+            CameraScanner(onDetected = onDetected, modifier = Modifier.fillMaxSize())
+            Column(Modifier.fillMaxSize().safeDrawingPadding()) {
+                Row(Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.55f)).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, contentDescription = "关闭扫码", tint = Color.White) }
+                    Text(title, color = Color.White, style = MaterialTheme.typography.titleMedium)
                 }
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(0.72f).aspectRatio(1f),
+                        color = Color.Transparent,
+                        shape = RoundedCornerShape(24.dp),
+                        border = androidx.compose.foundation.BorderStroke(2.dp, Color.White.copy(alpha = 0.9f)),
+                    ) {}
+                }
+                Text(hint, modifier = Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.55f)).padding(24.dp),
+                    color = Color.White, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
             }
         }
     }

@@ -35,10 +35,12 @@ internal fun sessionStatusLabel(state: String): String = when (state) {
     "waiting-approval" -> "等待批准"
     "waiting-question" -> "等待回答"
     "running", "busy", "streaming" -> "运行中"
+    "thinking" -> "正在思考"
+    "reconnecting" -> "正在重新连接"
     "done", "completed" -> "已完成"
     "error", "failed" -> "失败"
     "cancelled", "canceled" -> "已停止"
-    else -> "空闲"
+    else -> if (state.startsWith("reconnecting:")) "正在重新连接 ${state.removePrefix("reconnecting:")}" else "空闲"
 }
 
 @Composable
@@ -47,12 +49,65 @@ internal fun SessionStatus(state: String, modifier: Modifier = Modifier) {
         "waiting-approval", "waiting-question" -> BatonaAmber
         "done", "completed" -> BatonaGreen
         "error", "failed" -> MaterialTheme.colorScheme.error
-        "running", "busy", "streaming" -> MaterialTheme.colorScheme.primary
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
+        "running", "busy", "streaming", "thinking", "reconnecting" -> MaterialTheme.colorScheme.primary
+        else -> if (state.startsWith("reconnecting:")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
     }
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(Modifier.size(8.dp).background(color, CircleShape))
         Text(sessionStatusLabel(state), style = MaterialTheme.typography.labelMedium, color = color)
+    }
+}
+
+@Composable
+internal fun UngroupedSessionCard(
+    sessions: List<com.batona.mobile.data.SessionNode>, state: HomeState,
+    onSelect: (String, String) -> Unit,
+) {
+    val open = state.expanded["ungrouped"] ?: true
+    val showOlder = state.olderExpanded["ungrouped"] ?: false
+    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(8.dp)) {
+            Row(Modifier.fillMaxWidth().clickable { state.expanded["ungrouped"] = !open }.padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.FolderOpen, null, Modifier.size(26.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("未分组", fontWeight = FontWeight.SemiBold)
+                    Text("${sessions.size} 个会话", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Icon(if (open) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    if (open) "收起未分组" else "展开未分组")
+            }
+            if (open) {
+                (if (showOlder) sessions else sessions.take(5)).forEach { session ->
+                    var menu by remember(session.sessionId) { mutableStateOf(false) }
+                    Row(Modifier.fillMaxWidth().testTag("session-${session.sessionId}")
+                        .clickable { onSelect(session.sessionId, "未分组") }.padding(start = 12.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(session.title ?: session.sessionId, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            SessionStatus(session.state)
+                        }
+                        Box {
+                            IconButton(onClick = { menu = true }) {
+                                Icon(Icons.Outlined.MoreVert, "会话菜单 ${session.title ?: session.sessionId}")
+                            }
+                            DropdownMenu(menu, onDismissRequest = { menu = false }) {
+                                DropdownMenuItem(text = { Text("重命名") }, enabled = state.connected,
+                                    onClick = { menu = false; state.renaming = session.sessionId; state.renameText = session.title ?: session.sessionId })
+                                DropdownMenuItem(text = { Text("归档会话") }, enabled = state.connected,
+                                    onClick = { menu = false; state.archiving = session.sessionId })
+                            }
+                        }
+                    }
+                }
+                if (sessions.size > 5) TextButton(onClick = { state.olderExpanded["ungrouped"] = !showOlder }) {
+                    Text(if (showOlder) "收起较早会话" else "查看更早会话（${sessions.size - 5}）")
+                }
+            }
+        }
     }
 }
 

@@ -83,6 +83,19 @@ async function verifyNativeThreadBinding({ threadId, client, inspect }) {
 }
 
 async function readNativeThreadExpectation({ threadId, client }) {
+  const titleBinding = await readNativeThreadTitleExpectation({ threadId, client });
+  const turns = await client.request('thread/turns/list', {
+    threadId, limit: 1, sortDirection: 'desc', itemsView: 'full',
+  });
+  if (!Array.isArray(turns?.data) || turns.data.length !== 1) throw bindingError('native-task-history-incomplete');
+  const expected = latestPair(turns.data[0]);
+  return Object.freeze({ ...titleBinding,
+    lastUserHash: expected.userHash,
+    lastAssistantHash: expected.assistantHash,
+  });
+}
+
+async function readNativeThreadTitleExpectation({ threadId, client }) {
   if (typeof threadId !== 'string' || !threadId.trim() || !client?.request) {
     throw bindingError('native-task-invalid-input');
   }
@@ -92,19 +105,11 @@ async function readNativeThreadExpectation({ threadId, client }) {
   const title = titleOf(thread);
   if (!title) throw bindingError('native-task-title-missing');
   await uniqueListedThread(client, threadId, title);
-
-  const turns = await client.request('thread/turns/list', {
-    threadId, limit: 1, sortDirection: 'desc', itemsView: 'full',
-  });
-  if (!Array.isArray(turns?.data) || turns.data.length !== 1) throw bindingError('native-task-history-incomplete');
-  const expected = latestPair(turns.data[0]);
   return Object.freeze({
     threadId,
     title,
     titleHash: fingerprint(title),
-    lastUserHash: expected.userHash,
-    lastAssistantHash: expected.assistantHash,
   });
 }
 
-module.exports = { verifyNativeThreadBinding, readNativeThreadExpectation, fingerprint };
+module.exports = { verifyNativeThreadBinding, readNativeThreadExpectation, readNativeThreadTitleExpectation, fingerprint };

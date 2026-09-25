@@ -70,10 +70,12 @@ fun PairScreen(store: SettingsStore, gatewayClient: GatewayClient? = null, onPai
             }, shape = RoundedCornerShape(10.dp)) { Text(if (busy) "等待电脑确认…" else "请求配对") }
             OutlinedButton(enabled = !busy, onClick = { permission.launch(Manifest.permission.CAMERA) }) { Text("扫码") }
         }
-        if (scanning) { CameraScanner(onDetected = { code = it; scanning = false }, modifier = Modifier.fillMaxWidth().height(250.dp)); OutlinedButton(onClick = { scanning = false }) { Text("关闭相机") } }
         if (status.isNotBlank()) Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.primaryContainer,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Text(status, Modifier.fillMaxWidth().padding(16.dp), color = MaterialTheme.colorScheme.onPrimaryContainer)
         }
+    }
+    if (scanning) {
+        FullScreenScanner(onDetected = { code = it; scanning = false }, onDismiss = { scanning = false })
     }
 }

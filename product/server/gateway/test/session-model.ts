@@ -10,12 +10,22 @@ assert.deepEqual(projectedModel({ lastUsed: { provider: 'dsh', model: 'used' } }
 assert.equal(projectedModel({ next: { model: 'missing-provider' } }), undefined);
 
 let model: string | undefined = 'actual-model';
+let modelReply: unknown = { accepted: true };
 const routedPaths: string[] = [];
+const permissionBodies: unknown[] = [];
 const server = createServer((req, res) => {
   res.setHeader('content-type', 'application/json');
+  if (req.url?.endsWith('/model')) { res.end(JSON.stringify(modelReply)); return; }
   if (req.url?.endsWith('/permission-menu') || req.url?.endsWith('/permission')) {
     routedPaths.push(req.url);
-    res.end(JSON.stringify({ profileId: 'request-approval' }));
+    if (req.url.endsWith('/permission')) {
+      const chunks: Buffer[] = [];
+      req.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => {
+        permissionBodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        res.end(JSON.stringify({ profileId: 'request-approval' }));
+      });
+    } else res.end(JSON.stringify({ profileId: 'request-approval' }));
     return;
   }
   const thread = { id: 'existing', model, reasoningEffort: 'high', state: 'idle' };
@@ -36,9 +46,16 @@ try {
   model = undefined;
   const refreshed = await router.resume('codex', 'existing');
   assert.equal((refreshed as unknown as { model?: unknown }).model, undefined);
+  await assert.rejects(router.selectModel(session.id, { provider: 'openai', model: 'next', reasoningEffort: 'high' }),
+    (error: unknown) => (error as { code?: string }).code === 'native-model-unconfirmed');
+  assert.equal(router.get(session.id)?.model, undefined);
+  modelReply = { accepted: true, model: { provider: 'openai', model: 'next', reasoningEffort: 'high' } };
+  await router.selectModel(session.id, { provider: 'openai', model: 'next', reasoningEffort: 'high' });
+  assert.equal(router.get(session.id)?.model?.model, 'next');
   assert.deepEqual(await router.permissionMenu(session.id, true), { profileId: 'request-approval' });
-  assert.deepEqual(await router.selectPermission(session.id, 'request-approval'), { profileId: 'request-approval' });
+  assert.deepEqual(await router.selectPermission(session.id, 'request-approval', true), { profileId: 'request-approval' });
   assert.deepEqual(routedPaths, ['/v1/sessions/existing/permission-menu', '/v1/sessions/existing/permission']);
+  assert.deepEqual(permissionBodies, [{ profileId: 'request-approval', confirmed: true }]);
   console.log('PASS bridge model survives adapter and gateway; absent model clears stale selection');
 } finally {
   await adapter.dispose();

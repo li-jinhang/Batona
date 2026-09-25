@@ -79,15 +79,12 @@
           <div class="overview-grid">
             <section class="panel backends" aria-labelledby="backend-title">
               <h2 id="backend-title">本机后端</h2>
-              <article class="backend-card">
-                <div class="backend-logo dsh">D</div>
+              <article class="backend-card" data-detail="dsh" role="button" tabindex="0" aria-label="DSH 模块，查看信息与设置" aria-haspopup="dialog" aria-controls="detail-dialog">
+                <div class="backend-logo dsh"><img src="assets/agent-dsh.png" alt="" draggable="false"></div>
                 <div class="backend-content">
                   <div class="backend-heading">
                     <h3>DSH</h3>
-                    <span id="dsh-badge" class="badge neutral">检测中</span
-                    ><button class="text-button" data-detail="dsh">
-                      查看详情<span data-icon="chevron"></span>
-                    </button>
+                    <span id="dsh-badge" class="badge neutral">检测中</span>
                   </div>
                   <div class="backend-properties">
                     <div>
@@ -100,26 +97,22 @@
                   <p id="dsh-hint" class="caption">正在读取本地服务状态…</p>
                 </div>
               </article>
-              <article class="backend-card">
-                <div class="backend-logo"><span data-icon="terminal"></span></div>
+              <article class="backend-card" data-detail="codex" role="button" tabindex="0" aria-label="Codex 模块，查看信息与设置" aria-haspopup="dialog" aria-controls="detail-dialog">
+                <div class="backend-logo codex"><img src="assets/agent-codex.png" alt="" draggable="false"></div>
                 <div class="backend-content">
                   <div class="backend-heading">
                     <h3>Codex</h3>
-                    <span id="codex-badge" class="badge neutral">检测中</span
-                    ><button class="text-button" data-detail="codex">
-                      查看详情<span data-icon="chevron"></span>
-                    </button>
+                    <span id="codex-badge" class="badge neutral">检测中</span>
                   </div>
                   <div class="backend-properties">
                     <div>
                       <span>桌面应用</span><strong id="codex-process" class="status">检测中</strong>
                     </div>
                     <div>
-                      <span>本地认证</span><strong id="codex-auth" class="status">待验证</strong>
+                      <span>登录状态</span><strong id="codex-auth" class="status">检测中</strong>
                     </div>
                   </div>
                   <p id="codex-hint" class="notice">正在读取 Codex 状态…</p>
-                  <button class="text-button compact" data-detail="codex">查看限制说明</button>
                 </div>
               </article>
             </section>
@@ -136,8 +129,7 @@
                 <li>扫码或输入配对码</li>
                 <li>在本电脑确认连接</li>
               </ol>
-              <button id="btn-pair-open" class="primary wide">显示配对二维码</button
-              ><button id="btn-pair-copy" class="secondary wide">复制配对码</button>
+              <button id="btn-pair-open" class="primary wide">显示配对信息</button>
               <p class="pair-note"><span data-icon="lock"></span>配对信息默认隐藏</p>
             </section>
             <section class="panel recent">
@@ -210,7 +202,7 @@
     </div>
     <dialog id="pair-dialog" aria-labelledby="pair-title">
       <div class="dialog-heading">
-        <h2 id="pair-title">连接手机</h2>
+        <h2 id="pair-title">配对信息</h2>
         <button id="btn-pair-close" class="icon-button" aria-label="关闭配对">
           <span data-icon="close"></span>
         </button>
@@ -218,6 +210,7 @@
       <p class="muted">用手机扫码或输入下方配对码，再在此电脑确认。</p>
       <div id="qr-box"><img id="qr-img" alt="临时配对二维码" /></div>
       <p id="pair-code" class="pair-code"></p>
+      <button id="btn-pair-copy" class="secondary wide" type="button" hidden>复制配对码</button>
       <p id="pair-pending" role="status">等待手机发起配对</p>
       <div class="row">
         <button id="btn-pair-allow" class="primary" hidden>允许此手机</button
@@ -233,6 +226,36 @@
         </button>
       </div>
       <div id="detail-body"></div>
+      <section id="dsh-detail-actions" class="control-panel" hidden aria-label="DSH 服务操作">
+        <div class="dsh-detail-buttons">
+          <button id="btn-dsh-start" class="primary" type="button">启动 DSH 服务</button>
+          <button id="btn-dsh-open" class="secondary" type="button" disabled>打开 DSH 界面</button>
+        </div>
+        <p id="dsh-detail-result" class="caption" role="status" hidden></p>
+      </section>
+      <section id="codex-control-panel" class="control-panel" hidden aria-labelledby="codex-control-title">
+        <h3 id="codex-control-title">控制方式</h3>
+        <div class="control-options">
+          <button class="control-option" data-control-mode="shared" type="button" aria-pressed="false">
+            <span class="control-option-copy"><strong>共享连接（推荐）</strong><small>更快速，版本鲁棒性差</small></span>
+            <span class="control-check" data-icon="check" aria-hidden="true"></span>
+          </button>
+          <button class="control-option" data-control-mode="interface" type="button" aria-pressed="false">
+            <span class="control-option-copy"><strong>界面控制</strong><small>协议更迭时的平替方案</small></span>
+            <span class="control-check" data-icon="check" aria-hidden="true"></span>
+          </button>
+        </div>
+        <p id="codex-control-result" class="caption" role="status" hidden></p>
+      </section>
+    </dialog>
+    <dialog id="codex-restart-dialog" aria-labelledby="codex-restart-title">
+      <h2 id="codex-restart-title">切换到共享连接</h2>
+      <p class="restart-description">需要重启 Codex 才能切换控制方式。请先保存工作；Batona 会请求 Codex 正常退出，若进程仍未退出则结束它，然后通过共享连接重新打开。</p>
+      <p id="codex-restart-error" class="error" role="alert" hidden></p>
+      <div class="restart-actions">
+        <button id="btn-codex-restart-cancel" class="secondary" type="button">取消</button>
+        <button id="btn-codex-restart-confirm" class="primary" type="button">重启</button>
+      </div>
     </dialog>
     <div id="toast" class="toast" role="status" hidden></div>
     <script src="app.js"></script>

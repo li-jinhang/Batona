@@ -197,8 +197,15 @@ class CodexBridge {
     this.starting = null;
     this.pendingRequests = new Map();
     this.threadOptions = new Map();
+    this.threadSettings = new Map();
+    this.threadSettingsWaiters = new Map();
     this.knownThreads = new Map();
+    this.cwdLookupCache = new Map();
     this.pollTimer = null;
+    this.nativeProgressTimer = null;
+    this.nativeObservedThreadId = null;
+    this.nativeProgressBusy = false;
+    this.lastNativeProgress = null;
     this.workspaceStore = userDataDir ? path.join(userDataDir, 'codex-workspaces.json') : null;
     this.explicitWorkspaces = loadWorkspaceStore(this.workspaceStore);
 
@@ -206,11 +213,22 @@ class CodexBridge {
     this.appServer.on('server-request', (msg) => this.onServerRequest(msg));
     this.appServer.on('stopped', () => {
       this.pendingRequests.clear();
+      this.threadSettings.clear();
+      for (const waiters of this.threadSettingsWaiters.values()) {
+        for (const waiter of [...waiters]) waiter.reject(Object.assign(new Error('Codex 共享连接已断开'), { code: 'not-connected' }));
+      }
+      this.threadSettingsWaiters.clear();
       this.broadcast({ type: 'bridge-status', available: false });
     });
   }
 
+  get transportMode() {
+    if (!this.appServer.websocketUrl) return 'stdio-native-ui';
+    return this.enableSharedWrites ? 'shared-write' : 'shared-readonly';
+  }
+
   async start() {
+    this.log(`Codex transport mode: ${this.transportMode}`);
     if (this.server) return this.starting || Promise.resolve(true);
     const server = http.createServer((req, res) => { void this.handleHttp(req, res); });
     this.server = server;
@@ -249,6 +267,9 @@ class CodexBridge {
   async stop() {
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.pollTimer = null;
+    if (this.nativeProgressTimer) clearInterval(this.nativeProgressTimer);
+    this.nativeProgressTimer = null;
+    this.nativeObservedThreadId = null;
     this.appServer.stop();
     const wss = this.wss; this.wss = null;
     try { wss?.clients.forEach((ws) => ws.close()); wss?.close(); } catch {}
@@ -263,12 +284,61 @@ class CodexBridge {
     this.pollTimer = setInterval(() => { void this.pollThreads(); }, 5_000);
   }
 
+  observeNativeProgress(threadId) {
+    if (this.appServer.websocketUrl || !this.nativeControl.readProgress) return;
+    this.nativeObservedThreadId = threadId;
+    this.lastNativeProgress = null;
+    if (!this.nativeProgressTimer) {
+      this.nativeProgressTimer = setInterval(() => { void this.pollNativeProgress(); }, 2_000);
+      this.nativeProgressTimer.unref?.();
+    }
+    void this.pollNativeProgress();
+  }
+
+  async pollNativeProgress() {
+    const threadId = this.nativeObservedThreadId;
+    if (!threadId || this.nativeProgressBusy || !this.appServer.ready || !this.wss?.clients.size) return;
+    this.nativeProgressBusy = true;
+    try {
+      const status = await this.nativeControl.readProgress(threadId);
+      if (this.nativeObservedThreadId !== threadId || !status) return;
+      const attempt = Number(status.attempt);
+      const maxAttempts = Number(status.maxAttempts);
+      const event = status.state === 'thinking' ? { type: 'session/thinking' }
+        : status.state === 'reconnecting' ? { type: 'session/reconnecting',
+          ...(Number.isInteger(attempt) && Number.isInteger(maxAttempts) && attempt > 0 && maxAttempts >= attempt
+            ? { attempt, maxAttempts } : {}) }
+          : null;
+      if (!event) return;
+      const fingerprint = JSON.stringify(event);
+      if (fingerprint !== this.lastNativeProgress) {
+        this.lastNativeProgress = fingerprint;
+        this.broadcast({ type: 'agent-event', threadId, event });
+      }
+    } catch { /* A locked, switched or unverified native window has no observable progress. */ }
+    finally { this.nativeProgressBusy = false; }
+  }
+
   async ensureAppServer() {
     if (this.appServer.ready) return true;
     const ok = await this.appServer.start();
     this.broadcast({ type: 'bridge-status', available: ok });
     if (ok) { this.startPolling(); this.nativeControl.warm?.(); }
     return ok;
+  }
+
+  async accountStatus() {
+    if (!this.appServer.ready) return 'unknown';
+    try {
+      // Only expose a status enum to the renderer; the response may contain an email.
+      const result = await this.appServer.request('account/read', { refreshToken: false }, 3000);
+      if (typeof result?.account?.type === 'string') return 'signed-in';
+      if (result?.requiresOpenaiAuth === false) return 'not-required';
+      if (result?.requiresOpenaiAuth === true && result.account === null) return 'signed-out';
+    } catch {
+      // A failed local read does not prove the account is signed out.
+    }
+    return 'unknown';
   }
 
   async handleHttp(req, res) {
@@ -283,8 +353,9 @@ class CodexBridge {
       // Shared transport writes require an explicit local experiment opt-in.
       if (this.appServer.websocketUrl && req.method !== 'GET'
         && !(req.method === 'POST' && /^\/v1\/sessions\/[^/]+\/resume$/.test(url.pathname))
+        && !(req.method === 'POST' && /^\/v1\/sessions\/[^/]+\/permission-menu$/.test(url.pathname))
         && !(this.enableSharedWrites && req.method === 'POST'
-          && /^\/v1\/sessions\/[^/]+\/(prompt|respond)$/.test(url.pathname))) {
+          && /^\/v1\/sessions\/[^/]+\/(prompt|respond|model|permission)$/.test(url.pathname))) {
         throw Object.assign(new Error('共享 Codex 连接尚未开放写入'), { code: 'shared-transport-readonly' });
       }
       if (req.method === 'GET' && url.pathname === '/v1/sessions') {
@@ -292,7 +363,7 @@ class CodexBridge {
         return;
       }
       if (req.method === 'GET' && url.pathname === '/v1/workspaces') {
-        writeJson(res, 200, { items: await this.workspaceTree() });
+        writeJson(res, 200, await this.workspaceTree());
         return;
       }
       if (req.method === 'GET' && url.pathname === '/v1/models') {
@@ -359,8 +430,8 @@ class CodexBridge {
       }
       if (req.method === 'POST' && action === 'model') {
         const body = await readJson(req);
-        await this.selectModel(threadId, body.model);
-        writeJson(res, 200, { accepted: true });
+        const model = await this.selectModel(threadId, body.model);
+        writeJson(res, 200, { accepted: true, model });
         return;
       }
       if (req.method === 'POST' && action === 'permission-menu') {
@@ -370,7 +441,7 @@ class CodexBridge {
       }
       if (req.method === 'POST' && action === 'permission') {
         const body = await readJson(req);
-        writeJson(res, 200, await this.selectPermission(threadId, asString(body.profileId)));
+        writeJson(res, 200, await this.selectPermission(threadId, asString(body.profileId), body.confirmed === true));
         return;
       }
       if (req.method === 'POST' && action === 'name') {
@@ -423,17 +494,40 @@ class CodexBridge {
 
   async workspaceTree() {
     const threads = (await this.listThreads()).sort((a, b) => b.updatedAt - a.updatedAt);
+    const now = Date.now();
+    const missingDirectory = threads.filter((thread) => {
+      if (thread.cwd) { this.cwdLookupCache.set(thread.id, { cwd: thread.cwd, checkedAt: now }); return false; }
+      const cached = this.cwdLookupCache.get(thread.id);
+      if (cached?.cwd) { thread.cwd = cached.cwd; return false; }
+      return !cached || now - cached.checkedAt > 10 * 60_000;
+    });
+    // The gateway has an 8 s upstream deadline. Enrich a bounded set per
+    // refresh; unresolved tasks remain visible under "未分组" and are revisited.
+    await Promise.all(missingDirectory.slice(0, 24).map(async (thread) => {
+      try {
+        const read = await this.appServer.request('thread/read', { threadId: thread.id, includeTurns: false }, 2_000);
+        if (read?.thread?.id === thread.id) {
+          thread.cwd = asString(read.thread.cwd);
+          this.cwdLookupCache.set(thread.id, { cwd: thread.cwd, checkedAt: now });
+        }
+      } catch { this.cwdLookupCache.set(thread.id, { cwd: '', checkedAt: now }); }
+    }));
     const byPath = new Map();
+    const ungroupedSessions = [];
     for (const item of this.explicitWorkspaces.values()) byPath.set(item.path, { createdAt: item.createdAt, sessions: [] });
     for (const thread of threads) {
       const cwd = thread.cwd || '';
-      if (!cwd) continue; // 用户选择了“无工作区”的会话不造假分组，仍可从“新建会话”继续。
+      if (!cwd) {
+        ungroupedSessions.push({ sessionId: thread.id, title: thread.title, state: thread.state, updatedAt: thread.updatedAt });
+        continue;
+      }
       if (!byPath.has(cwd)) byPath.set(cwd, { createdAt: thread.createdAt, sessions: [] });
       byPath.get(cwd).sessions.push({ sessionId: thread.id, title: thread.title, state: thread.state, updatedAt: thread.updatedAt });
     }
-    return [...byPath.entries()]
+    const items = [...byPath.entries()]
       .map(([cwd, value]) => ({ workspace: workspaceFor(cwd, value.createdAt), sessions: value.sessions.sort((a, b) => b.updatedAt - a.updatedAt) }))
       .sort((a, b) => b.sessions[0]?.updatedAt - a.sessions[0]?.updatedAt || a.workspace.title.localeCompare(b.workspace.title));
+    return { items, ungroupedSessions };
   }
 
   async listModels() {
@@ -450,6 +544,7 @@ class CodexBridge {
       return useEfforts.map((reasoningEffort) => ({
         provider: 'openai', model, reasoningEffort: reasoningEffort || undefined,
         displayName: redactText(asString(entry?.displayName) || model),
+        defaultReasoningEffort: asString(entry?.defaultReasoningEffort) || undefined,
       }));
     });
   }
@@ -492,6 +587,8 @@ class CodexBridge {
     const profile = profileId ? await this.requireProfile(profileId) : null;
     const result = await this.appServer.request('thread/read', { threadId, includeTurns: false });
     const thread = normalizeThread(result?.thread || { id: threadId });
+    if (!this.appServer.websocketUrl && result?.thread?.originator === 'Codex Desktop')
+      this.observeNativeProgress(threadId);
     if (this.appServer.websocketUrl && thread.id === threadId) {
       await this.appServer.request('thread/resume', { threadId, excludeTurns: true });
     }
@@ -548,10 +645,24 @@ class CodexBridge {
     const available = asString(selection?.provider) === 'openai' && catalog.find((item) => item.provider === 'openai'
       && item.model === model.model && item.reasoningEffort === model.effort);
     if (!available) throw Object.assign(new Error('该模型或思考强度不可用'), { code: 'native-model-invalid' });
+    const effective = { provider: 'openai', model: model.model, reasoningEffort: model.effort };
     const read = await this.appServer.request('thread/read', { threadId, includeTurns: false });
     if (read?.thread?.id !== threadId) throw Object.assign(new Error('Codex 任务不存在'), { code: 'session-not-found' });
     const previous = this.threadOptions.get(threadId) || {};
     if (read.thread.originator === 'Codex Desktop') {
+      if (this.appServer.websocketUrl && this.enableSharedWrites) {
+        if (!model.model || !model.effort) throw Object.assign(new Error('切换模型前需要先同步当前思考强度'), { code: 'native-model-invalid' });
+        await this.updateSharedThreadSettings(threadId, { model: model.model, effort: model.effort },
+          (current) => current.model === model.model && current.effort === model.effort,
+          async () => {
+            const snapshot = await this.appServer.request('thread/read', { threadId, includeTurns: false }, 2_000);
+            return snapshot?.thread?.id === threadId
+              ? { model: asString(snapshot.thread.model), effort: asString(snapshot.thread.reasoningEffort) }
+              : null;
+          });
+        this.threadOptions.set(threadId, { ...previous, ...model });
+        return effective;
+      }
       if (this.nativePromptInFlight) throw Object.assign(new Error('原生 Codex 正在执行另一项操作'), { code: 'native-control-busy' });
       const efforts = catalog.filter((item) => item.model === model.model);
       const effortIndex = efforts.findIndex((item) => item.reasoningEffort === model.effort) + 1;
@@ -561,12 +672,24 @@ class CodexBridge {
           displayName: available.displayName || available.model,
           effortIndex, effortCount: efforts.length,
         });
+        let confirmed = false;
+        for (let attempt = 0; attempt < 6; attempt++) {
+          const settings = this.threadSettings.get(threadId);
+          if (settings?.model === model.model && settings?.effort === model.effort) { confirmed = true; break; }
+          const snapshot = await this.appServer.request('thread/read', { threadId, includeTurns: false }, 2_000);
+          if (snapshot?.thread?.id === threadId && asString(snapshot.thread.model) === model.model
+            && asString(snapshot.thread.reasoningEffort) === model.effort) { confirmed = true; break; }
+          if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        if (!confirmed) throw Object.assign(new Error('电脑端已执行模型选择，但后端未确认生效；请检查 Codex 桌面界面后重试。'),
+          { code: 'native-model-unconfirmed' });
         this.threadOptions.set(threadId, { ...previous, ...model });
       } finally { this.nativePromptInFlight = false; }
-      return;
+      return effective;
     }
     await this.requireAppServerWriter(threadId);
     this.threadOptions.set(threadId, { ...previous, ...model });
+    return effective;
   }
 
   async permissionMenu(threadId, open) {
@@ -574,14 +697,44 @@ class CodexBridge {
     if (read?.thread?.id !== threadId) throw Object.assign(new Error('Codex 任务不存在'), { code: 'session-not-found' });
     if (read.thread.originator !== 'Codex Desktop')
       return { profileId: this.threadOptions.get(threadId)?.profileId || null };
+    if (this.appServer.websocketUrl) {
+      let settings = await this.readSharedPermission(threadId).catch(() => null);
+      if (!settings?.profileId) settings = await this.readFreshSharedPermission(threadId);
+      return { profileId: settings.profileId || null };
+    }
     if (this.nativePromptInFlight) throw Object.assign(new Error('原生 Codex 正在执行另一项操作'), { code: 'native-control-busy' });
     this.nativePromptInFlight = true;
     try { return await this.nativeControl.permissionMenu(threadId, open); }
     finally { this.nativePromptInFlight = false; }
   }
 
-  async selectPermission(threadId, profileId) {
+  async readSharedPermission(threadId, client = this.appServer) {
+    // thread/read omits permissions. thread/resume returns the active profile
+    // and approval policy without changing either setting.
+    const resumed = await client.request('thread/resume', { threadId, excludeTurns: true }, 5_000);
+    if (resumed?.thread?.id && resumed.thread.id !== threadId)
+      throw Object.assign(new Error('Codex 任务身份不匹配'), { code: 'session-not-found' });
+    const settings = {
+      permissionProfileId: asString(resumed?.activePermissionProfile?.id) || undefined,
+      approvalPolicy: asString(resumed?.approvalPolicy) || undefined,
+      profileId: profileIdFromSettings(resumed),
+    };
+    this.threadSettings.set(threadId, { ...this.threadSettings.get(threadId), ...settings });
+    return settings;
+  }
+
+  async readFreshSharedPermission(threadId) {
+    const fresh = new AppServerClient({ websocketUrl: this.appServer.websocketUrl });
+    if (!await fresh.start())
+      throw Object.assign(new Error('Codex 共享连接未能重新读取权限'), { code: 'codex-unavailable' });
+    try { return await this.readSharedPermission(threadId, fresh); }
+    finally { fresh.stop(); }
+  }
+
+  async selectPermission(threadId, profileId, confirmedFullAccess = false) {
     const profile = await this.requireProfile(profileId);
+    if (profileId === 'full-access' && !confirmedFullAccess)
+      throw Object.assign(new Error('切换为完全访问前须在手机端确认'), { code: 'full-access-confirmation-required' });
     const read = await this.appServer.request('thread/read', { threadId, includeTurns: false });
     if (read?.thread?.id !== threadId) throw Object.assign(new Error('Codex 任务不存在'), { code: 'session-not-found' });
     const previous = this.threadOptions.get(threadId) || {};
@@ -590,10 +743,26 @@ class CodexBridge {
       this.threadOptions.set(threadId, { ...previous, profileId, profile });
       return { profileId };
     }
+    if (this.appServer.websocketUrl && this.enableSharedWrites) {
+      // The shared server applies these settings to this thread's next turn.
+      // Desktop may keep an older composer label; it need not show this thread.
+      await this.updateSharedThreadSettings(threadId,
+        { permissions: profile.permissions, approvalPolicy: profile.approvalPolicy },
+        (current) => current.permissionProfileId === profile.permissions
+          && current.approvalPolicy === profile.approvalPolicy,
+        async () => {
+          let settings = await this.readSharedPermission(threadId).catch(() => null);
+          if (settings?.permissionProfileId !== profile.permissions || settings?.approvalPolicy !== profile.approvalPolicy)
+            settings = await this.readFreshSharedPermission(threadId);
+          return settings;
+        }, { forceWrite: true });
+      this.threadOptions.set(threadId, { ...previous, profileId, profile });
+      return { profileId };
+    }
     if (this.nativePromptInFlight) throw Object.assign(new Error('原生 Codex 正在执行另一项操作'), { code: 'native-control-busy' });
     this.nativePromptInFlight = true;
     try {
-      const result = await this.nativeControl.setPermission(threadId, profileId);
+      const result = await this.nativeControl.setPermission(threadId, profileId, confirmedFullAccess);
       if (result?.profileId !== profileId) throw Object.assign(new Error('电脑端权限未确认'), { code: 'native-profile-unavailable' });
       this.threadOptions.set(threadId, { ...previous, profileId, profile });
       return { profileId };
@@ -642,8 +811,70 @@ class CodexBridge {
     return profileDetails(selected.id);
   }
 
+  async updateSharedThreadSettings(threadId, changes, matches, readback = null, { forceWrite = false } = {}) {
+    if (!this.appServer.websocketUrl || !this.enableSharedWrites)
+      throw Object.assign(new Error('共享 Codex 设置写入尚未启用'), { code: 'shared-transport-readonly' });
+    if (this.nativePromptInFlight) throw Object.assign(new Error('Codex 正在执行另一项操作'), { code: 'native-control-busy' });
+    const current = this.threadSettings.get(threadId);
+    if (!forceWrite && current && matches(current)) return current;
+    if (forceWrite) this.threadSettings.delete(threadId);
+
+    const waiter = this.waitForThreadSettings(threadId, matches);
+    // A readback can confirm the update before the notification timeout. Keep
+    // that timer's rejection handled even when the readback wins.
+    void waiter.promise.catch(() => {});
+    this.nativePromptInFlight = true;
+    try {
+      await this.appServer.request('thread/settings/update', { threadId, ...changes }, 5_000);
+      const notified = this.threadSettings.get(threadId);
+      if (notified && matches(notified)) return notified;
+      if (readback) {
+        const snapshot = await readback().catch(() => null);
+        if (snapshot && matches(snapshot)) {
+          this.threadSettings.set(threadId, { ...this.threadSettings.get(threadId), ...snapshot });
+          return snapshot;
+        }
+      }
+      return await waiter.promise;
+    } finally {
+      waiter.cancel();
+      this.nativePromptInFlight = false;
+    }
+  }
+
+  waitForThreadSettings(threadId, matches) {
+    let cancel;
+    let timeout;
+    const waiters = this.threadSettingsWaiters.get(threadId) || new Set();
+    const promise = new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timeout);
+        waiters.delete(waiter);
+        if (waiters.size === 0) this.threadSettingsWaiters.delete(threadId);
+      };
+      cancel = cleanup;
+      const waiter = {
+        matches,
+        resolve: (settings) => { cleanup(); resolve(settings); },
+        reject: (error) => { cleanup(); reject(error); },
+      };
+      timeout = setTimeout(() => waiter.reject(Object.assign(new Error('等待 Codex 原生设置同步超时'), { code: 'settings-sync-unconfirmed' })), 3_000);
+      waiters.add(waiter);
+      this.threadSettingsWaiters.set(threadId, waiters);
+      timeout.unref?.();
+    });
+    return { promise, cancel: () => cancel?.() };
+  }
+
   onNotification(msg) {
     const threadId = asString(msg?.params?.threadId) || asString(msg?.params?.turn?.threadId);
+    if (msg?.method === 'thread/settings/updated' && threadId) {
+      const settings = publicThreadSettings(msg?.params?.threadSettings);
+      this.threadSettings.set(threadId, settings);
+      for (const waiter of [...(this.threadSettingsWaiters.get(threadId) || [])]) {
+        if (waiter.matches(settings)) waiter.resolve(settings);
+      }
+    }
     const event = eventFromNotification(msg);
     if (threadId && event) this.broadcast({ type: 'agent-event', threadId, event });
     if (msg?.method === 'serverRequest/resolved') {
@@ -772,16 +1003,56 @@ function profileDetails(id) {
 function eventFromNotification(msg) {
   const p = msg?.params || {};
   switch (msg?.method) {
+    case 'thread/settings/updated': {
+      const settings = p.threadSettings || {};
+      const model = asString(settings.model);
+      const provider = asString(settings.modelProvider) || 'openai';
+      return {
+        type: 'session/settings',
+        ...(model ? { model: { provider, model, ...(asString(settings.effort) ? { reasoningEffort: asString(settings.effort) } : {}) } } : {}),
+        profileId: profileIdFromSettings(settings),
+      };
+    }
     case 'turn/started': return { type: 'turn/start' };
+    case 'item/reasoning/summaryTextDelta':
+    case 'item/reasoning/textDelta': return { type: 'session/thinking' };
+    case 'error': return p.willRetry === true
+      ? { type: 'session/reconnecting' }
+      : { type: 'error', code: 'codex-turn-error', message: redactText(asString(p?.error?.message) || 'Codex 执行失败') };
     case 'turn/completed': {
       const error = p?.turn?.error;
       return error ? { type: 'error', code: 'turn-failed', message: redactText(asString(error.message) || 'Codex 回合失败') } : { type: 'turn/end' };
     }
     case 'item/agentMessage/delta': return { type: 'assistant/chunk', text: redactText(asString(p?.delta)) };
-    case 'item/started': return asString(p?.item?.type) === 'agentMessage' ? null : eventFromItem(p?.item, false);
-    case 'item/completed': return asString(p?.item?.type) === 'userMessage' ? null : eventFromItem(p?.item, true);
+    case 'item/started': return asString(p?.item?.type) === 'reasoning'
+      ? { type: 'session/thinking' }
+      : asString(p?.item?.type) === 'agentMessage' ? null : eventFromItem(p?.item, false);
+    case 'item/completed': return asString(p?.item?.type) === 'reasoning'
+      ? { type: 'session/running' }
+      : asString(p?.item?.type) === 'userMessage' ? null : eventFromItem(p?.item, true);
     default: return null;
   }
+}
+
+function profileIdFromSettings(settings) {
+  const profile = asString(settings?.activePermissionProfile?.id);
+  const approval = asString(settings?.approvalPolicy);
+  if (profile === ':danger-full-access' && approval === 'never') return 'full-access';
+  if (profile === ':workspace' && approval === 'on-request') return 'assist-approval';
+  if (profile === ':workspace' && approval === 'untrusted') return 'request-approval';
+  return null;
+}
+
+function publicThreadSettings(settings) {
+  if (!settings || typeof settings !== 'object') return {};
+  return {
+    model: asString(settings.model) || undefined,
+    modelProvider: asString(settings.modelProvider) || undefined,
+    effort: asString(settings.effort) || undefined,
+    permissionProfileId: asString(settings.activePermissionProfile?.id) || undefined,
+    approvalPolicy: asString(settings.approvalPolicy) || undefined,
+    profileId: profileIdFromSettings(settings),
+  };
 }
 
 function eventsFromItems(items) {

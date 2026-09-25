@@ -3,6 +3,13 @@
 const { contextBridge } = require('electron');
 let loggedIn = true,
   started = true,
+  dshRunning = true,
+  codexDesktop = true,
+  codexBridge = true,
+  codexAuth = 'signed-in',
+  codexTransport = 'stdio-native-ui',
+  codexControlFailure = false,
+  sharedAttached = true,
   codeOpen = false,
   approved = false;
 const calls = [];
@@ -16,20 +23,37 @@ contextBridge.exposeInMainWorld('batona', {
     loggedIn = false;
     return { ok: true };
   },
+  copyPairCode: async () => {
+    calls.push('pair-copy-code');
+    return codeOpen ? { ok: true } : { ok: false, error: 'pair-invalid' };
+  },
   serviceStatus: async () => ({
     bound: loggedIn,
-    dsh: true,
-    dshProcess: true,
-    codexDesktop: true,
-    codexBridge: true,
+    dsh: dshRunning,
+    dshProcess: dshRunning,
+    codexDesktop,
+    codexBridge,
+    codexAuth,
+    codexTransport: codexBridge ? codexTransport : 'not-started',
+    codexControlMode: codexTransport.startsWith('shared-') ? 'shared' : 'interface',
+    codexSharedAttached: codexTransport.startsWith('shared-') && codexDesktop && sharedAttached,
     frpc: started,
     gateway: true,
     serverIp: '示例网关',
   }),
+  codexControlSet: async (mode) => {
+    calls.push(`codex-control:${mode}`);
+    if (codexControlFailure) return { ok: false, error: '模拟切换失败' };
+    codexTransport = mode === 'shared' ? 'shared-write' : 'stdio-native-ui';
+    codexDesktop = true;
+    return { ok: true, mode };
+  },
   serviceStart: async () => {
     started = true;
     return { dsh: true, frpc: true };
   },
+  dshStart: async () => { calls.push('dsh-start'); dshRunning = true; return { ok: true }; },
+  dshOpen: async () => { calls.push('dsh-open'); return dshRunning ? { ok: true } : { ok: false, error: '请先启动 DSH 服务。' }; },
   serviceStop: async () => {
     started = false;
     calls.push('service-stop');
@@ -75,6 +99,14 @@ contextBridge.exposeInMainWorld('batona', {
 });
 contextBridge.exposeInMainWorld('uiFixture', {
   calls: () => calls.slice(),
+  setCodexDesktop: value => { codexDesktop = value; },
+  setCodexBridge: value => { codexBridge = value; },
+  setCodexAuth: value => { codexAuth = value; },
+  setCodexTransport: value => { codexTransport = value; },
+  setCodexControlFailure: value => { codexControlFailure = value; },
+  setSharedAttached: value => { sharedAttached = value; },
+  setTunnel: value => { started = value; },
+  setDshRunning: value => { dshRunning = value; },
   revoke: () => {
     loggedIn = false;
   },

@@ -11,7 +11,7 @@
  */
 'use strict';
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, safeStorage, powerMonitor } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, safeStorage, powerMonitor, clipboard, shell } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -20,16 +20,24 @@ const https = require('node:https');
 const http = require('node:http');
 const QRCode = require('qrcode');
 const { DirectoryService } = require('./dir-service.js');
-const { resolveDshLauncher, isDshAuthenticated, createDshOutputParser } = require('./dsh-launcher.js');
+const { resolveDshLauncher, hasNodeRuntime, isDshAuthenticated, createDshOutputParser } = require('./dsh-launcher.js');
 const { CodexBridge, redactText } = require('./codex-bridge.js');
-const { probeSoftware } = require('./software-status.js');
+const { launchSharedCodexDesktop } = require('./codex-handoff.js');
+const { loadControlMode, saveControlMode } = require('./codex-control-mode.js');
+const { probeSoftware, probeSharedDesktopConnection, clearSharedDesktopConnectionCache } = require('./software-status.js');
 const { AccessClient } = require('./access-client.js');
 const { awaitInitialConnection } = require('./tunnel/startup.js');
+const { createRuntimeProfile, configureUserData, getTunnelServices } = require('./runtime-profile.js');
 let access = null;
 let activePair = null;
+let activePairCode = null;
 
-// 本机服务固定监听 3080/3081，因此桌面端不能并行运行多个主实例。
-// 第二次启动应将焦点交给第一个实例，而不是抢占端口后令主进程崩溃。
+const runtimeProfile = createRuntimeProfile(process.env);
+// 测试实例先切换 Electron 用户目录：它同时隔离授权凭据、设备身份与单实例锁。
+// 该配置必须早于 requestSingleInstanceLock() 和 ready 事件。
+configureUserData(app, runtimeProfile);
+
+// 同一运行配置只允许一个实例，避免重复连接同一设备账号并互相顶替隧道。
 const ownsSingleInstanceLock = app.requestSingleInstanceLock();
 if (!ownsSingleInstanceLock) app.quit();
 
@@ -43,9 +51,9 @@ try {
 }
 
 const DSH_HOST = '127.0.0.1';
-const DSH_PORT_DEFAULT = 3080;   // DSH web 默认端口；实际端口从 stdout 的 dsh web: URL 捕获
-const DIR_SERVICE_PORT = 3081;   // 目录浏览服务（读笔记本本地目录），经自研隧道映射到服务器供网关代理
-const CODEX_SERVICE_PORT = 3082; // Codex App Server 本机桥；只经既有隧道转发
+const DSH_PORT_DEFAULT = runtimeProfile.ports.dsh;   // DSH web 默认端口；实际端口从 stdout 的 dsh web: URL 捕获
+const DIR_SERVICE_PORT = runtimeProfile.ports.dir;   // 目录浏览服务，只绑定 loopback
+const CODEX_SERVICE_PORT = runtimeProfile.ports.codex; // Codex App Server 本机桥，只绑定 loopback
 
 // ── 状态 ──────────────────────────────────────────────────────────────
 const state = {
@@ -85,11 +93,7 @@ function tunnelUp() {
 
 /** 本机可提供的服务（内置隧道用）。回调形式：DSH 端口是运行期从 stdout 抓的，重启会变 */
 function tunnelServices() {
-  return [
-    { name: 'dsh', localPort: state.dshPort || DSH_PORT_DEFAULT },
-    { name: 'dir', localPort: DIR_SERVICE_PORT },
-    { name: 'codex', localPort: CODEX_SERVICE_PORT },
-  ];
+  return getTunnelServices(runtimeProfile, state.dshPort || DSH_PORT_DEFAULT);
 }
 
 /**
@@ -190,7 +194,8 @@ function dshTokenPath() {
 
 /** 载入上次捕获的 launch token（仅用于"重启前先探测"，DSH 重启后 token 会变） */
 function loadDshToken() {
-  state.dshToken = process.env.BATONA_DSH_TOKEN || null;
+  state.dshToken = runtimeProfile.dshEnabled ? process.env.BATONA_DSH_TOKEN || null : null;
+  if (!runtimeProfile.dshEnabled) return;
   try {
     const j = JSON.parse(fs.readFileSync(dshTokenPath(), 'utf8'));
     if (!state.dshToken) state.dshToken = j.token || null;
@@ -293,10 +298,23 @@ function captureDshToken({ port, token }) {
 }
 
 let dshProc = null;
+let dshStartPromise = null;
 
 async function startDsh() {
+  if (dshStartPromise) return dshStartPromise;
+  dshStartPromise = startDshInternal();
+  try { return await dshStartPromise; }
+  finally { dshStartPromise = null; }
+}
+
+async function startDshInternal() {
+  if (!runtimeProfile.dshEnabled) return false;
   if (await detectDsh()) { state.dshRunning = true; return true; }
   state.dshRunning = false;
+  if (!hasNodeRuntime()) {
+    log('DSH 启动失败：Node.js 未安装或无法运行。请安装 Node.js 后重试。');
+    return false;
+  }
   if (await portOpen(DSH_HOST, state.dshPort || DSH_PORT_DEFAULT)) {
     log('DSH 端口已占用但认证未通过：启动令牌已失效。请退出旧 DSH 后重新启动服务；不会重复启动或终止未知进程。');
     return false;
@@ -376,7 +394,7 @@ function jsonRequest(url, method, headers, body, timeoutMs = 8000) {
  */
 async function reportLaunchToken() {
   const b = state.binding;
-  if (!b || !state.dshToken) return false;
+  if (!runtimeProfile.dshEnabled || !b || !state.dshToken) return false;
   if (!(await detectDsh())) { state.dshRunning = false; return false; }
   try { await access.call('launch-token', {token:state.dshToken}); return true; }
   catch { log('launch token 上报失败，请检查登录和隧道状态'); return false; }
@@ -425,16 +443,22 @@ function stopDirService() {
 
 // ── Codex App Server 本机桥（只绑定回环，经隧道供网关适配）─────────────
 let codexBridge = null;
+let codexControl = null;
+let codexControlSwitching = false;
 
-function startCodexBridge() {
+function codexControlPath() {
+  return path.join(app.getPath('userData'), 'codex-control-mode.json');
+}
+
+function startCodexBridge(config = codexControl) {
   if (!codexBridge) {
     try {
       codexBridge = new CodexBridge({
         host: '127.0.0.1',
         port: CODEX_SERVICE_PORT,
         userDataDir: app.getPath('userData'),
-        websocketUrl: process.env.BATONA_SHARED_CODEX_WS_URL || undefined,
-        enableSharedWrites: process.env.BATONA_SHARED_CODEX_WRITES === '1',
+        websocketUrl: config?.websocketUrl,
+        enableSharedWrites: config?.enableSharedWrites === true,
         log,
       });
     } catch {
@@ -448,7 +472,25 @@ function startCodexBridge() {
 function stopCodexBridge() {
   const bridge = codexBridge;
   codexBridge = null;
-  if (bridge) void bridge.stop();
+  return bridge ? bridge.stop() : Promise.resolve();
+}
+
+async function applyCodexControl(next) {
+  const previous = codexControl;
+  await stopCodexBridge();
+  try {
+    if (!(await startCodexBridge(next)) || !codexBridge?.appServer?.ready) {
+      throw new Error('Codex 本地桥未能以所选方式连接。');
+    }
+    saveControlMode(codexControlPath(), next);
+    codexControl = next;
+  } catch (error) {
+    await stopCodexBridge();
+    if (!(await startCodexBridge(previous)) || !codexBridge?.appServer?.ready) {
+      log('Codex 控制方式回退后，本地桥仍未连接');
+    }
+    throw error;
+  }
 }
 
 // ── 状态汇总 ──────────────────────────────────────────────────────────
@@ -470,7 +512,12 @@ async function status() {
     try { if (!(await access.refresh()).loggedIn) { stopFrpc(); loadBinding(); } }
     catch { /* A transport failure is not revocation. Keep the binding for recovery. */ }
   }
-  const [dshUp, software] = await Promise.all([detectDsh(), probeSoftware()]);
+  const [dshUp, software, codexSharedAttached, codexAuth] = await Promise.all([
+    detectDsh(),
+    probeSoftware(),
+    codexControl?.mode === 'shared' ? probeSharedDesktopConnection(codexControl.websocketUrl) : Promise.resolve(null),
+    codexBridge?.accountStatus() || Promise.resolve('unknown'),
+  ]);
   let gatewayUp = false;
   if (state.binding) {
     const port = state.binding.gwPort || 443;
@@ -484,6 +531,12 @@ async function status() {
     dshProcess: dshUp || software.dshProcess,
     codexDesktop: software.codexDesktop,
     codexBridge: !!codexBridge?.appServer?.ready,
+    codexAuth,
+    // The configured transport is only real after its app-server connection is ready.
+    // Otherwise the overview badge and the open detail dialog could describe different states.
+    codexTransport: codexBridge?.appServer?.ready ? codexBridge.transportMode : 'not-started',
+    codexControlMode: codexControl?.mode || 'interface',
+    codexSharedAttached,
     dshToken: !!state.dshToken,       // 是否已捕获 launch token（未捕获则手机端链路必断）
     dshAuthed: state.dshAuthed,       // token 是否当前有效
     // 键名 frpc 保持不变（渲染层只当布尔用）：语义 = "隧道已连通"（仅自研隧道）
@@ -502,7 +555,7 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1180, height: 800,
     minWidth: 480, minHeight: 560,
-    title: 'Batona PC',
+    title: runtimeProfile.kind === 'codex-test' ? 'Batona PC（Codex 测试实例）' : 'Batona PC',
     icon: appIcon(),   // 任务栏/窗口图标
     autoHideMenuBar: true,
     webPreferences: {
@@ -514,7 +567,7 @@ function createWindow() {
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   win.on('closed', () => {
-    if (activePair) { void access.call('pair-close', {pairId:activePair}).catch(()=>{}); activePair=null; }
+    if (activePair) { void access.call('pair-close', {pairId:activePair}).catch(()=>{}); activePair=null; activePairCode=null; }
     win = null;
   });
 }
@@ -558,24 +611,82 @@ function registerIpc() {
     if (!['devices','rename-phone','unbind-phone','pair-open','pair-status','pair-confirm','pair-close'].includes(op)) return {ok:false,error:'不支持此操作'};
     try {
       const r = await access.call(op, body);
-      if (op === 'pair-open') { activePair=r.pairId; r.dataUrl=await QRCode.toDataURL(r.qr,{width:300,margin:2}); }
-      if (op === 'pair-close') activePair=null;
+      if (op === 'pair-open') { activePair=r.pairId; activePairCode=r.code; r.dataUrl=await QRCode.toDataURL(r.qr,{width:300,margin:2}); }
+      if (op === 'pair-status' && r.approved) activePairCode=null;
+      if (op === 'pair-close') { activePair=null; activePairCode=null; }
       return r;
     } catch(e) { return {ok:false,error:e.code || e.message}; }
+  });
+  ipcMain.handle('pair:copy-code', () => {
+    if (!activePair || typeof activePairCode !== 'string') return { ok: false, error: 'pair-invalid' };
+    clipboard.writeText(activePairCode);
+    return { ok: true };
   });
   ipcMain.handle('service:start', async () => {
     // Codex 桥不依赖 DSH web。若旧 DSH 正在重启、端口被遗留进程占用或
     // launch token 尚未刷新，不能让它的等待周期阻塞手机端的 Codex 通道。
-    const [dsh, frpc] = await Promise.all([startDsh(), startFrpc()]);
+    const [dsh, frpc] = await Promise.all([runtimeProfile.dshEnabled ? startDsh() : false, startFrpc()]);
     void reportLaunchToken();
     return { dsh, frpc };
   });
   ipcMain.handle('service:startFrpc', async () => ({ ok: await startFrpc() }));
+  ipcMain.handle('dsh:start', async () => {
+    if (!runtimeProfile.dshEnabled) return { ok: false, error: '当前运行配置未启用 DSH。' };
+    if (await detectDsh()) return { ok: true, alreadyRunning: true };
+    if (!hasNodeRuntime()) return { ok: false, error: '未检测到可运行的 Node.js。请安装 Node.js 后重试。' };
+    const ok = await startDsh();
+    if (ok) void reportLaunchToken();
+    return ok ? { ok: true } : { ok: false, error: 'DSH 启动失败，请查看运行日志后重试。' };
+  });
+  ipcMain.handle('dsh:open', async () => {
+    if (!runtimeProfile.dshEnabled || !await detectDsh() || !state.dshAuthed || !state.dshToken)
+      return { ok: false, error: '请先启动 DSH 服务。' };
+    const port = Number(state.dshPort || DSH_PORT_DEFAULT);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: 'DSH 端口无效。' };
+    await shell.openExternal(`http://${DSH_HOST}:${port}/?token=${encodeURIComponent(state.dshToken)}`);
+    return { ok: true };
+  });
   ipcMain.handle('service:stop', () => { stopFrpc(); return { ok: true }; });
   ipcMain.handle('service:status', () => status());
+  ipcMain.handle('codex:control:set', async (_e, mode) => {
+    if (mode !== 'interface' && mode !== 'shared') return { ok: false, error: '无效的控制方式。' };
+    if (codexControlSwitching) return { ok: false, error: '控制方式正在切换，请稍候。' };
+    if (codexControl?.mode === mode && codexBridge?.appServer?.ready
+      && (mode === 'interface' || codexBridge.transportMode === 'shared-write')) {
+      return { ok: true, mode };
+    }
+    codexControlSwitching = true;
+    const scriptPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'native-handoff.ps1')
+      : path.join(__dirname, 'tools', 'shared-transport-probe', 'native-handoff.ps1');
+    const statePath = app.isPackaged
+      ? path.join(app.getPath('userData'), 'native-handoff.json')
+      : path.resolve(__dirname, 'tools', 'shared-transport-probe', '..', '..', '..', '..', 'output', '.shared-transport-probe', 'native-handoff.json');
+    try {
+      if (mode === 'interface') {
+        await applyCodexControl({ mode: 'interface' });
+        log('Codex control mode changed to native interface.');
+        return { ok: true, mode };
+      }
+      const software = await probeSoftware();
+      const handoff = await launchSharedCodexDesktop({ scriptPath, statePath, codexDesktop: software.codexDesktop, restart: true });
+      if (handoff.reused) log('Codex Desktop already connected to the verified shared server.');
+      if (handoff.recovered) log('Codex Desktop shared connection verified after handoff diagnostic.');
+      clearSharedDesktopConnectionCache();
+      await applyCodexControl({ mode: 'shared', websocketUrl: handoff.websocketUrl, enableSharedWrites: true });
+      log('Codex control mode changed to shared connection.');
+      return { ok: true, mode, portFallback: /was occupied by an unverified listener/i.test(handoff.output) };
+    } catch (error) {
+      log(`Codex control mode switch failed: ${error.code || 'codex-control-switch-failed'}`);
+      return { ok: false, code: error.code || 'codex-handoff-failed', error: error.message };
+    } finally {
+      codexControlSwitching = false;
+    }
+  });
   ipcMain.handle('log:tail', () => state.logs.slice(-200));
-  ipcMain.handle('settings:autostart:get', () => app.getLoginItemSettings().openAtLogin);
+  ipcMain.handle('settings:autostart:get', () => runtimeProfile.kind === 'codex-test' ? false : app.getLoginItemSettings().openAtLogin);
   ipcMain.handle('settings:autostart:set', (_e, on) => {
+    if (runtimeProfile.kind === 'codex-test') return { ok: false, error: 'disabled-in-test-profile' };
     app.setLoginItemSettings({ openAtLogin: !!on });
     return { ok: true, on: !!on };
   });
@@ -584,6 +695,7 @@ function registerIpc() {
 // ── 生命周期 ──────────────────────────────────────────────────────────
 if (ownsSingleInstanceLock) app.whenReady().then(async () => {
   access = new AccessClient({userData:app.getPath('userData'),safeStorage});
+  codexControl = loadControlMode(codexControlPath());
   registerIpc();
   loadBinding();
   loadDshToken();
@@ -600,6 +712,7 @@ if (ownsSingleInstanceLock) app.whenReady().then(async () => {
   });
 
   log('Batona PC ready');
+  if (runtimeProfile.kind === 'codex-test') log('Codex-only test profile active: separate user data, ports 3181/3182, DSH disabled');
   if (tunnelRequireError) log('提示：自研隧道模块加载失败，远程服务不可用');
 
   // 冒烟模式：启动 2 秒后退出（用于 CI/验证）
@@ -614,7 +727,7 @@ if (ownsSingleInstanceLock) app.whenReady().then(async () => {
   // 已绑定 → 自动拉起服务
   if (state.binding) {
     // DSH 与隧道必须独立恢复：后者还承载 Codex App Server，不能等待 DSH。
-    const [dsh, tunnel] = await Promise.all([startDsh(), startFrpc()]);
+    const [dsh, tunnel] = await Promise.all([runtimeProfile.dshEnabled ? startDsh() : false, startFrpc()]);
     log(`auto-start: dsh=${dsh}, tunnel=${tunnel}（kind=${state.tunnelKind || 'none'}）`);
     void reportLaunchToken();
   }

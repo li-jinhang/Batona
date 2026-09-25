@@ -34,34 +34,69 @@ namespace Batona.NativeCodexProbe
         {
             int processId;
             if (args.Length < 3 || !int.TryParse(args[1], out processId)
-                || (args[0] != "inspect" && args[0] != "send" && args[0] != "open-permission"
+                || (args[0] != "inspect" && args[0] != "status" && args[0] != "send" && args[0] != "open-permission"
                     && args[0] != "close-permission" && args[0] != "set-permission" && args[0] != "set-model"))
                 return Fail("usage", 2);
             if (args[0] == "inspect" && args.Length != 3) return Fail("usage", 2);
+            if (args[0] == "status" && args.Length != 6) return Fail("usage", 2);
             if (args[0] == "send" && args.Length != 8) return Fail("usage", 2);
             if ((args[0] == "open-permission" || args[0] == "close-permission") && args.Length != 6) return Fail("usage", 2);
-            if (args[0] == "set-permission" && args.Length != 7) return Fail("usage", 2);
+            if (args[0] == "set-permission" && (args.Length != 8
+                || (args[7] != "confirmed" && args[7] != "unconfirmed"))) return Fail("usage", 2);
             if (args[0] == "set-model" && args.Length != 9) return Fail("usage", 2);
 
+            string stage = "desktop-check";
             try
             {
                 if (!InteractiveDesktop()) return Fail("native-desktop-unavailable", 3);
+                stage = "process-lookup";
                 Process process = Process.GetProcessById(processId);
                 if (process.SessionId != Process.GetCurrentProcess().SessionId) return Fail("native-session-mismatch", 4);
+                stage = "process-verify";
                 if (!IsCodexPackage(process.MainModule.FileName)) return Fail("native-process-unverified", 5);
+                stage = "window-lookup";
                 IntPtr windowHandle = process.MainWindowHandle;
                 if (windowHandle == IntPtr.Zero) return Fail("native-window-missing", 6);
+                stage = "task-title-decode";
                 string title = Decode(args[2]);
                 if (title.Length == 0) return Fail("native-task-title-missing", 8);
+                stage = "automation-root";
                 AutomationElement root = AutomationElement.FromHandle(windowHandle);
+                // Permission selection changes settings but sends no message.
+                // The app-server binder already proved this title is unique;
+                // require that exact task to be active without depending on
+                // transcript accessibility nodes that may be missing or stale.
+                if (args[0] == "set-permission")
+                {
+                    stage = "permission-task";
+                    if (ActiveTitle(root) != title || Identity.Hash(title) != args[5])
+                        return Fail("native-task-identity-mismatch", 10);
+                    stage = "permission-set";
+                    if (!SetPermission(root, title, args[6], args[7] == "confirmed"))
+                        return Fail("native-profile-unavailable", 18);
+                    Console.WriteLine("{\"profileId\":\"" + CurrentPermission(root) + "\"}");
+                    return 0;
+                }
+                if (args[0] == "status")
+                {
+                    // Read only the active task's visible status. Never emit
+                    // arbitrary UI text or change the selected task.
+                    if (ActiveTitle(root) != title || Identity.Hash(title) != args[5])
+                        return Fail("native-task-identity-mismatch", 10);
+                    Console.WriteLine(ReadProgress(root));
+                    return 0;
+                }
+                stage = "open-task";
                 if (!OpenUniqueTask(root, title)) return Fail("native-task-ambiguous", 9);
                 Identity.Evidence observed = null;
                 for (int attempt = 0; attempt < 15; attempt++)
                 {
+                    stage = "capture-task-identity";
                     observed = Identity.Capture(root, processId, windowHandle);
                     if (observed.HasUser && observed.HasAssistant && observed.AssistantComplete) break;
                     Thread.Sleep(150);
                 }
+                stage = "verify-task-identity";
                 if (observed.Title != title || observed.SidebarMatches != 1)
                     return Fail("native-task-identity-mismatch", 10);
 
@@ -72,29 +107,28 @@ namespace Batona.NativeCodexProbe
                 }
 
                 string identityTitleHash = args[5];
+                stage = "verify-bound-thread";
                 if (!Matches(observed, identityTitleHash, args[3], args[4]))
                     return Fail("native-task-identity-mismatch", 10);
                 if (args[0] == "open-permission" || args[0] == "close-permission")
                 {
+                    stage = "permission-menu";
                     if (!PermissionMenu(root, title, args[0] == "open-permission"))
                         return Fail("native-profile-unavailable", 18);
+                    stage = "permission-read";
                     string currentPermission = CurrentPermission(root);
                     if (currentPermission.Length == 0) return Fail("native-profile-unavailable", 18);
                     Console.WriteLine("{\"profileId\":\"" + currentPermission + "\"}");
                     return 0;
                 }
-                if (args[0] == "set-permission")
-                {
-                    if (!SetPermission(root, title, args[6])) return Fail("native-profile-unavailable", 18);
-                    Console.WriteLine("{\"profileId\":\"" + CurrentPermission(root) + "\"}");
-                    return 0;
-                }
                 if (args[0] == "set-model")
                 {
+                    stage = "model-arguments";
                     int effortIndex, effortCount;
                     if (!int.TryParse(args[7], out effortIndex) || !int.TryParse(args[8], out effortCount)
                         || effortIndex < 1 || effortIndex > effortCount || effortCount > 8)
                         return Fail("native-model-invalid", 19);
+                    stage = "model-set";
                     if (!SetModel(root, title, windowHandle, Decode(args[6]), effortIndex, effortCount))
                         return Fail("native-model-unavailable:" + modelFailure, 20);
                     Console.WriteLine("{\"accepted\":true}");
@@ -103,25 +137,32 @@ namespace Batona.NativeCodexProbe
 
                 string expectedUserHash = args[3];
                 string expectedAssistantHash = args[4];
+                stage = "message-decode";
                 string message = Decode(args[6]);
                 string expectedTitleHash = args[5];
                 string profileId = args[7];
                 if (message.Trim().Length == 0 || message.Length > 32000) return Fail("native-message-invalid", 11);
                 if (!Matches(observed, expectedTitleHash, expectedUserHash, expectedAssistantHash))
                     return Fail("native-task-identity-mismatch", 10);
-                if (profileId != "keep-current" && !SetPermission(root, title, profileId)) return Fail("native-profile-unavailable", 18);
+                stage = "send-permission";
+                if (profileId != "keep-current" && !SetPermission(root, title, profileId, false)) return Fail("native-profile-unavailable", 18);
 
+                stage = "find-composer";
                 List<AutomationElement> composers = Find(root, ControlType.Edit, "随心输入", false);
                 if (composers.Count != 1) return Fail("native-composer-unavailable", 12);
+                stage = "composer-pattern";
                 object valuePattern;
                 if (!composers[0].TryGetCurrentPattern(ValuePattern.Pattern, out valuePattern))
                     return Fail("native-composer-unavailable", 12);
                 ValuePattern composer = (ValuePattern)valuePattern;
+                stage = "composer-read";
                 string existing = (composer.Current.Value ?? "").Trim();
                 if (existing.Length > 0 && existing != "随心输入" && existing != message.Trim())
                     return Fail("native-composer-has-draft", 13);
 
+                stage = "composer-write";
                 if (existing != message.Trim()) composer.SetValue(message);
+                stage = "composer-confirm";
                 if (!WaitDraft(composer, message))
                     return Fail("native-draft-not-confirmed", 14);
 
@@ -129,17 +170,22 @@ namespace Batona.NativeCodexProbe
                 // Send. A task switch or new turn prevents the submission.
                 if (!InteractiveDesktop() || process.MainWindowHandle != windowHandle)
                     return Fail("native-window-changed", 7);
+                stage = "recheck-task-identity";
                 observed = Identity.Capture(root, processId, windowHandle);
                 if (!Matches(observed, expectedTitleHash, expectedUserHash, expectedAssistantHash))
                     return Fail("native-task-identity-mismatch", 10);
+                stage = "recheck-composer";
                 if (!WaitDraft(composer, message))
                     return Fail("native-draft-not-confirmed", 14);
 
+                stage = "find-send-button";
                 List<AutomationElement> sends = Find(root, ControlType.Button, "发送", false);
                 if (sends.Count != 1) return Fail("native-send-unavailable", 15);
+                stage = "send-button-pattern";
                 object invokePattern;
                 if (!sends[0].TryGetCurrentPattern(InvokePattern.Pattern, out invokePattern))
                     return Fail("native-send-unavailable", 15);
+                stage = "invoke-send";
                 ((InvokePattern)invokePattern).Invoke();
 
                 string messageHash = Identity.Hash(message);
@@ -147,6 +193,7 @@ namespace Batona.NativeCodexProbe
                 {
                     Thread.Sleep(100);
                     if (!InteractiveDesktop() || process.MainWindowHandle != windowHandle) break;
+                    stage = "confirm-submission";
                     Identity.Evidence after = Identity.Capture(root, processId, windowHandle);
                     if (after.Title == title && after.LastUserHash == messageHash)
                     {
@@ -158,7 +205,7 @@ namespace Batona.NativeCodexProbe
             }
             catch (Exception error)
             {
-                return Fail("native-control-failed:" + error.GetType().Name, 17);
+                return Fail("native-control-failed:" + stage + ":" + error.GetType().Name, 17);
             }
         }
 
@@ -394,7 +441,7 @@ namespace Batona.NativeCodexProbe
             return Regex.Replace(value ?? "", @"[\s\-]", "").ToUpperInvariant();
         }
 
-        private static bool SetPermission(AutomationElement root, string title, string profileId)
+        private static bool SetPermission(AutomationElement root, string title, string profileId, bool confirmedFullAccess)
         {
             string label;
             string menuPrefix;
@@ -408,9 +455,7 @@ namespace Batona.NativeCodexProbe
             List<AutomationElement> buttons = Find(root, ControlType.Button, "更改权限", false);
             if (buttons.Count != 1) return false;
             if (PermissionIs(buttons[0], label)) return true;
-            // Codex requires a user confirmation before switching to full
-            // access. The remote sender never confirms that escalation.
-            if (profileId == "full-access") return false;
+            if (profileId == "full-access" && !confirmedFullAccess) return false;
             object expand;
             if (!buttons[0].TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out expand)) return false;
             ((ExpandCollapsePattern)expand).Expand();
@@ -430,8 +475,19 @@ namespace Batona.NativeCodexProbe
                 Thread.Sleep(100);
                 if (Find(root, ControlType.Text, "要开启完整访问权限吗？", false).Count > 0)
                 {
-                    CancelFullAccessDialog(root);
-                    return false;
+                    if (profileId != "full-access" || !confirmedFullAccess || ActiveTitle(root) != title)
+                    {
+                        CancelFullAccessDialog(root);
+                        return false;
+                    }
+                    List<AutomationElement> confirm = Find(root, ControlType.Button, "确认", false);
+                    object confirmInvoke;
+                    if (confirm.Count != 1 || !confirm[0].TryGetCurrentPattern(InvokePattern.Pattern, out confirmInvoke))
+                    {
+                        CancelFullAccessDialog(root);
+                        return false;
+                    }
+                    ((InvokePattern)confirmInvoke).Invoke();
                 }
                 buttons = Find(root, ControlType.Button, "更改权限", false);
                 if (buttons.Count == 1 && PermissionIs(buttons[0], label)) return true;
@@ -477,6 +533,36 @@ namespace Batona.NativeCodexProbe
                 return doc == null ? "" : doc.Current.Name ?? "";
             }
             catch { return ""; }
+        }
+
+        private static string ReadProgress(AutomationElement root)
+        {
+            try
+            {
+                AutomationElement doc = root.FindFirst(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document));
+                if (doc == null) return "{\"state\":null}";
+                foreach (AutomationElement element in Find(doc, ControlType.Text, null, false))
+                {
+                    string label = (element.Current.Name ?? "").Trim();
+                    Match retry = Regex.Match(label,
+                        @"^(?:正在重新连接|重新连接中|Reconnecting)\s*(?:[（(]?\s*(\d+)\s*/\s*(\d+)\s*[）)]?)?\s*[.…]*$",
+                        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                    if (retry.Success)
+                    {
+                        int attempt, max;
+                        if (int.TryParse(retry.Groups[1].Value, out attempt) && int.TryParse(retry.Groups[2].Value, out max)
+                            && attempt > 0 && max > 0 && attempt <= max && max <= 100)
+                            return "{\"state\":\"reconnecting\",\"attempt\":" + attempt + ",\"maxAttempts\":" + max + "}";
+                        return "{\"state\":\"reconnecting\"}";
+                    }
+                    if (Regex.IsMatch(label, @"^(?:正在思考|思考中|Thinking)\s*[.…]*$",
+                        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                        return "{\"state\":\"thinking\"}";
+                }
+            }
+            catch { }
+            return "{\"state\":null}";
         }
 
         private static List<AutomationElement> Find(AutomationElement root, ControlType type, string name, bool allowOffscreen)

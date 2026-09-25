@@ -39,6 +39,7 @@ export type AgentEvent =
   | { type: 'tool/call'; toolName: string; callId?: string; args?: unknown }
   | { type: 'tool/result'; toolName: string; callId?: string; ok: boolean; summary?: string }
   | { type: 'turn/start' } | { type: 'turn/end' }
+  | { type: 'session/running' } | { type: 'session/thinking' } | { type: 'session/reconnecting'; attempt?: number; maxAttempts?: number }
   | { type: 'step/start' } | { type: 'step/end' }
   | { type: 'approval/requested'; approvalId: string; toolName: string; callId?: string; reason?: string; rpcId?: string }
   | { type: 'approval/resolved'; approvalId: string; outcome: 'allowed-once' | 'rejected' | 'cancelled' }
@@ -120,6 +121,7 @@ export interface ModelRef {
   model: string;
   reasoningEffort?: string;
   displayName?: string;
+  defaultReasoningEffort?: string;
 }
 
 /** 工作区视图（对齐 DSH WorkspaceView 的网关投影） */
@@ -183,7 +185,7 @@ export interface AgentAdapter {
   listPermissionProfiles?(): Promise<AgentProfile[]>;
   /** Codex Desktop 的原生权限菜单；其它后端不提供此能力。 */
   permissionMenu?(session: AgentSessionRef, open: boolean): Promise<{ profileId?: string | null }>;
-  selectPermission?(session: AgentSessionRef, profileId: string): Promise<{ profileId: string }>;
+  selectPermission?(session: AgentSessionRef, profileId: string, confirmed: boolean): Promise<{ profileId: string }>;
   /** DSH 当前会话的原生权限预设，不同于 PC 定义的 AgentProfile。 */
   sessionPermissionPresets?(session: AgentSessionRef): Promise<SessionPermissionPresetState>;
   /** 只接受投影验证过的固定 DSH 预设；完全访问必须由调用方明确确认。 */
@@ -207,4 +209,6 @@ export interface WorkspaceTree {
     workspace: { workspaceId: string; path: string; title: string; createdAt: string };
     sessions: { sessionId: string; title?: string; state: SessionState; updatedAt: number }[];
   }[];
+  /** Sessions with no confirmed workspace association; never a synthetic workspace. */
+  ungroupedSessions?: { sessionId: string; title?: string; state: SessionState; updatedAt: number }[];
 }

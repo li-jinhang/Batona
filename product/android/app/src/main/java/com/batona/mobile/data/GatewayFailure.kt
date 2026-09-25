@@ -15,17 +15,36 @@ class GatewayFailure(val code: String) : Exception(when (code) {
         "电脑端 Codex 输入控件不可用，输入已保留。请检查电脑端窗口后重试。"
     "native-composer-has-draft" -> "电脑端输入框已有草稿，手机输入已保留。请先处理电脑端草稿。"
     "native-submit-unconfirmed" -> "未能确认电脑端是否已发送。输入已保留，请先查看电脑端或刷新历史，避免重复提交。"
-    "native-model-control-unavailable", "native-model-unavailable", "native-model-invalid" ->
+    "native-model-control-unavailable", "native-model-unavailable", "native-model-invalid", "native-model-unconfirmed" ->
         "电脑端模型或思考强度未能确认，请检查 Codex 原生窗口后重试。"
     "native-profile-unavailable" ->
         "电脑端权限未能确认。切换到完全访问时，请先在 Codex 电脑端完成确认。"
+    "native-profile-unconfirmed" -> "电脑端权限已操作，但后台状态尚未确认，请刷新核对。"
     "native-control-busy" -> "电脑端正在执行另一项操作，请稍后重试。"
     "codex-offline", "codex-unavailable" -> "Codex 电脑端未连接，请确认 Batona PC 与 Codex 正在运行。"
     "timeout", "not-connected", "send-failed", "transport-error" -> "连接中断或请求超时，请检查电脑端与网络后重试。"
-    else -> if (code.startsWith("native-model-unavailable:"))
-        "电脑端模型或思考强度未能确认，请检查 Codex 原生窗口后重试。"
-    else "请求未完成，请刷新后重试。"
+    else -> when {
+        code.startsWith("native-model-unavailable:") ->
+            "电脑端模型或思考强度未能确认，请检查 Codex 原生窗口后重试。"
+        code.startsWith("native-control-failed:confirm-submission:") ->
+            "电脑端未能确认发送结果。请先查看 Codex 会话，避免重复发送。"
+        code.startsWith("native-control-failed:") ->
+            "电脑端 Codex 界面操作失败。请先查看电脑端会话状态，再决定是否重试。"
+        else -> "请求未完成，请刷新后重试。"
+    }
 })
+
+/** Permission selection never submits a message, so draft warnings do not apply. */
+fun permissionFailureMessage(error: Exception): String = when ((error as? GatewayFailure)?.code) {
+    "native-task-ambiguous", "native-task-identity-mismatch", "native-task-not-listed",
+    "native-task-list-incomplete", "native-task-title-missing" ->
+        "无法确认电脑端当前 Codex 任务。若权限标签已变化，请刷新核对后再重试。"
+    "native-profile-unconfirmed", "native-profile-unavailable" ->
+        "电脑端权限可能已变化，请刷新核对当前档位后再重试。"
+    "request-failed", "invalid-response", "bridge-error" ->
+        "权限切换结果尚未确认，请刷新核对电脑端当前档位。"
+    else -> error.message ?: "权限切换结果尚未确认，请刷新核对电脑端当前档位。"
+}
 
 internal fun <T> RpcResult<T>.requireValue(): T {
     if (!ok) throw GatewayFailure(error?.code ?: "request-failed")
