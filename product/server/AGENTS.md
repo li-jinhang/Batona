@@ -100,6 +100,7 @@ Git 永不提交 `frpc.toml`、frpc/exe、APK、PC `dist/`、`node_modules/`、�
 ## 端内约束
 
 - 会话模型须经 `AgentSessionRef.model` → `GatewaySession.model` 透传；Codex 取 PC `thread/read` 的模型，DSH 取公开 `modelSelection.next/lastUsed` 投影，只复制模型字段。模型缺失时清除旧快照，不用模型目录猜测。`node test/session-model.ts` 覆盖桥→适配器→路由及投影白名单。
+- `workspace.tree` 返回真实工作区 `items` 和可选的 `ungroupedSessions`；DSH 从未被工作区关联且未归档的会话生成后者，Codex 从 PC 确认无 `cwd` 的任务生成后者。集合之间保持会话 ID 唯一。Codex 的 `model.select` 必须由 PC 桥响应确认模型与强度，网关才更新会话快照；响应中的 `model` 供手机核对。
 
 - 服务器只做 TLS 后的认证、会话路由、协议适配和隧道转发；iOS PWA 可选 Web Push 是唯一明确的外部服务调用例外，只能在用户主动订阅后把不含正文或标识符的事件类别发送到 Apple Push。不得把 Agent、LLM 或工具执行迁到服务器，也不能令服务器主动接入用户内网 PC。
 - 托管 Codex adapter 的 `baseUrl` 由该 PC 运行时分配为服务器动态回环端口，隧道目标仍是 PC 的 3082；PC 需具备桥和可枚举的 App Server。不能把 3082 加入公网监听或安全组，也不能用 `codex exec` 代替桌面会话控制。

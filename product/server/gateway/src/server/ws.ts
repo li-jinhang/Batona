@@ -248,7 +248,7 @@ export class GatewayWsServer {
         case 'model.select': {
           const p = payload as { sessionId: string; model: unknown };
           await this.router.selectModel(p.sessionId, p.model as never);
-          return ok({ accepted: true });
+          return ok({ accepted: true, model: this.router.get(p.sessionId)?.model });
         }
         case 'session.permissionMenu': {
           const p = payload as { sessionId: string; open: boolean };

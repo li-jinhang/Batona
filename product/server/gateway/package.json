@@ -1,6 +1,6 @@
 {
   "name": "batona-gateway",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "private": true,
   "type": "module",
   "description": "Batona 多 Agent 远程接入网关",
@@ -15,6 +15,7 @@
     "smoke": "node test/smoke.ts",
     "codex-offline": "node test/codex-offline.ts",
     "session-model": "node test/session-model.ts",
+    "ungrouped": "node test/ungrouped-sessions.ts",
     "dsh-permissions": "node test/dsh-permissions.ts",
     "tunnel-protocol": "node test/tunnel-protocol.ts",
     "tunnel": "node test/tunnel-e2e.ts",

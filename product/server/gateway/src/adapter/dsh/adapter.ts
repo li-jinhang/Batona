@@ -786,15 +786,22 @@ export class DshAdapter implements AgentAdapter {
   async workspaceTree(): Promise<WorkspaceTree> {
     const [wslist, seslist] = await Promise.all([this.listWorkspaces(), this.listSessions()]);
     const byId = new Map(seslist.map((s) => [s.backendSessionId, s]));
+    const assigned = new Set<string>();
     const items = wslist.map((w) => ({
       workspace: { workspaceId: w.workspaceId, path: w.path, title: w.title, createdAt: w.createdAt },
       sessions: w.sessionIds.flatMap((id) => {
         if (this.archivedSessions.has(id)) return [];   // 归档会话：从工作区树隐藏
         const s = byId.get(id);
-        return s ? [{ sessionId: id, title: s.title, state: s.state, updatedAt: s.createdAt }] : [];
+        if (!s || assigned.has(id)) return [];
+        assigned.add(id);
+        return [{ sessionId: id, title: s.title, state: s.state, updatedAt: s.createdAt }];
       }),
     }));
-    return { items };
+    const ungroupedSessions = seslist.filter((s) => !assigned.has(s.backendSessionId)
+      && !this.archivedSessions.has(s.backendSessionId))
+      .map((s) => ({ sessionId: s.backendSessionId, title: s.title, state: s.state, updatedAt: s.createdAt }))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    return { items, ungroupedSessions };
   }
 
   async listModels(): Promise<ModelRef[]> {

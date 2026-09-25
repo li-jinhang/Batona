@@ -39,6 +39,7 @@ export type AgentEvent =
   | { type: 'tool/call'; toolName: string; callId?: string; args?: unknown }
   | { type: 'tool/result'; toolName: string; callId?: string; ok: boolean; summary?: string }
   | { type: 'turn/start' } | { type: 'turn/end' }
+  | { type: 'session/running' } | { type: 'session/thinking' } | { type: 'session/reconnecting'; attempt?: number; maxAttempts?: number }
   | { type: 'step/start' } | { type: 'step/end' }
   | { type: 'approval/requested'; approvalId: string; toolName: string; callId?: string; reason?: string; rpcId?: string }
   | { type: 'approval/resolved'; approvalId: string; outcome: 'allowed-once' | 'rejected' | 'cancelled' }
@@ -120,6 +121,7 @@ export interface ModelRef {
   model: string;
   reasoningEffort?: string;
   displayName?: string;
+  defaultReasoningEffort?: string;
 }
 
 /** 工作区视图（对齐 DSH WorkspaceView 的网关投影） */
@@ -207,4 +209,6 @@ export interface WorkspaceTree {
     workspace: { workspaceId: string; path: string; title: string; createdAt: string };
     sessions: { sessionId: string; title?: string; state: SessionState; updatedAt: number }[];
   }[];
+  /** Sessions with no confirmed workspace association; never a synthetic workspace. */
+  ungroupedSessions?: { sessionId: string; title?: string; state: SessionState; updatedAt: number }[];
 }
