@@ -803,7 +803,15 @@ export class DshAdapter implements AgentAdapter {
     const out: ModelRef[] = [];
     for (const g of r.value.groups ?? []) {
       for (const m of g.models ?? []) {
-        out.push({ provider: g.id, model: m.id, displayName: m.name, reasoningEffort: m.reasoning?.defaultEffort });
+        const available = [...new Set((m.reasoning?.efforts ?? []).map((effort) => effort.id).filter(Boolean))];
+        if (available.length === 0) {
+          out.push({ provider: g.id, model: m.id, displayName: m.name, reasoningEffort: m.reasoning?.defaultEffort });
+          continue;
+        }
+        const defaultEffort = m.reasoning?.defaultEffort;
+        const ordered = defaultEffort && available.includes(defaultEffort)
+          ? [defaultEffort, ...available.filter((effort) => effort !== defaultEffort)] : available;
+        for (const reasoningEffort of ordered) out.push({ provider: g.id, model: m.id, displayName: m.name, reasoningEffort });
       }
     }
     return out;
@@ -819,6 +827,11 @@ export class DshAdapter implements AgentAdapter {
       },
     });
     if (!r.ok) throw toError(r.error.code, r.error.message);
+    const selected = r.value.selected;
+    if (selected?.provider !== model.provider || selected?.model !== model.model ||
+        (model.reasoningEffort != null && selected.reasoningEffort !== model.reasoningEffort)) {
+      throw toError('model-select-unconfirmed', 'DSH 未确认所选模型与思考强度');
+    }
   }
 
   async sessionPermissionPresets(session: AgentSessionRef): Promise<SessionPermissionPresetState> {
