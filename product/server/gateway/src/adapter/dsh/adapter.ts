@@ -25,7 +25,7 @@ import type {
   DshApprovalRequestPayload, DshAskUserQuestionAnswer, DshModelCatalog, DshRemoteEventFrame,
   DshAssistantStreamFrame, DshSessionCreateValue, DshSessionFollowFrame, DshSessionListValue, DshSessionPage,
   DshSessionSelectModelValue, DshSessionWireEvent, DshWorkspaceArchiveValue, DshWorkspaceCreateValue,
-  DshWorkspaceFollowFrame, DshWorkspaceView,
+  DshWorkspaceFollowFrame, DshWorkspaceRenameValue, DshWorkspaceView,
 } from './types.ts';
 
 export interface DshAdapterConfig extends AdapterConfig {
@@ -766,6 +766,16 @@ export class DshAdapter implements AgentAdapter {
       if (!this.workspaceOrder.includes(w.workspaceId)) this.workspaceOrder.push(w.workspaceId);
     }
     return { workspace: toWorkspaceView(w), created: r.value.created };
+  }
+
+  async renameWorkspace(workspaceId: string, title: string): Promise<WorkspaceView> {
+    const r = await this.requireClient().call<DshWorkspaceRenameValue>('workspace/rename', {
+      request: { workspaceId, title },
+    });
+    if (!r.ok) throw toError(r.error.code, r.error.message);
+    const workspace = r.value.workspace;
+    if (workspace) this.workspaces.set(workspace.workspaceId, workspace);
+    return toWorkspaceView(workspace);
   }
 
   async deleteWorkspace(workspaceId: string): Promise<void> {

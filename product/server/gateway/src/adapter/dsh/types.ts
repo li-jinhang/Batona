@@ -313,6 +313,11 @@ export interface DshWorkspaceCreateValue {
   created: boolean;
 }
 
+/** workspace/rename：args = { request: { workspaceId, title } } */
+export interface DshWorkspaceRenameValue {
+  workspace: DshWorkspaceView;
+}
+
 /** workspace/archiveSession：args = { request } */
 export interface DshWorkspaceArchiveValue {
   archivedSessionIds: string[];

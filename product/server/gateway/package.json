@@ -1,6 +1,6 @@
 {
   "name": "batona-gateway",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "private": true,
   "type": "module",
   "description": "Batona 多 Agent 远程接入网关",

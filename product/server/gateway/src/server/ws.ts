@@ -227,6 +227,10 @@ export class GatewayWsServer {
           const p = payload as { path: string; backend?: string };
           return ok(await this.router.createWorkspace(p.path, p.backend));
         }
+        case 'workspace.rename': {
+          const p = payload as { workspaceId: string; title: string; backend?: string };
+          return ok(await this.router.renameWorkspace(p.workspaceId, p.title, p.backend));
+        }
         case 'workspace.tree': {
           const p = payload as { backend?: string };
           return ok(await this.router.workspaceTree(p.backend));
