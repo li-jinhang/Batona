@@ -24,6 +24,7 @@ import { attentionCategory, type PushCategory } from '../hosted/push.ts';
 interface PendingAnswer {
   gatewaySessionId: string;
   adapterRpcId: string;
+  frame: ServerRequest;
 }
 export type WsAuth = Pick<AuthService, 'validateToken' | 'listDevices' | 'revokeDevice'>;
 export interface WsOptions {
@@ -188,6 +189,10 @@ export class GatewayWsServer {
           const events = await this.router.history(p.sessionId, { beforeSeq: p.beforeSeq, limit: p.limit });
           return ok({ events });
         }
+        case 'interaction.pendingList':
+          return ok({ interactions: [...this.pending.entries()]
+            .filter(([rpcId]) => !this.resolving.has(rpcId))
+            .map(([, pending]) => pending.frame) });
         case 'session.rename': {
           const p = payload as { sessionId: string; title: string; backend?: string };
           return ok(await this.router.rename(p.sessionId, p.title, p.backend));
@@ -298,15 +303,15 @@ export class GatewayWsServer {
     const rpcId = RpcId(crypto.randomUUID());
     switch (event.type) {
       case 'approval/requested': {
-        this.pending.set(rpcId, { gatewaySessionId, adapterRpcId: event.rpcId ?? event.approvalId });
-        return {
+        const frame: ServerRequest = {
           type: 'server-request', rpcId, method: 'approval/requested',
           payload: { sessionId: gatewaySessionId, approvalId: event.approvalId, toolName: event.toolName, reason: event.reason },
         };
+        this.pending.set(rpcId, { gatewaySessionId, adapterRpcId: event.rpcId ?? event.approvalId, frame });
+        return frame;
       }
       case 'question/requested': {
-        this.pending.set(rpcId, { gatewaySessionId, adapterRpcId: event.rpcId ?? event.questionRpcId });
-        return {
+        const frame: ServerRequest = {
           type: 'server-request', rpcId, method: 'question/requested',
           payload: {
             sessionId: gatewaySessionId,
@@ -314,6 +319,8 @@ export class GatewayWsServer {
             questions: event.questions as AskUserQuestionItem[],
           },
         };
+        this.pending.set(rpcId, { gatewaySessionId, adapterRpcId: event.rpcId ?? event.questionRpcId, frame });
+        return frame;
       }
       case 'interaction/resolved': {
         const requestRpcIds: string[] = [];

@@ -2,7 +2,7 @@ import './style.css';
 import jsQR from 'jsqr';
 import { credentialStore } from './storage.js';
 import { GatewayClient } from './gateway.js';
-import { backendIdAllowed, visibleBackendIds } from './backend-policy.js';
+import { backendIdAllowed, PRODUCT_BACKENDS, visibleBackendIds } from './backend-policy.js';
 import { newestSessionsFirst } from './session-order.js';
 
 const BASE = import.meta.env.BASE_URL;
@@ -22,20 +22,21 @@ const state = {
   hello: null,
   online: false,
   pcOnline: false,
-  backends: ['dsh', 'codex'],
+  backends: PRODUCT_BACKENDS,
   backend: 'dsh',
   sessions: [],
+  allSessions: [],
   tree: [],
   showOlder: new Set(),
   current: null,
   events: [],
   draft: '',
-  pending: null,
+  pendingInteractions: [],
   settings: null,
   modelChoices: [],
   profiles: [],
   permissionPresets: null,
-  push: { configured: false, subscribed: false, denied: false },
+  push: { configured: false, publicKey: null, subscribed: false, denied: false },
   dir: { open: false, path: '', roots: [], dirs: [], loading: false },
   modal: null,
   requestBusy: false,
@@ -136,7 +137,11 @@ async function start() {
     render();
   });
   navigator.serviceWorker?.addEventListener('message', event => {
-    if (event.data?.type === 'refresh-authoritative-state' && state.credentials?.token) void refreshBackend(true);
+    if (event.data?.type === 'refresh-authoritative-state' && state.credentials?.token) {
+      if (!navigator.onLine) return;
+      if (!state.online) { void boot(); return; }
+      void Promise.all([refreshBackend(true), refreshPendingInteractions()]);
+    }
   });
   try { state.credentials = await credentialStore.read() ?? null; }
   catch { state.credentials = null; state.notice = '此浏览器无法保存手机授权信息。请检查网站数据权限后重新打开。'; state.noticeKind = 'error'; }
@@ -198,12 +203,16 @@ async function boot() {
     });
     state.hello = await state.client.connect(state.credentials.token);
     state.backends = visibleBackendIds(state.hello?.adapters, E2E_MODE);
-    if (state.backends.includes(state.hello?.defaultBackend)) state.backend = state.hello.defaultBackend;
-    else if (!backendIdAllowed(state.backend, E2E_MODE)) state.backend = 'dsh';
-    state.view = 'home';
+    if (state.current && state.backends.includes(state.current.backend)) state.backend = state.current.backend;
+    else {
+      if (state.current) { state.current = null; state.events = []; }
+      if (state.backends.includes(state.hello?.defaultBackend)) state.backend = state.hello.defaultBackend;
+      else if (!backendIdAllowed(state.backend, E2E_MODE)) state.backend = 'dsh';
+    }
+    state.view = state.current ? 'session' : 'home';
     state.online = true;
     setConnection('online', '电脑已连接');
-    await Promise.all([refreshBackend(true), refreshPushState()]);
+    await Promise.all([refreshBackend(true), refreshPushState(), refreshPendingInteractions()]);
   } catch (error) {
     if (error.status === 401) return;
     state.view = 'offline';
@@ -223,6 +232,7 @@ async function authorizationExpired() {
     await credentialStore.clearAuthorization().catch(() => {});
     state.credentials = { deviceSecret: state.credentials.deviceSecret };
   }
+  state.pendingInteractions = [];
   state.view = state.ios && !state.standalone ? 'install' : 'pair';
   state.notice = '手机授权已撤销。请确认旧绑定状态，再用配对码重新申请。';
   state.noticeKind = 'error';
@@ -301,7 +311,8 @@ async function refreshBackend(reloadHistory = false) {
       state.client.request('session.list', { backend: state.backend }),
       state.client.request('workspace.tree', { backend: state.backend }).catch(() => ({ items: [] })),
     ]);
-    state.sessions = (sessionResult.sessions ?? []).filter(item => item.backend === state.backend);
+    state.allSessions = sessionResult.sessions ?? [];
+    state.sessions = state.allSessions.filter(item => item.backend === state.backend);
     state.tree = treeResult.items ?? [];
     if (reloadHistory && state.current && state.current.backend === state.backend) await loadHistory(state.current.id);
   } catch (error) {
@@ -310,6 +321,39 @@ async function refreshBackend(reloadHistory = false) {
     state.noticeKind = 'error';
   }
   render();
+}
+
+async function refreshPendingInteractions() {
+  if (!state.client || !state.online) return;
+  try {
+    const result = await state.client.request('interaction.pendingList', {});
+    const frames = Array.isArray(result.interactions) ? result.interactions.filter(frame =>
+      frame?.type === 'server-request' &&
+      (frame.method === 'approval/requested' || frame.method === 'question/requested') &&
+      typeof frame.rpcId === 'string'
+    ) : [];
+    const liveRpcIds = new Set(frames.map(frame => frame.rpcId));
+    state.pendingInteractions = state.pendingInteractions.filter(item => liveRpcIds.has(item.rpcId));
+    for (const frame of frames) onGatewayFrame(frame);
+    render();
+  } catch { /* a reconciliation failure must not hide requests already received */ }
+}
+
+async function switchBackend(backend) {
+  state.backend = backend;
+  state.current = null;
+  state.events = [];
+  state.draft = '';
+  state.view = 'home';
+  state.notice = '';
+  state.sessions = [];
+  state.tree = [];
+  state.modelChoices = [];
+  state.profiles = [];
+  state.settings = null;
+  state.permissionPresets = null;
+  if (state.online && backendReady(state.backend)) await refreshBackend(false);
+  else render();
 }
 
 async function loadHistory(sessionId) {
@@ -359,24 +403,27 @@ function onGatewayFrame(frame) {
     return;
   }
   if (frame.type === 'client-notice' && frame.method === 'reconnected') {
-    void refreshBackend(true);
+    void Promise.all([refreshBackend(true), refreshPendingInteractions()]);
     return;
   }
   const payload = frame.payload ?? {};
   if (frame.method === 'approval/requested') {
-    state.pending = { kind: 'approval', rpcId: frame.rpcId, sessionId: payload.sessionId, toolName: payload.toolName ?? '', reason: payload.reason ?? '' };
+    const interaction = { kind: 'approval', rpcId: frame.rpcId, sessionId: payload.sessionId, toolName: payload.toolName ?? '', reason: payload.reason ?? '' };
+    state.pendingInteractions = [...state.pendingInteractions.filter(item => item.rpcId !== interaction.rpcId), interaction];
     if (state.current?.id === payload.sessionId) state.current.state = 'waiting-approval';
     render();
     return;
   }
   if (frame.method === 'question/requested') {
-    state.pending = { kind: 'question', rpcId: frame.rpcId, sessionId: payload.sessionId, questions: payload.questions ?? [] };
+    const interaction = { kind: 'question', rpcId: frame.rpcId, sessionId: payload.sessionId, questions: payload.questions ?? [] };
+    state.pendingInteractions = [...state.pendingInteractions.filter(item => item.rpcId !== interaction.rpcId), interaction];
     if (state.current?.id === payload.sessionId) state.current.state = 'waiting-question';
     render();
     return;
   }
   if (frame.method === 'interaction/resolved') {
-    if (state.pending && payload.requestRpcIds?.includes(state.pending.rpcId)) state.pending = null;
+    const resolved = new Set(payload.requestRpcIds ?? []);
+    state.pendingInteractions = state.pendingInteractions.filter(item => !resolved.has(item.rpcId));
     render();
     return;
   }
@@ -402,7 +449,6 @@ async function openSession(session) {
     state.current.backend = session.backend ?? state.backend;
     state.view = 'session';
     state.draft = '';
-    state.pending = null;
     await loadHistory(state.current.id);
     await loadSessionSettings();
   } catch (error) { showToast(error.message); }
@@ -412,19 +458,16 @@ async function openSession(session) {
 async function createSession(workspaceId = '', workspacePath = '') {
   if (!state.client || !state.online || !backendReady(state.backend)) return;
   try {
-    const model = state.modelChoices[0];
     const session = await state.client.request('session.create', {
       backend: state.backend,
       title: '新会话',
       ...(workspaceId ? { workspaceId } : {}),
       ...(workspacePath ? { workspacePath } : {}),
-      ...(model ? { model } : {}),
     });
     state.current = session;
     state.current.backend = state.backend;
     state.view = 'session';
     state.events = [];
-    state.pending = null;
     await loadSessionSettings();
     await refreshBackend(false);
     state.view = 'session';
@@ -499,25 +542,41 @@ async function sendDraft() {
   finally { state.requestBusy = false; render(); }
 }
 
-async function respond(payload) {
-  if (!state.pending || !state.online || state.requestBusy) return;
-  const pending = state.pending;
+async function respond(payload, rpcId) {
+  const pending = state.pendingInteractions.find(item => item.rpcId === rpcId);
+  if (!pending || !state.online || state.requestBusy) return;
   state.requestBusy = true;
   try {
     await state.client.request('respond', { sessionId: pending.sessionId, serverRequestRpcId: pending.rpcId, payload });
-    if (state.pending?.rpcId === pending.rpcId) state.pending = null;
+    state.pendingInteractions = state.pendingInteractions.filter(item => item.rpcId !== pending.rpcId);
     render();
   } catch (error) { showToast(error.message); }
   finally { state.requestBusy = false; render(); }
+}
+
+async function openPendingSession(rpcId) {
+  const pending = state.pendingInteractions.find(item => item.rpcId === rpcId);
+  if (!pending || !state.client || !state.online) return;
+  let session = state.allSessions.find(item => item.id === pending.sessionId);
+  if (!session) {
+    try {
+      const result = await state.client.request('session.list', {});
+      state.allSessions = result.sessions ?? [];
+      state.sessions = state.allSessions.filter(item => item.backend === state.backend);
+      session = state.allSessions.find(item => item.id === pending.sessionId);
+    } catch (error) { showToast(error.message); return; }
+  }
+  if (!session) { showToast('暂时无法定位这个待处理会话；请重新连接后再试。'); return; }
+  if (session.backend !== state.backend) await switchBackend(session.backend);
+  await openSession(session);
 }
 
 async function enableNotifications() {
   if (!state.credentials?.token || !state.online) return;
   if (state.ios && !state.standalone) { showToast('请先从主屏幕打开 DSH Link，再开启通知。'); return; }
   if (!('Notification' in window) || !('serviceWorker' in navigator)) { showToast('此浏览器不支持系统通知。'); return; }
+  if (!state.push.configured || !state.push.publicKey) { showToast('服务器暂未配置 Web Push；你仍可在应用内查看任务状态。'); return; }
   try {
-    const keys = await api('push-key');
-    if (!keys.configured || !keys.publicKey) { showToast('服务器暂未配置 Web Push；你仍可在应用内查看任务状态。'); return; }
     const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
     if (permission !== 'granted') {
       state.push.denied = permission === 'denied';
@@ -527,6 +586,8 @@ async function enableNotifications() {
       render();
       return;
     }
+    const keys = await api('push-key');
+    if (!keys.configured || !keys.publicKey) { showToast('服务器暂未配置 Web Push；你仍可在应用内查看任务状态。'); return; }
     const registration = await navigator.serviceWorker.ready;
     const subscription = await registration.pushManager.getSubscription() ?? await registration.pushManager.subscribe({
       userVisibleOnly: true,
@@ -554,6 +615,7 @@ async function refreshPushState() {
   try {
     const push = await api('push-key');
     state.push.configured = push.configured === true;
+    state.push.publicKey = typeof push.publicKey === 'string' ? push.publicKey : null;
     const registration = await navigator.serviceWorker?.ready;
     const local = registration ? await registration.pushManager.getSubscription() : null;
     state.push.subscribed = push.subscribed === true && Boolean(local);
@@ -584,7 +646,7 @@ async function signOut() {
     state.sessions = [];
     state.tree = [];
     state.events = [];
-    state.pending = null;
+    state.pendingInteractions = [];
     state.push = { configured: false, subscribed: false, denied: false };
     state.view = state.ios && !state.standalone ? 'install' : 'pair';
     state.notice = '本机授权已撤销。手机身份已保留，可以使用同一部手机重新配对。';
@@ -701,6 +763,7 @@ function renderHome() {
     </section>
     <nav class="backend-switch" aria-label="选择后端" role="tablist">${tabs}</nav>
     ${state.push.configured ? `<section class="notification-strip"><p>${state.push.subscribed ? '系统通知已开启 · 仅提醒审批、提问、完成或失败，不包含会话正文。' : state.push.denied ? '通知权限已关闭 · 会话列表仍可在应用内查看。' : '为审批、问题与任务结果开启系统提醒。消息正文不会出现在通知中。'}</p><button class="button secondary small" data-action="notifications" type="button" ${state.push.subscribed || !state.online || state.iosVersion !== null && state.iosVersion < 16.4 ? 'disabled' : ''}>${state.push.subscribed ? '已开启' : '开启通知'}</button></section>` : ''}
+    ${renderPendingQueue()}
     ${alertHtml()}
     ${!supported ? `<div class="empty-state"><strong>${esc(appName(state.backend))} 当前不可用</strong>电脑客户端尚未向网关开放此后端。请检查 PC 端集成状态；不会用另一个后端的会话代替显示。</div>` : renderWorkspaces()}
     <div class="section-bar"><h2>最近会话</h2><span class="micro">${state.sessions.length} SESSIONS</span></div>
@@ -739,7 +802,8 @@ function renderSession() {
   const session = state.current;
   const busy = !state.online || state.requestBusy;
   return `<div class="session-toolbar"><button class="back-button" type="button" data-action="back" aria-label="返回会话列表">←</button><div class="session-toolbar-main"><p class="micro">${esc(appName(session.backend).toUpperCase())} · ${esc(stateLabel(session.state))}</p><h1>${esc(session.title || '新会话')}</h1></div><div class="toolbar-actions"><button class="button ghost small" type="button" data-action="rename">重命名</button><button class="button ghost small" type="button" data-action="archive">归档</button></div></div>
-    ${state.pending?.sessionId === session.id ? renderInteraction() : ''}
+    ${renderPendingQueue(session.id)}
+    ${state.pendingInteractions.filter(item => item.sessionId === session.id).map(renderInteraction).join('')}
     ${alertHtml()}
     <details class="paper-card settings-panel"><summary class="text-action">会话设置 · ${esc(session.model?.displayName || session.model?.model || '模型与权限')}</summary>${renderSessionSettings()}</details>
     <section class="event-list" aria-label="会话内容">${state.events.length ? state.events.map(eventCard).join('') : '<div class="empty-state"><strong>还没有消息</strong>发送一条文字请求，任务会在电脑上继续执行。</div>'}</section>
@@ -752,12 +816,23 @@ function eventCard(item) {
   return `<article class="message-card" data-kind="${esc(item.kind)}"><p class="message-label">${label}</p><p class="message-text">${esc(item.text)}</p></article>`;
 }
 
-function renderInteraction() {
-  const pending = state.pending;
-  if (!pending) return '';
-  if (pending.kind === 'approval') return `<section class="interaction-card" aria-label="工具调用审批"><p class="micro">ACTION NEEDED · APPROVAL</p><h3>电脑上的任务正在等待批准</h3><p>${esc(pending.toolName || '工具操作')}${pending.reason ? ` · ${esc(pending.reason)}` : ''}</p><div class="button-row"><button class="button danger" type="button" data-action="respond-deny" ${state.requestBusy ? 'disabled' : ''}>拒绝</button><button class="button primary" type="button" data-action="respond-allow" ${state.requestBusy ? 'disabled' : ''}>允许一次</button></div></section>`;
+function renderPendingQueue(excludeSessionId = '') {
+  const pending = state.pendingInteractions.filter(item => item.sessionId !== excludeSessionId);
+  if (!pending.length) return '';
+  const rows = pending.map(item => {
+    const session = state.allSessions.find(entry => entry.id === item.sessionId);
+    const title = session?.title || (session ? '新会话' : `会话 ${String(item.sessionId).slice(0, 8)}`);
+    const kind = item.kind === 'approval' ? '等待审批' : '等待回答';
+    return `<div class="pending-route" data-session-id="${esc(item.sessionId)}"><span><b>${esc(title)}</b><small>${session?.backend ? `${esc(appName(session.backend))} · ` : ''}${kind}</small></span><button class="button secondary small" type="button" data-action="open-pending" data-rpc-id="${esc(item.rpcId)}">前往处理</button></div>`;
+  }).join('');
+  return `<section class="notification-strip pending-routes" aria-label="其他会话的待处理请求"><p>有会话正在等待你的回应</p><div class="pending-route-list">${rows}</div></section>`;
+}
+
+function renderInteraction(pending) {
+  const rpcId = esc(pending.rpcId);
+  if (pending.kind === 'approval') return `<section class="interaction-card" aria-label="工具调用审批"><p class="micro">ACTION NEEDED · APPROVAL</p><h3>电脑上的任务正在等待批准</h3><p>${esc(pending.toolName || '工具操作')}${pending.reason ? ` · ${esc(pending.reason)}` : ''}</p><div class="button-row"><button class="button danger" type="button" data-action="respond-deny" data-rpc-id="${rpcId}" ${state.requestBusy ? 'disabled' : ''}>拒绝</button><button class="button primary" type="button" data-action="respond-allow" data-rpc-id="${rpcId}" ${state.requestBusy ? 'disabled' : ''}>允许一次</button></div></section>`;
   const questions = pending.questions.length ? pending.questions : [{ id: 'answer', kind: 'text', prompt: '电脑端有一个问题需要回答。' }];
-  return `<section class="interaction-card" aria-label="回答电脑端提问"><p class="micro">ACTION NEEDED · QUESTION</p><h3>继续前需要你的回答</h3><form id="question-form">${questions.map((question, index) => `<fieldset class="question-fieldset"><legend class="field-label">${questions.length > 1 ? `${index + 1}. ` : ''}${esc(question.prompt)}</legend>${(question.options ?? []).map(option => `<label class="question-option"><input type="radio" name="question-${esc(question.id)}" value="${esc(option.id)}"><span><b>${esc(option.label)}</b>${option.description ? `<br><span>${esc(option.description)}</span>` : ''}</span></label>`).join('')}<input class="text-field" type="${question.isSecret ? 'password' : 'text'}" name="custom-${esc(question.id)}" placeholder="${esc(question.placeholder || '输入你的答案…')}" /></fieldset>`).join('')}<div class="button-row"><button class="button secondary" type="button" data-action="respond-skip">跳过</button><button class="button primary" type="submit">提交回答</button></div></form></section>`;
+  return `<section class="interaction-card" aria-label="回答电脑端提问"><p class="micro">ACTION NEEDED · QUESTION</p><h3>继续前需要你的回答</h3><form class="question-form" data-rpc-id="${rpcId}">${questions.map((question, index) => `<fieldset class="question-fieldset" data-question-id="${esc(question.id)}"><legend class="field-label">${questions.length > 1 ? `${index + 1}. ` : ''}${esc(question.prompt)}</legend>${(question.options ?? []).map(option => `<label class="question-option"><input type="radio" name="question-${rpcId}-${esc(question.id)}" value="${esc(option.id)}"><span><b>${esc(option.label)}</b>${option.description ? `<br><span>${esc(option.description)}</span>` : ''}</span></label>`).join('')}<input class="text-field" type="${question.isSecret ? 'password' : 'text'}" name="custom-${esc(question.id)}" placeholder="${esc(question.placeholder || '输入你的答案…')}" /></fieldset>`).join('')}<div class="button-row"><button class="button secondary" type="button" data-action="respond-skip" data-rpc-id="${rpcId}">跳过</button><button class="button primary" type="submit">提交回答</button></div></form></section>`;
 }
 
 function renderSessionSettings() {
@@ -795,13 +870,13 @@ app.addEventListener('input', event => {
 app.addEventListener('submit', event => {
   if (event.target.id === 'pair-form') { event.preventDefault(); void requestPair(); }
   else if (event.target.id === 'composer') { event.preventDefault(); void sendDraft(); }
-  else if (event.target.id === 'question-form') {
+  else if (event.target.matches('.question-form')) {
     event.preventDefault();
     const answers = [...event.target.querySelectorAll('fieldset')].map(field => {
-      const id = field.querySelector('[name^="question-"]')?.name.replace(/^question-/, '') ?? 'answer';
+      const id = field.dataset.questionId || 'answer';
       return { id, selected: [...field.querySelectorAll('input[type="radio"]:checked')].map(input => input.value), ...(field.querySelector('[name^="custom-"]')?.value.trim() ? { custom: field.querySelector('[name^="custom-"]').value.trim() } : {}) };
     });
-    void respond({ answers });
+    void respond({ answers }, event.target.dataset.rpcId);
   } else if (event.target.id === 'workspace-form') {
     event.preventDefault();
     const path = new FormData(event.target).get('workspace-path');
@@ -819,7 +894,7 @@ app.addEventListener('click', async event => {
   const action = button.dataset.action;
   if (action === 'check-installed') { state.standalone = isStandalone(); if (!state.standalone) { showToast('请从主屏幕图标打开 DSH Link。'); return; } state.view = state.credentials?.token ? 'connecting' : 'pair'; render(); if (state.credentials?.token) void boot(); return; }
   if (action === 'scan-qr') { void startScanner(); return; }
-  if (action === 'backend') { state.backend = button.dataset.backend; state.current = null; state.view = 'home'; state.notice = ''; if (state.online && backendReady(state.backend)) await refreshBackend(false); else render(); return; }
+  if (action === 'backend') { await switchBackend(button.dataset.backend); return; }
   if (action === 'new-session') { await createSession(); return; }
   if (action === 'new-workspace') { state.dir = { open: true, path: '', roots: [], dirs: [], loading: false }; renderModal(); await openDirectory(''); return; }
   if (action === 'create-in-workspace') { await createSession(button.dataset.workspace, button.dataset.path); return; }
@@ -831,13 +906,14 @@ app.addEventListener('click', async event => {
     else await openSession({ backend: button.dataset.backend, backendSessionId: button.dataset.session, title: '继续会话' });
     return;
   }
+  if (action === 'open-pending') { await openPendingSession(button.dataset.rpcId); return; }
   if (action === 'back') { state.current = null; state.events = []; state.view = 'home'; await refreshBackend(false); return; }
   if (action === 'notifications') { await enableNotifications(); return; }
   if (action === 'sign-out') { await signOut(); return; }
   if (action === 'cancel-turn') { try { await state.client.request('session.cancel', { sessionId: state.current.id }); showToast('已向电脑发送停止请求'); } catch (error) { showToast(error.message); } return; }
-  if (action === 'respond-allow') { await respond({ outcome: 'allowed-once' }); return; }
-  if (action === 'respond-deny') { await respond({ outcome: 'rejected' }); return; }
-  if (action === 'respond-skip') { await respond({ skip: true }); return; }
+  if (action === 'respond-allow') { await respond({ outcome: 'allowed-once' }, button.dataset.rpcId); return; }
+  if (action === 'respond-deny') { await respond({ outcome: 'rejected' }, button.dataset.rpcId); return; }
+  if (action === 'respond-skip') { await respond({ skip: true }, button.dataset.rpcId); return; }
   if (action === 'retry-connect') { state.notice = ''; void boot(); return; }
   if (action === 'rename') { state.modal = { kind: 'rename', title: state.current.title || '' }; render(); return; }
   if (action === 'archive') { if (await confirmDialog('归档这个会话？', '归档会将会话从当前列表中隐藏；电脑上的历史数据不会删除。', '归档')) { try { await state.client.request('workspace.archiveSession', { sessionId: state.current.backendSessionId, backend: state.current.backend }); state.current = null; state.events = []; state.view = 'home'; await refreshBackend(false); } catch (error) { showToast(error.message); } } return; }

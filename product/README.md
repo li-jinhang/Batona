@@ -6,8 +6,8 @@ PC 0.5.6 源码含并行 Codex 测试 profile：在 `product/pc/` 执行 `npm ru
 
 本次改名同时更新了 PC appId、Android applicationId、本地安全存储别名、配对 URI、账号密钥前缀和服务器运行标识。Batona PC 与 Batona Mobile 使用新的本地数据空间；2026-09-23 已完成服务器运行标识迁移并保留现有托管授权，迁移证据见运维记录。
 
-Batona 让 Android 手机通过公网网关远程操控笔记本上的 DeepSeek Harness（DSH）或 Codex。
-Agent、LLM 与工具执行始终留在 PC；服务器只提供认证、会话路由和 PC 的出站隧道。
+Batona 让 Android 手机或 iPhone 上安装的 PWA 通过公网网关远程操控笔记本上的 DeepSeek Harness（DSH）或 Codex。
+Agent、LLM 与工具执行始终留在 PC；服务器只提供认证、会话路由与 PC 出站隧道转发。用户主动订阅 iOS PWA 通知后，服务器还可向 Apple Push 发送不含正文或标识符的事件类别。
 
 ## 文档边界
 
@@ -71,7 +71,7 @@ PC 登录并连通隧道后打开手机配对页，显示随机手动码和 `bat
 
 手机连接 `wss://117.72.10.87/ws`，设备令牌仅在首帧 `auth.hello.payload.token` 传递；认证前无业务推送。协议版本为 v1，使用四象限信封：`client-request`、`server-response`、`server-request`、`client-response`。
 
-- 上行：`auth.hello`、`session.list/create/resume/prompt/cancel/history/rename`、`workspace.*`（含 `workspace.rename`）、`model.*`、`agent.profile.list`、`respond`；设备管理仅走 PC 的 `/api/access/*` REST。
+- 上行：`auth.hello`、`session.list/create/resume/prompt/cancel/history/rename`、`interaction.pendingList`、`workspace.*`（含 `workspace.rename`）、`model.*`、`agent.profile.list`、`respond`；设备管理仅走 PC 的 `/api/access/*` REST。`interaction.pendingList` 在认证后的 WS 连接上返回网关进程内尚未解决的审批/提问帧，供手机重连或页面重载后恢复；待处理帧不持久化。
 - 下行：`session/event`、`approval/requested`、`question/requested`。审批/提问必须用原始 `serverRequestRpcId` 经 `respond` 回答。
 - `session/event.payload.sessionId` 是网关会话 ID；`workspace.tree` 中的 `sessions[].sessionId` 是后端会话 ID。Android 须使用已恢复会话的 `backendSessionId` 映射状态，聊天事件仍按网关 ID 路由。Codex 的 `session/thinking` 来自实际推理事件，`session/reconnecting` 来自 App Server `error.willRetry`；只有后端提供次数时才带 `attempt/maxAttempts`。
 - `workspace.tree` 返回真实工作区 `items[]` 和可选的 `ungroupedSessions[]`。两者中的会话互斥，未分组集合不是工作区；旧客户端可忽略此字段。`model.select` 成功响应带后端确认后的 `model`，手机应核对模型和思考强度后再显示所选值。
@@ -94,7 +94,7 @@ PC 登录并连通隧道后打开手机配对页，显示随机手动码和 `bat
 - DSH 的 `model.list` 按 `session/modelCatalog` 中每个模型实际支持的 `reasoning.efforts` 返回同一模型的强度变体；支持强度的模型通常提供 `off / low / high / max`，不支持的模型只返回一个无强度选项。Android 将模型与思考强度分开选择，二者都调用 `model.select`；网关通过 DSH `session/selectModel` 返回的 `selected` 核对模型及强度后才报告成功。
 - Codex 的 `session/settings` 会话事件携带模型/强度及可识别的权限档 ID；网关更新会话模型快照并把事件推送给手机。未知权限组合清除手机端旧档位，避免显示过期的权限状态。该事件不包含原始 `threadSettings`、工作目录或审批详情。
 - iOS PWA 的推送操作仅供已绑定手机使用：`POST /api/access/push-key` 与 `push-status` 读取配置，`push-subscribe` / `push-unsubscribe` 管理订阅；订阅在手机退出、解绑、电脑替换或账号禁用时清理。系统通知只包含 `approval`、`question`、`completed`、`failed` 类别，不包含会话正文。
-- 手机只在本地缓存每个工作区最近 5 个 Codex 会话和每个会话最多 200 条已脱敏历史；断网只能浏览、不可排队发送，注销或重新绑定会清空缓存。通知仅提示等待审批、等待回答、完成或失败，且不含对话、命令、路径或凭据。
+- 手机只在本地缓存每个工作区最近 5 个 Codex 会话和每个会话最多 200 条已脱敏历史；断网只能浏览、不可排队发送，注销或重新绑定会清空缓存。iOS PWA 只缓存应用外壳，不缓存会话数据。通知仅提示等待审批、等待回答、完成或失败，且不含对话、命令、路径或凭据。
 
 ### PC ↔ 服务器隧道与 launch token
 

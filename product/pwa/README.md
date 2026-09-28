@@ -10,10 +10,22 @@ Use Node.js 18 or later:
 npm ci
 npm run typecheck
 npx playwright install chromium
+```
+
+For the second fixture's real Gateway and PC tunnel modules, install their package dependencies as well:
+
+```powershell
+npm ci --prefix ../server/gateway
+npm ci --prefix ../pc
+```
+
+After installing all three packages, run the browser fixtures:
+
+```powershell
 npm run test:e2e
 ```
 
-The end-to-end fixture starts an isolated Hosted Gateway, an in-process simulated PC tunnel, and a same-origin reverse proxy. It uses no production accounts, real Agent sessions, model calls, or Apple Push service. It verifies the installation gate, PC-approved pairing and occupied phone slot, backend/session behavior, notification subscription cleanup, category-only push, notification-click refresh, and offline shell.
+`npm run test:e2e` runs two browser fixtures. The first starts an isolated Hosted Gateway with a simulated PC tunnel and mock backend; the second exposes simulated DSH and Codex PC services through the real private-tunnel protocol and exercises their adapters from the PWA. Neither fixture uses production accounts, live Agent sessions, model calls, or Apple Push. Together they verify installation and pairing, DSH/Codex session flows, pending-interaction recovery after reload, notification subscription cleanup, category-only push, notification-click reconnection, and the offline shell.
 
 Build the production files with `npm run build`. Vite emits relative asset URLs, and the Service Worker derives its scope from its own location. Keep the static folder and its `index.html` together when copying it to a publication path.
 

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, extname, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { chromium } from 'playwright';
-import { backendIdAllowed, visibleBackendIds } from '../src/backend-policy.js';
+import { backendIdAllowed, PRODUCT_BACKENDS, visibleBackendIds } from '../src/backend-policy.js';
 import { newestSessionsFirst } from '../src/session-order.js';
 import { HostedGateway } from '../../server/gateway/src/hosted/gateway.ts';
 
@@ -20,6 +20,7 @@ const adminKey = randomBytes(32).toString('hex');
 const delivery = [];
 const publicKey = 'A'.repeat(87), privateKey = 'B'.repeat(43);
 assert.deepEqual(visibleBackendIds([{ id: 'mock' }, { id: 'dsh' }, { id: 'codex' }, { id: 'claude' }]), ['dsh', 'codex']);
+assert.deepEqual(PRODUCT_BACKENDS, ['dsh', 'codex']);
 assert.deepEqual(visibleBackendIds([{ id: 'mock' }, { id: 'dsh' }], true), ['dsh', 'mock']);
 assert.equal(backendIdAllowed('mock'), false);
 assert.equal(backendIdAllowed('mock', true), true);
@@ -132,16 +133,38 @@ try {
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'standalone', { configurable: true, value: true });
     window.__sentFrames = [];
+    window.__gatewaySocket = null;
     const nativeSend = WebSocket.prototype.send;
     WebSocket.prototype.send = function (data) {
       try { window.__sentFrames.push(JSON.parse(String(data))); } catch { /* ignore non-JSON frames */ }
       return nativeSend.call(this, data);
     };
+    const NativeWebSocket = window.WebSocket;
+    window.WebSocket = class extends NativeWebSocket {
+      constructor(...args) {
+        super(...args);
+        window.__gatewaySocket = this;
+      }
+    };
     window.__permissionChoice = 'granted';
+    window.__permissionGestureActive = false;
+    window.__pushKeyRequested = false;
+    window.__permissionRequestedAfterPushKey = false;
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (new URL(url, location.href).pathname.endsWith('/api/access/push-key')) window.__pushKeyRequested = true;
+      return nativeFetch(input, init);
+    };
     window.__fakePushSubscription = null;
     class FakeNotification {
       static permission = 'default';
-      static async requestPermission() { this.permission = window.__permissionChoice; return this.permission; }
+      static async requestPermission() {
+        window.__permissionGestureActive = navigator.userActivation.isActive;
+        window.__permissionRequestedAfterPushKey = window.__pushKeyRequested;
+        this.permission = window.__permissionChoice;
+        return this.permission;
+      }
     }
     Object.defineProperty(window, 'Notification', { configurable: true, value: FakeNotification });
     Object.defineProperty(ServiceWorkerRegistration.prototype, 'pushManager', {
@@ -174,6 +197,8 @@ try {
   const policy = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content');
   const connectPolicy = policy.split(';').find(directive => directive.trim().startsWith('connect-src'));
   assert.match(connectPolicy, /wss:\/\/117\.72\.10\.87/);
+  assert.match(connectPolicy, /ws:\/\/127\.0\.0\.1:\*/);
+  assert.match(connectPolicy, /ws:\/\/localhost:\*/);
   assert.doesNotMatch(connectPolicy, /(?:^|\s)wss?:(?:\s|$)/);
   await page.getByRole('heading', { name: /把这部手机/ }).waitFor();
   await page.locator('#pair-code').fill(replacementPair.code);
@@ -209,15 +234,33 @@ try {
   await page.locator('#model-select').selectOption({ label: 'Mock Reasoner · high' });
   await page.getByText('模型设置已同步到电脑').waitFor();
 
+  await page.getByRole('button', { name: '返回会话列表' }).click();
+  await page.getByRole('button', { name: 'DSH' }).click();
+  await page.getByText(/DSH 当前不可用/).waitFor();
+  await page.getByRole('button', { name: 'Codex' }).click();
+  await page.getByText(/Codex 当前不可用/).waitFor();
+  await page.getByRole('button', { name: '模拟后端' }).click();
+  await page.waitForFunction(() => document.querySelector('[data-action="backend"][data-backend="mock"]')?.getAttribute('aria-selected') === 'true' && !document.querySelector('[data-action="new-session"]')?.disabled);
+  await page.locator('[data-action="new-session"]').click();
+  await page.getByLabel(/发送文字请求/).waitFor();
+  const createRequest = await page.evaluate(() => [...window.__sentFrames].reverse().find(frame => frame.method === 'session.create'));
+  assert.ok(createRequest, 'new session request should be sent');
+  assert.equal('model' in createRequest.payload, false, 'a model selection from a previous backend must not leak into session creation');
+
   await page.evaluate(() => { window.__permissionChoice = 'denied'; });
   await page.getByRole('button', { name: '返回会话列表' }).click();
+  await page.evaluate(() => { window.__pushKeyRequested = false; });
   await page.getByRole('button', { name: '开启通知' }).click();
   await page.locator('#app .notice[role="status"]').waitFor();
   assert.match(await page.locator('#app .notice[role="status"]').innerText(), /通知权限已关闭/);
+  assert.equal(await page.evaluate(() => window.__permissionRequestedAfterPushKey), false, 'notification permission should be requested before a network request');
   assert.ok(await page.getByRole('heading', { name: /工作还在继续/ }).count(), 'permission denial must not block session use');
   await page.evaluate(() => { window.__permissionChoice = 'granted'; Notification.permission = 'default'; });
+  await page.evaluate(() => { window.__pushKeyRequested = false; });
   await page.getByRole('button', { name: '开启通知' }).click();
   await page.locator('#app .notice.success').waitFor({ timeout: 10000 });
+  assert.equal(await page.evaluate(() => window.__permissionGestureActive), true, 'notification permission should be requested during the user gesture');
+  assert.equal(await page.evaluate(() => window.__permissionRequestedAfterPushKey), false, 'the permission prompt must precede push-key network I/O');
 
   await page.getByRole('button', { name: /在这里新建会话/ }).click();
   await page.getByLabel(/发送文字请求/).waitFor();
@@ -228,6 +271,32 @@ try {
   await page.getByText('任务完成！').waitFor({ timeout: 10000 });
   await page.locator('#message-input').fill('[ask]');
   await page.getByRole('button', { name: '发送请求' }).click();
+  await page.getByRole('heading', { name: /需要你的回答/ }).waitFor({ timeout: 10000 });
+  await page.getByLabel(/快速/).check();
+  await page.getByRole('button', { name: '提交回答' }).click();
+  await page.getByText(/已收到你的选择/).waitFor({ timeout: 10000 });
+
+  await page.getByRole('button', { name: '返回会话列表' }).click();
+  await page.locator('[data-action="new-session"]').click();
+  await page.getByLabel(/发送文字请求/).waitFor();
+  await page.locator('#message-input').fill('[ask]');
+  await page.getByRole('button', { name: '发送请求' }).click();
+  await page.getByRole('heading', { name: /需要你的回答/ }).waitFor({ timeout: 10000 });
+  await page.getByRole('button', { name: '返回会话列表' }).click();
+  await page.reload();
+  await page.getByRole('heading', { name: /工作还在继续/ }).waitFor({ timeout: 15000 });
+  await page.getByText('有会话正在等待你的回应').waitFor({ timeout: 5000 });
+  const openedDifferentSession = await page.evaluate(() => {
+    const pendingSessionId = document.querySelector('.pending-route')?.dataset.sessionId;
+    const other = [...document.querySelectorAll('.session-row')].find(row => row.dataset.session !== pendingSessionId);
+    if (!other) return false;
+    other.click();
+    return true;
+  });
+  assert.equal(openedDifferentSession, true, 'another session should remain available while a request is pending');
+  const routeToPending = page.locator('[aria-label="其他会话的待处理请求"] [data-action="open-pending"]');
+  await routeToPending.waitFor();
+  await routeToPending.click();
   await page.getByRole('heading', { name: /需要你的回答/ }).waitFor({ timeout: 10000 });
   await page.getByLabel(/快速/).check();
   await page.getByRole('button', { name: '提交回答' }).click();
@@ -267,6 +336,13 @@ try {
   assert.match(notification[0]?.body ?? '', /等待你的批准/);
   assert.equal(JSON.stringify(notification).includes('DO-NOT-PUSH'), false);
   const refreshCount = await page.evaluate(() => window.__sentFrames.filter(frame => frame.method === 'session.list').length);
+  const authCount = await page.evaluate(() => window.__sentFrames.filter(frame => frame.method === 'auth.hello').length);
+  await page.evaluate(() => {
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    window.setTimeout = (callback, delay, ...args) => nativeSetTimeout(callback, delay === 400 ? 30000 : delay, ...args);
+  });
+  await page.evaluate(() => window.__gatewaySocket.close());
+  await page.waitForFunction(() => document.querySelector('#connection-state span')?.textContent === '连接中断');
   const clientsFound = await serviceWorker.evaluate(async () => {
     const actualClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     Object.defineProperty(self.clients, 'matchAll', { configurable: true, value: async () => actualClients.map(client => ({
@@ -284,6 +360,7 @@ try {
     return actualClients.map(client => client.url);
   });
   assert.ok(clientsFound.some(url => url.startsWith(origin + BASE_PATH)), 'notification click should target the installed PWA client');
+  await page.waitForFunction(count => window.__sentFrames.filter(frame => frame.method === 'auth.hello').length > count, authCount, { timeout: 10000 });
   await page.waitForFunction(count => window.__sentFrames.filter(frame => frame.method === 'session.list').length > count, refreshCount);
 
   await page.getByRole('button', { name: '返回会话列表' }).click();
@@ -314,7 +391,7 @@ try {
   const pushStateResponse = await clearedPushState;
   assert.equal((await pushStateResponse.json()).subscribed, false, 'sign-out must clear the server push subscription');
 
-  console.log('PASS PWA browser E2E: install gate, occupied phone slot, PC-approved pairing, backend separation, workspace/session actions, permission recovery, generic push, notification click refresh, shell-only offline, sign-out cleanup');
+  console.log('PASS PWA browser E2E: install gate, occupied phone slot, PC-approved pairing, backend/model separation, workspace/session actions, pending interaction routing and reload recovery, permission recovery, generic push, notification click refresh, shell-only offline, sign-out cleanup');
 } finally {
   await context?.close();
   await browser.close();

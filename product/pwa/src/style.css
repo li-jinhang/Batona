@@ -159,6 +159,12 @@ h1 em { color: var(--pine); font-style: normal; }
 .notification-strip { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 17px; padding: 12px 14px; border: 1px solid #ccd7c5; border-radius: 13px; background: #edf1e7; }
 .notification-strip p { margin: 0; color: #526451; font-size: 11px; line-height: 1.55; }
 .notification-strip .button { flex: 0 0 auto; }
+.pending-routes { align-items: stretch; flex-direction: column; }
+.pending-route-list { display: grid; gap: 8px; }
+.pending-route { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pending-route > span { display: grid; gap: 3px; min-width: 0; }
+.pending-route b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 12px; }
+.pending-route small { color: var(--muted); font-size: 10px; }
 .settings-panel { margin: 15px 0; padding: 16px; }
 .settings-panel h2 { margin-bottom: 12px; font-family: Georgia, "Songti SC", serif; font-size: 18px; font-weight: 500; }
 .settings-grid { display: grid; gap: 11px; }

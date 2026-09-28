@@ -1,7 +1,7 @@
 # Batona Gateway（Phase 1 MVP）
 
 DeepSeek Harness 手机远程接入网关 —— 手机通过**公网服务器上的网关**远程操控**笔记本上的 DSH**。
-服务器只做转发（认证 / 会话路由 / 协议翻译），**agent、LLM 调用、工具执行全部留在笔记本**。
+服务器只负责认证、会话路由、协议翻译与 PC 出站隧道转发；用户主动订阅后，可将不含正文或标识符的事件类别发送给 Apple Push。**agent、LLM 调用、工具执行全部留在笔记本**。
 
 关联文档：
 - [`../../docs/需求-Batona远程接入网关.md`](../../docs/需求-Batona远程接入网关.md) — 需求（PRD）
@@ -102,6 +102,7 @@ node product/server/gateway/scripts/init-web-push.mjs \
 | `session.list` / `session.create` / `session.resume` | 会话管理（create 支持 backend/agentPreset/workspacePath/model） |
 | `session.prompt` | `{sessionId, parts[], queueAction}`（文本 + base64 图片） |
 | `session.cancel` / `session.history` | 取消 / 历史（归一化 AgentEvent[]） |
+| `interaction.pendingList` | `{}` → `{interactions: ServerRequest[]}`；返回当前网关进程内尚未解决的审批/提问帧，供已认证客户端重连后恢复 |
 | `respond` | `{sessionId, serverRequestRpcId, payload}` — 审批 `{outcome}` / 提问 `{answer}` |
 | `workspace.list` / `workspace.create` | 工作区（DSH: workspace.*；目录需已存在） |
 | `model.list` / `model.select` | 模型目录 / 会话级选择 |
