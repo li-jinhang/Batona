@@ -163,6 +163,12 @@ export class SessionRouter {
     return a.createWorkspace(path);
   }
 
+  async renameWorkspace(workspaceId: string, title: string, backendId?: string): Promise<WorkspaceView> {
+    const a = this.adapterFor(backendId, 'workspace');
+    if (!a.renameWorkspace) throw Object.assign(new Error('not implemented'), { code: 'not-implemented' });
+    return a.renameWorkspace(workspaceId, title);
+  }
+
   async deleteWorkspace(workspaceId: string, backendId?: string): Promise<void> {
     const a = this.adapterFor(backendId, 'workspace');
     if (!a.deleteWorkspace) throw Object.assign(new Error('not implemented'), { code: 'not-implemented' });

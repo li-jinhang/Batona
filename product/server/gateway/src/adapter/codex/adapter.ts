@@ -100,6 +100,13 @@ export class CodexAdapter implements AgentAdapter {
     return result;
   }
 
+  async renameWorkspace(workspaceId: string, title: string): Promise<WorkspaceView> {
+    const result = await this.requireClient().post<{ workspace: WorkspaceView }>(
+      `/v1/workspaces/${encodeURIComponent(workspaceId)}/rename`, { title });
+    this.workspacePaths.set(result.workspace.workspaceId, result.workspace.path);
+    return result.workspace;
+  }
+
   async deleteWorkspace(workspaceId: string): Promise<void> {
     await this.requireClient().delete(`/v1/workspaces/${encodeURIComponent(workspaceId)}`);
     this.workspacePaths.delete(workspaceId);

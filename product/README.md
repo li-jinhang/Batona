@@ -71,10 +71,11 @@ PC 登录并连通隧道后打开手机配对页，显示随机手动码和 `bat
 
 手机连接 `wss://117.72.10.87/ws`，设备令牌仅在首帧 `auth.hello.payload.token` 传递；认证前无业务推送。协议版本为 v1，使用四象限信封：`client-request`、`server-response`、`server-request`、`client-response`。
 
-- 上行：`auth.hello`、`session.list/create/resume/prompt/cancel/history/rename`、`workspace.*`、`model.*`、`agent.profile.list`、`respond`；设备管理仅走 PC 的 `/api/access/*` REST。
+- 上行：`auth.hello`、`session.list/create/resume/prompt/cancel/history/rename`、`workspace.*`（含 `workspace.rename`）、`model.*`、`agent.profile.list`、`respond`；设备管理仅走 PC 的 `/api/access/*` REST。
 - 下行：`session/event`、`approval/requested`、`question/requested`。审批/提问必须用原始 `serverRequestRpcId` 经 `respond` 回答。
 - `session/event.payload.sessionId` 是网关会话 ID；`workspace.tree` 中的 `sessions[].sessionId` 是后端会话 ID。Android 须使用已恢复会话的 `backendSessionId` 映射状态，聊天事件仍按网关 ID 路由。Codex 的 `session/thinking` 来自实际推理事件，`session/reconnecting` 来自 App Server `error.willRetry`；只有后端提供次数时才带 `attempt/maxAttempts`。
 - `workspace.tree` 返回真实工作区 `items[]` 和可选的 `ungroupedSessions[]`。两者中的会话互斥，未分组集合不是工作区；旧客户端可忽略此字段。`model.select` 成功响应带后端确认后的 `model`，手机应核对模型和思考强度后再显示所选值。
+- `workspace.rename` 接收 `workspaceId` 与新 `title`，只改工作区显示名称，不移动或重命名目录。DSH 使用原生 `workspace/rename`；Codex 共享连接使用已核验的实验 `project/list/create/read/update/delete` 接口，按目录匹配真实项目 ID，回读确认后才更新手机缓存。工作区新建、移除和共享重命名均要求 PC 已启用共享写入；旧版不支持项目接口时明确失败。独立界面控制模式的重命名保留已签名 Desktop 的 UI Automation 兼容路径。
 - 实验共享 Codex 审批另发 `interaction/resolved`，携带当前网关会话的 `requestRpcIds[]`；原生 Desktop 先处理时，手机只关闭编号匹配的待审批/提问卡。此事件不携带批准结果，也不表示已授权。
 - 任何字段、方法、事件或兼容策略变更都必须同步检查 Android、PC、服务器，并更新本文件与受影响端的 `AGENTS.md`。
 
@@ -83,8 +84,8 @@ PC 登录并连通隧道后打开手机配对页，显示随机手动码和 `bat
 - `session.create/resume/list` 的会话对象可携带 `model: { provider, model, reasoningEffort?, displayName? }`。该值来自后端会话快照，缺失表示尚未同步；手机打开或切换会话时刷新此值，不能沿用上一会话的选择或拿模型目录第一项冒充。旧客户端忽略可选字段，旧网关下新版手机显示“模型未同步”。
 
 - PC 的 `codex-bridge.js` 仅绑定 loopback：常规实例监听 `127.0.0.1:3082`，隔离测试 profile 监听 `127.0.0.1:3182`；两者都经本机 Codex `app-server` 工作，网关按 PC 服务名与独立隧道路由访问。不能配置公网 listener，也不能把 App Server 原始帧、认证资料或未脱敏工具输出转给服务器。
-- Codex 会话与 DSH 会话是不同 backend；手机切换后只显示当前 backend 的工作区树。Codex 工作区按 PC 上会话的 `cwd` 分组；用户通过现有目录浏览服务选择任意本机目录，新建空工作区仅登记路径，不创建或删除磁盘目录。
-- 无法确认 `cwd` 的 Codex 会话在 PC 读回目录后仍为空时进入未分组集合；DSH 从未被工作区 `sessionIds` 关联的非归档会话进入同一集合。手机把它显示在真实工作区之后，可展开较早会话，但不提供工作区管理操作。
+- Codex 会话与 DSH 会话是不同 backend；手机切换后只显示当前 backend 的工作区树。共享服务支持 `project/list` 时，以该列表作为工作区的唯一来源，即使列表为空也不补入本地登记或旧 Desktop 根目录。不支持该接口的只读模式使用 Desktop 根目录，绝不按会话 `cwd` 创建工作区。新建工作区将所选现有目录加入真实 Codex 项目；移除工作区删除项目登记，均不创建或删除磁盘目录。共享连接新建任务要求匹配现有项目并传递实际 `projectId`；当前 CLI 使用兼容的 `legacy` 历史模式，设置会话标题并确认空会话可读取后返回成功。手机只有收到成功响应才关闭新建弹窗；失败保留路径和错误说明。
+- Codex 会话有 `projectId` 时按对应项目归组；旧 Desktop 会话的 `projectId` 为空时，只允许通过 `cwd` 匹配已存在的项目根目录，无法匹配时进入未分组集合。DSH 从未被工作区 `sessionIds` 关联的非归档会话进入同一集合。手机把未分组会话显示在真实工作区之后，可展开较早会话，但不提供工作区管理操作。
 - Codex App Server 的 `thread/list` 发现桌面端已有任务，打开/历史浏览使用 `thread/read` 与 `thread/turns/list`，不取得第二个 writer。未共享模式仍经已绑定原生窗口代理操作；失败时保留手机草稿或原设置。Batona 自建任务仍由其 app-server 写入。原生任务的审批/提问交互与运行中增量同步尚未接入；不能将历史可读或文本发送成功视为完整双向同步，也不能以 fork、抢锁或 `codex exec` 替代。详见 [ADR 0003](../docs/adr/0003-native-codex-window-control.md)。
 - 实验分支另提供**同一**回环 WebSocket app-server 的共享传输：Desktop 与 Batona 可同时订阅原生任务。本机显式开关下，模型/强度和权限档/审批策略分别通过单次 `thread/settings/update` 原子修改；目标任务由 `threadId` 指定，无需 Desktop 显示该任务。后台设置由匹配的 `thread/settings/updated` 或共享服务回读确认，再同步到手机。完全访问需手机二次确认。隔离任务实测后台权限改变了下一轮工作区外写入的执行结果；Desktop 持有任务的下一轮执行与标签刷新仍待现场验收。该设置接口是实验协议，共享写入默认关闭。详见 [共享传输探针](pc/tools/shared-transport-probe/README.md) 与 [ADR 0003](../docs/adr/0003-native-codex-window-control.md)。
 - 手机上的 `请求批准`、`帮我审批`、`完全访问` 是 PC 校验后的固定档；Batona 自建任务映射到允许的 App Server permission profile，共享模式下 Desktop 原生任务按 `threadId` 修改后台权限；未共享模式仍经窗口权限控件选择。手机选择“完全访问”须先二次确认，PC 仅在收到该确认标记后写入后台；确认失败不报告切换成功。手机不能自定义底层权限。所有镜像事件先在 PC 脱敏，且只接受文本输入。

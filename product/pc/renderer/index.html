@@ -184,6 +184,16 @@
             <p class="caption">本地任务在电脑运行，服务器负责远程连接。</p>
           </section>
           <section class="panel settings-card">
+            <h2>版本更新</h2>
+            <p class="caption">手动检查官网发布的 Windows 安装包版本。</p>
+            <div class="row">
+              <button id="btn-check-update" class="secondary">检查更新</button>
+              <button id="btn-open-update-page" class="secondary" hidden>前往官网下载</button>
+            </div>
+            <p id="update-status" class="caption" role="status" aria-live="polite">尚未检查</p>
+            <p id="update-note" class="caption" hidden></p>
+          </section>
+          <section class="panel settings-card">
             <h2>已绑定手机</h2>
             <p id="phone-state" class="muted">读取中</p>
             <div class="row">
@@ -229,6 +239,7 @@
       <section id="dsh-detail-actions" class="control-panel" hidden aria-label="DSH 服务操作">
         <div class="dsh-detail-buttons">
           <button id="btn-dsh-start" class="primary" type="button">启动 DSH 服务</button>
+          <button id="btn-dsh-restart" class="secondary" type="button">重启 DSH 服务</button>
           <button id="btn-dsh-open" class="secondary" type="button" disabled>打开 DSH 界面</button>
         </div>
         <p id="dsh-detail-result" class="caption" role="status" hidden></p>

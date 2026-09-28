@@ -240,14 +240,18 @@ class GatewayClient(
     suspend fun workspaceDelete(workspaceId: String, backend: String? = null) =
         call("workspace.delete", buildJsonObject { put("workspaceId", workspaceId); backend?.let { put("backend", it) } })
 
+    suspend fun workspaceRename(workspaceId: String, title: String, backend: String? = null) {
+        call("workspace.rename", buildJsonObject {
+            put("workspaceId", workspaceId); put("title", title); backend?.let { put("backend", it) }
+        }).requireValue()
+    }
+
     suspend fun archiveSession(sessionId: String, backend: String? = null) =
         call("workspace.archiveSession", buildJsonObject { put("sessionId", sessionId); backend?.let { put("backend", it) } })
 
     suspend fun workspaceCreate(path: String, backend: String? = null): WorkspaceCreateResult =
-        runCatching {
-            call("workspace.create", buildJsonObject { put("path", path); backend?.let { put("backend", it) } })
-                .let { r -> if (r.ok && r.value != null) json.decodeFromJsonElement(WorkspaceCreateResult.serializer(), r.value!!) else WorkspaceCreateResult() }
-        }.getOrElse { WorkspaceCreateResult() }
+        json.decodeFromJsonElement(WorkspaceCreateResult.serializer(),
+            call("workspace.create", buildJsonObject { put("path", path); backend?.let { put("backend", it) } }).requireValue())
 
     /** 目录浏览：调网关 fs.listDir，path="" 返回盘符根，非空返回子目录（经 frp 读笔记本本地目录） */
     suspend fun dirList(path: String): DirListResult =

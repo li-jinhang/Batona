@@ -1,7 +1,7 @@
 {
   "name": "batona-pc",
   "productName": "Batona PC",
-  "version": "0.5.22",
+  "version": "0.5.26",
   "description": "Batona PC — 在本机运行并连接多个 Coding Agent，供手机安全远程操控",
   "main": "main.js",
   "author": "Batona",
@@ -22,7 +22,8 @@
     "test:codex-open": "node test/codex-open.test.js",
     "test:codex-transport": "node test/codex-shared-ws.test.js && node test/codex-progress.test.js && node test/codex-ungrouped.test.js",
     "test:codex-auth": "node test/codex-auth.test.js",
-    "test:codex-handoff": "node test/codex-handoff.test.js && powershell.exe -NoProfile -NonInteractive -File test/native-handoff-ps51.ps1",
+    "test:codex-handoff": "node test/codex-handoff.test.js && powershell.exe -NoProfile -NonInteractive -File test/native-handoff-ps51.ps1 && powershell.exe -NoProfile -NonInteractive -File test/native-handoff-stale-state.ps1",
+    "test:codex-package": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File test/native-handoff-package.ps1",
     "test:codex-control-mode": "node test/codex-control-mode.test.js",
     "test:codex-shared-writes": "node test/codex-transport-mode.test.js && node test/codex-shared-write-routing.test.js",
     "test:native-control": "node test/native-thread-binding.test.js && node test/native-prompt.test.js && node test/native-model.test.js && node test/native-permission.test.js && node test/native-process-refresh.test.js",

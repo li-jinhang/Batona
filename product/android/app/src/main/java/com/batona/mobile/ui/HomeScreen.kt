@@ -85,6 +85,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -104,7 +105,12 @@ import com.batona.mobile.SettingsStore
 import com.batona.mobile.data.AgentEvent
 import com.batona.mobile.data.AgentProfile
 import com.batona.mobile.data.Binding
+import com.batona.mobile.data.ClientUpdateChecker
+import com.batona.mobile.data.ClientUpdateCheck
 import com.batona.mobile.data.CodexMirrorCache
+import com.batona.mobile.data.WorktreeResult
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import com.batona.mobile.data.GatewayClient
 import com.batona.mobile.data.GatewayFailure
 import com.batona.mobile.data.permissionFailureMessage
@@ -141,7 +147,14 @@ internal fun confirmedModelSelection(result: RpcResult<JsonElement>, requested: 
 
 internal data class ChatLine(val id: Long, val kind: String, val text: String = "", val toolName: String = "", val reasoning: String = "", val toolPhase: String = "")
 
-internal data class AnalysisEntry(val label: String, val detail: String, val monospace: Boolean = false)
+internal enum class AnalysisCategory { Tool, Thought }
+
+internal data class AnalysisEntry(
+    val category: AnalysisCategory,
+    val label: String,
+    val detail: String,
+    val monospace: Boolean = false,
+)
 
 internal sealed interface ConversationItem {
     val key: String
@@ -167,11 +180,12 @@ internal fun conversationItems(lines: List<ChatLine>): List<ConversationItem> {
     lines.forEach { line ->
         when (line.kind) {
             "tool" -> addAnalysis(line.id, AnalysisEntry(
+                AnalysisCategory.Tool,
                 "${if (line.toolPhase == "result") "工具结果" else "工具调用"} · ${line.toolName.ifBlank { "工具" }}",
                 line.text, monospace = true,
             ))
             "assistant" -> {
-                if (line.reasoning.isNotBlank()) addAnalysis(line.id, AnalysisEntry("思考过程", line.reasoning))
+                if (line.reasoning.isNotBlank()) addAnalysis(line.id, AnalysisEntry(AnalysisCategory.Thought, "思考过程", line.reasoning))
                 if (line.text.isNotBlank()) {
                     flushAnalysis()
                     items.add(ConversationItem.Message(line.copy(reasoning = "")))
@@ -192,7 +206,10 @@ internal data class PendingFrame(
     val reason: String = "", val questions: List<QuestionItem> = emptyList(),
 )
 
-internal class HomeState(val backend: String) {
+internal class HomeState(
+    val backend: String,
+    private val monotonicMillis: () -> Long = { System.nanoTime() / 1_000_000L },
+) {
     val label: String get() = if (backend == "codex") "Codex" else "DSH"
     // 网关推送没有 backend 字段；只接收此入口恢复/创建过的网关会话。
     val gatewaySessionIds: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
@@ -217,7 +234,20 @@ internal class HomeState(val backend: String) {
     var connected by mutableStateOf(false)
     var selectedModel by mutableStateOf<ModelRef?>(null)
     var modelSyncNote by mutableStateOf<String?>(null)
-    var progress by mutableStateOf<String?>(null)
+    private var activityProgress by mutableStateOf<String?>(null)
+    var processingStartedAt by mutableStateOf<Long?>(null)
+        private set
+    var progress: String?
+        get() = activityProgress
+        set(value) {
+            if (value == null) processingStartedAt = null
+            else if (processingStartedAt == null) processingStartedAt = monotonicMillis()
+            activityProgress = value
+        }
+
+    fun processingSeconds(): Long? = processingStartedAt?.let {
+        ((monotonicMillis() - it) / 1_000L).coerceAtLeast(0)
+    }
     var showModels by mutableStateOf(false)
     var showEfforts by mutableStateOf(false)
     var showProfiles by mutableStateOf(false)
@@ -251,10 +281,53 @@ internal class HomeState(val backend: String) {
     var renameText by mutableStateOf("")          // 重命名输入框文本
     var archiving by mutableStateOf<String?>(null) // 待确认归档的会话 id
     var deletingWs by mutableStateOf<String?>(null) // 待确认删除的工作区 id
+    var renamingWorkspaceId by mutableStateOf<String?>(null)
+    var workspaceRenameText by mutableStateOf("")
+    var workspaceRenameError by mutableStateOf<String?>(null)
+    var workspaceRenameBusy by mutableStateOf(false)
+    var workspaceCreateBusy by mutableStateOf(false)
+    var workspaceCreateError by mutableStateOf<String?>(null)
     var onTitleChanged: (() -> Unit)? = null       // 会话标题变化时回调（刷新工作区树）
     var onAgentNotice: ((String) -> Unit)? = null  // 不携带消息正文的状态通知
     var codexCachedTree: List<WorkspaceNode> = emptyList()
     val codexCachedHistories = mutableStateMapOf<String, List<AgentEvent>>()
+    var treeRefreshing by mutableStateOf(false)
+    private var treeVerified = false
+    val treeRefreshMutex = Mutex()
+    private val mirrorSaveMutex = Mutex()
+
+    fun restoreCodexMirror(cache: CodexMirrorCache) {
+        if (backend != "codex" || treeVerified) return
+        codexCachedTree = cache.worktree
+        codexCachedHistories.clear()
+        codexCachedHistories.putAll(cache.histories.mapValues { it.value.takeLast(200) })
+        if (!connected) {
+            worktree.clear(); worktree.addAll(cache.worktree)
+            ungroupedSessions.clear(); ungroupedSessions.addAll(cache.ungroupedSessions)
+        }
+    }
+
+    fun applyWorkspaceTree(tree: WorktreeResult) {
+        worktree.clear(); worktree.addAll(tree.items)
+        ungroupedSessions.clear(); ungroupedSessions.addAll(tree.ungroupedSessions)
+        treeVerified = true
+        treeError = null
+        if (backend == "codex") {
+            codexCachedTree = tree.items.map { it.copy(sessions = it.sessions.take(5)) }
+            val validIds = (codexCachedTree.flatMap { it.sessions } + tree.ungroupedSessions.take(5))
+                .map { it.sessionId }.toSet()
+            codexCachedHistories.keys.toList().filterNot { it in validIds }.forEach { codexCachedHistories.remove(it) }
+        }
+    }
+
+    suspend fun persistCodexMirror(store: SettingsStore) = mirrorSaveMutex.withLock {
+        val projection = worktree.map { it.copy(sessions = it.sessions.take(5)) }
+        val ungrouped = ungroupedSessions.take(5)
+        val validIds = (projection.flatMap { it.sessions } + ungrouped).map { it.sessionId }.toSet()
+        store.saveCodexMirror(CodexMirrorCache(projection,
+            codexCachedHistories.filterKeys { it in validIds }.mapValues { it.value.takeLast(200) },
+            System.currentTimeMillis(), ungrouped))
+    }
     private var streamingAsst = false              // 最后一条是否正被 assistant/chunk 流式累积
     private data class LocalSend(
         val id: Long, val sessionId: String, val text: String,
@@ -270,6 +343,23 @@ internal class HomeState(val backend: String) {
         return variants.firstOrNull { it.reasoningEffort == effort }
             ?: variants.firstOrNull { it.reasoningEffort == variants.first().defaultReasoningEffort }
             ?: variants.first()
+    }
+
+    suspend fun submitWorkspace(create: suspend () -> com.batona.mobile.data.WorkspaceCreateResult): com.batona.mobile.data.WorkspaceCreateResult? {
+        if (workspaceCreateBusy) return null
+        workspaceCreateBusy = true
+        workspaceCreateError = null
+        return try {
+            val result = create()
+            if (result.workspace == null) throw GatewayFailure("invalid-response")
+            wsPath = ""
+            showNewWs = false
+            result
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) {
+            workspaceCreateError = error.message ?: "工作区创建失败，请重试。"
+            null
+        } finally { workspaceCreateBusy = false }
     }
 
     fun clearSessionActivity() {
@@ -291,6 +381,7 @@ internal class HomeState(val backend: String) {
         input = ""
         busy = true
         sending = true
+        processingStartedAt = monotonicMillis()
         progress = "running"
         return id
     }
@@ -509,7 +600,12 @@ internal class HomeState(val backend: String) {
                     when (ev.type) {
                         "turn/start" -> { updateSessionState(backendSid, "running"); if (sid == currentId) progress = "running" }
                         "session/running" -> if (sid == currentId) progress = "running"
-                        "assistant/chunk", "assistant/message" -> if (sid == currentId && progress != null) progress = "running"
+                        "assistant/chunk", "assistant/message" -> if (sid == currentId &&
+                            (progress != null || ev.type == "assistant/chunk")) {
+                            if (!ev.text.isNullOrBlank()) progress = "running"
+                            else if (!ev.reasoning.isNullOrBlank()) progress = "thinking"
+                        }
+                        "tool/call", "tool/result" -> if (sid == currentId) progress = "running"
                         "session/thinking" -> if (sid == currentId) progress = "thinking"
                         "session/reconnecting" -> if (sid == currentId) progress = if (ev.attempt != null && ev.maxAttempts != null)
                             "reconnecting:${ev.attempt}/${ev.maxAttempts}" else "reconnecting"
@@ -566,21 +662,14 @@ private fun BackendEffects(state: HomeState, client: GatewayClient, store: Setti
     state.onAgentNotice = { kind -> AgentNotification.post(context, kind) }
 
     fun saveCodexMirror() {
-        val projection = state.worktree.map { node -> node.copy(sessions = node.sessions.take(5)) }
-        val histories = state.codexCachedHistories.mapValues { (_, events) -> events.takeLast(200) }
-        scope.launch { store.saveCodexMirror(CodexMirrorCache(projection, histories, System.currentTimeMillis(), state.ungroupedSessions.take(5))) }
+        scope.launch { state.persistCodexMirror(store) }
     }
 
     // 仅加载已绑定手机自己的本地副本。重新绑定或注销时 SettingsStore.clear() 会清除它。
     LaunchedEffect(Unit) {
         if (state.backend != "codex") return@LaunchedEffect
         store.loadCodexMirror()?.let { cache ->
-            state.codexCachedTree = cache.worktree
-            state.ungroupedSessions.clear()
-            state.ungroupedSessions.addAll(cache.ungroupedSessions)
-            state.codexCachedHistories.clear()
-            state.codexCachedHistories.putAll(cache.histories.mapValues { (_, events) -> events.takeLast(200) })
-            if (!state.connected) state.worktree.addAll(cache.worktree)
+            state.restoreCodexMirror(cache)
         }
     }
 
@@ -668,28 +757,24 @@ private fun BackendEffects(state: HomeState, client: GatewayClient, store: Setti
     }
 }
 
-private suspend fun HomeState.refreshTree(client: GatewayClient, store: SettingsStore) {
-    if (!connected) return
+private suspend fun HomeState.refreshTree(client: GatewayClient, store: SettingsStore) = treeRefreshMutex.withLock {
+    if (!connected) return@withLock
+    treeRefreshing = true
     try {
     val tree = client.workspaceTree(backend)
-    worktree.clear()
-    worktree.addAll(tree.items)
-    ungroupedSessions.clear()
-    ungroupedSessions.addAll(tree.ungroupedSessions)
-    treeError = null
+    applyWorkspaceTree(tree)
+    // Commit the validated mirror before unrelated capability requests can fail.
+    if (backend == "codex") persistCodexMirror(store)
     // PC 隧道恢复不一定触发手机 WebSocket 重连；补取初次离线时没拿到的能力。
     if (models.isEmpty()) models.addAll(client.modelList(backend))
     if (backend == "codex" && profiles.isEmpty()) profiles.addAll(client.agentProfileList(backend).filter { it.available })
     // 刷新不改变用户的展开选择，也不修改另一入口的列表或缓存。
-    if (backend == "codex") {
-        codexCachedTree = tree.items.map { it.copy(sessions = it.sessions.take(5)) }
-        store.saveCodexMirror(CodexMirrorCache(codexCachedTree,
-            codexCachedHistories.mapValues { it.value.takeLast(200) }, System.currentTimeMillis(), tree.ungroupedSessions.take(5)))
-    }
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (failure: Exception) {
         treeError = if (failure is GatewayFailure) failure.message else "工作区同步失败，请重试。"
+    } finally {
+        treeRefreshing = false
     }
 }
 
@@ -789,8 +874,7 @@ fun HomeScreen(binding: Binding, token: String, store: SettingsStore, onLogout: 
                     onArchive = { sid -> scope.launch { client.archiveSession(sid, state.backend); refreshTree() } },
                     onNewWorkspace = { path ->
                         scope.launch {
-                            val created = client.workspaceCreate(path, state.backend)
-                            state.wsPath = ""; state.showNewWs = false
+                            val created = state.submitWorkspace { client.workspaceCreate(path, state.backend) } ?: return@launch
                             if (state.createAfterWorkspace && created.workspace != null) {
                                 state.createAfterWorkspace = false
                                 state.entering = true
@@ -959,7 +1043,7 @@ internal fun ChatTab(
                     Box(Modifier.size(8.dp).background(if (state.connected) BatonaGreen else MaterialTheme.colorScheme.error, CircleShape))
                     Text(if (state.connected) "网关已连接" else "离线", color = if (state.connected) BatonaGreen else MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium)
                 }
-                IconButton(onClick = onWsChanged, enabled = state.connected && !state.loading) { Icon(Icons.Outlined.Refresh, "刷新工作区") }
+                IconButton(onClick = onWsChanged, enabled = state.connected && !state.loading && !state.treeRefreshing) { Icon(Icons.Outlined.Refresh, "刷新工作区") }
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("工作区", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
@@ -979,7 +1063,7 @@ internal fun ChatTab(
             }
             if (state.showNewWs) NewWorkspaceDialog(state, client,
                 onDismiss = { state.showNewWs = false; state.createAfterWorkspace = false }, onCreate = onNewWorkspace)
-            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(0.dp)) {
                 if (state.worktree.isEmpty() && state.ungroupedSessions.isEmpty() && !state.loading && state.treeError == null) {
                     item { Text("暂无 ${state.label} 工作区与会话。可新建会话或添加电脑上的工作区。", Modifier.padding(vertical = 32.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
@@ -1019,6 +1103,65 @@ internal fun ChatTab(
                         }, enabled = state.renameText.isNotBlank()) { Text("保存") }
                     },
                     dismissButton = { TextButton(onClick = { state.renaming = null }) { Text("取消") } },
+                )
+            }
+            if (state.renamingWorkspaceId != null) {
+                AlertDialog(
+                    onDismissRequest = {
+                        if (!state.workspaceRenameBusy) {
+                            state.renamingWorkspaceId = null
+                            state.workspaceRenameError = null
+                        }
+                    },
+                    title = { Text("重命名工作区") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = state.workspaceRenameText,
+                                onValueChange = { state.workspaceRenameText = it },
+                                enabled = !state.workspaceRenameBusy,
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                placeholder = { Text("工作区名称") },
+                            )
+                            state.workspaceRenameError?.let {
+                                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            enabled = state.connected && !state.workspaceRenameBusy && state.workspaceRenameText.isNotBlank(),
+                            onClick = {
+                                val workspaceId = state.renamingWorkspaceId ?: return@TextButton
+                                val title = state.workspaceRenameText.trim()
+                                state.workspaceRenameError = null
+                                state.workspaceRenameBusy = true
+                                scope.launch {
+                                    try {
+                                        client.workspaceRename(workspaceId, title, backend)
+                                        state.renamingWorkspaceId = null
+                                        onWsChanged()
+                                    } catch (cancelled: CancellationException) {
+                                        throw cancelled
+                                    } catch (e: Exception) {
+                                        state.workspaceRenameError = e.message ?: "工作区重命名失败，请重试。"
+                                    } finally {
+                                        state.workspaceRenameBusy = false
+                                    }
+                                }
+                            },
+                        ) { Text(if (state.workspaceRenameBusy) "正在保存…" else "保存") }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            enabled = !state.workspaceRenameBusy,
+                            onClick = {
+                                state.renamingWorkspaceId = null
+                                state.workspaceRenameError = null
+                            },
+                        ) { Text("取消") }
+                    },
                 )
             }
             // ── 会话归档确认对话框 ──
@@ -1100,7 +1243,7 @@ internal fun ChatTab(
                 shape = RoundedCornerShape(8.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                 Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (!state.connected || state.offlineMirror) Text("离线 · 仅浏览", Modifier.weight(1f), color = BatonaAmber, style = MaterialTheme.typography.labelMedium)
-                    else SessionStatus(activityState, Modifier.weight(1f))
+                    else ConversationActivity(state, activityState, Modifier.weight(1f))
                     var cancelling by remember { mutableStateOf(false) }
                     TextButton(enabled = state.connected && !state.offlineMirror && state.currentId != null && !cancelling &&
                         activityState in listOf("running", "busy", "streaming", "waiting-approval", "waiting-question"),
@@ -1138,7 +1281,7 @@ internal fun ChatTab(
 
             val listState = rememberLazyListState()
             val visibleItems by remember(state) { derivedStateOf { conversationItems(state.lines) } }
-            LazyColumn(state = listState, modifier = Modifier.weight(1f).padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyColumn(state = listState, modifier = Modifier.weight(1f).padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 items(visibleItems, key = { it.key }) { item ->
                     when (item) {
                         is ConversationItem.Message -> ChatLineRow(item.line)
@@ -1210,6 +1353,26 @@ internal fun ChatTab(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ConversationActivity(state: HomeState, activityState: String, modifier: Modifier = Modifier) {
+    var seconds by remember(state, state.currentId, state.processingStartedAt) {
+        mutableStateOf(state.processingSeconds())
+    }
+    LaunchedEffect(state, state.currentId, state.processingStartedAt) {
+        while (state.processingStartedAt != null) {
+            seconds = state.processingSeconds()
+            kotlinx.coroutines.delay(1_000)
+        }
+    }
+    Column(modifier.padding(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        SessionStatus(activityState)
+        seconds?.let {
+            Text("已处理 ${it} 秒", style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -1481,7 +1644,7 @@ private fun ChatLineRow(line: ChatLine) {
         "system", "done" -> MaterialTheme.colorScheme.onSurfaceVariant
         else -> MaterialTheme.colorScheme.onSurface
     }
-    Box(Modifier.fillMaxWidth().padding(vertical = 3.dp), contentAlignment = if (line.kind == "user") Alignment.CenterEnd else Alignment.CenterStart) {
+    Box(Modifier.fillMaxWidth().padding(vertical = 1.dp), contentAlignment = if (line.kind == "user") Alignment.CenterEnd else Alignment.CenterStart) {
         Column(Modifier.widthIn(max = if (line.kind == "user") 320.dp else 600.dp), horizontalAlignment = if (line.kind == "user") Alignment.End else Alignment.Start) {
             // 正文（assistant/user 走轻量 Markdown 渲染，消除 * / # 等外露）
             if (line.kind == "assistant" || line.kind == "user") {
@@ -1514,14 +1677,14 @@ private fun ChatLineRow(line: ChatLine) {
 private fun AnalysisProcessRow(item: ConversationItem.Analysis) {
     var expanded by remember(item.id) { mutableStateOf(false) }
     val color = MaterialTheme.colorScheme.onSurfaceVariant
-    Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
         Surface(
             modifier = Modifier.testTag("analysis-process-${item.id}").clickable { expanded = !expanded }
                 .semantics { contentDescription = "${if (expanded) "收起" else "展开"}分析过程" },
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
             shape = RoundedCornerShape(8.dp),
         ) {
-            Row(Modifier.padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.padding(horizontal = 10.dp, vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, null, Modifier.size(17.dp), tint = color)
                 Text("分析过程", Modifier.padding(start = 4.dp), style = MaterialTheme.typography.bodySmall,
                     color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1529,17 +1692,42 @@ private fun AnalysisProcessRow(item: ConversationItem.Analysis) {
             }
         }
         if (expanded) {
-            Column(Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                item.entries.forEach { entry ->
-                    Column {
-                        Text(entry.label, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = color)
-                        if (entry.detail.isNotBlank()) SelectionContainer {
-                            Text(if (entry.monospace) AnnotatedString(entry.detail) else markdownToAnnotated(entry.detail),
-                                modifier = Modifier.padding(top = 3.dp), style = MaterialTheme.typography.bodySmall,
-                                fontFamily = if (entry.monospace) FontFamily.Monospace else null, color = color)
-                        }
-                    }
+            Column(Modifier.padding(start = 16.dp, end = 8.dp, top = 4.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                // Keep the event sequence: categorizing here would move thoughts past tools.
+                item.entries.forEachIndexed { index, entry ->
+                    var entryExpanded by remember(item.id, index) { mutableStateOf(false) }
+                    AnalysisEntryRow(entry, entryExpanded, { entryExpanded = !entryExpanded }, color)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AnalysisEntryRow(
+    entry: AnalysisEntry,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    color: Color,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle)
+                .semantics { contentDescription = "${if (expanded) "收起" else "展开"}${entry.label}" },
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+            shape = RoundedCornerShape(6.dp),
+        ) {
+            Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, null, Modifier.size(15.dp), tint = color)
+                Text(entry.label, Modifier.weight(1f).padding(start = 4.dp), style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium, color = color)
+            }
+        }
+        if (expanded && entry.detail.isNotBlank()) {
+            SelectionContainer(Modifier.padding(start = 18.dp, end = 4.dp, top = 4.dp)) {
+                Text(if (entry.monospace) AnnotatedString(entry.detail) else markdownToAnnotated(entry.detail),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = if (entry.monospace) FontFamily.Monospace else null, color = color)
             }
         }
     }
@@ -1565,25 +1753,27 @@ private fun NewWorkspaceDialog(state: HomeState, client: GatewayClient, onDismis
         }
     }
     // 打开弹窗：重置目录浏览到盘符根
-    LaunchedEffect(Unit) { state.dirPath = ""; state.dirEntries = emptyList(); state.dirRoots = emptyList(); load("", pick = false) }
+    LaunchedEffect(Unit) { state.workspaceCreateError = null; state.dirPath = ""; state.dirEntries = emptyList(); state.dirRoots = emptyList(); load("", pick = false) }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!state.workspaceCreateBusy) onDismiss() },
         title = { Text("创建工作区") },
         text = {
             Column {
                 // 顶部：路径输入框（贴顶）
                 OutlinedTextField(
                     state.wsPath, { state.wsPath = it },
+                    enabled = !state.workspaceCreateBusy,
                     modifier = Modifier.fillMaxWidth(),
                     placeholder = { Text("如 D:\\_Projects\\26-009DSHplugin") },
                     singleLine = true,
                 )
+                state.workspaceCreateError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 // 下方：目录树
                 Spacer(Modifier.height(8.dp))
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     if (state.dirPath.isNotEmpty()) {
-                        TextButton(onClick = { load(parentOf(state.dirPath), pick = true) }, enabled = !state.dirLoading) { Text("↑ 上级") }
+                        TextButton(onClick = { load(parentOf(state.dirPath), pick = true) }, enabled = !state.dirLoading && !state.workspaceCreateBusy) { Text("↑ 上级") }
                     }
                     Text(
                         state.dirPath.ifEmpty { "选择盘符" },
@@ -1603,7 +1793,7 @@ private fun NewWorkspaceDialog(state: HomeState, client: GatewayClient, onDismis
                         items(items) { name ->
                             val full = if (state.dirRoots.isNotEmpty()) name else joinPath(state.dirPath, name)
                             Row(
-                                Modifier.fillMaxWidth().clickable { if (!state.dirLoading) load(full, pick = true) }
+                                Modifier.fillMaxWidth().clickable { if (!state.dirLoading && !state.workspaceCreateBusy) load(full, pick = true) }
                                     .padding(vertical = 8.dp, horizontal = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
@@ -1617,10 +1807,10 @@ private fun NewWorkspaceDialog(state: HomeState, client: GatewayClient, onDismis
         confirmButton = {
             TextButton(onClick = {
                 val p = state.wsPath.trim()
-                if (p.isNotEmpty()) { onCreate(p); onDismiss() }
-            }, enabled = state.wsPath.trim().isNotEmpty() && !state.dirLoading) { Text("创建") }
+                if (p.isNotEmpty()) onCreate(p)
+            }, enabled = state.wsPath.trim().isNotEmpty() && !state.dirLoading && !state.workspaceCreateBusy) { Text(if (state.workspaceCreateBusy) "正在创建…" else "创建") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !state.workspaceCreateBusy) { Text("取消") } },
     )
 }
 
@@ -1811,6 +2001,12 @@ private fun effortLabel(value: String?, backend: String): String = if (backend =
 @Composable
 private fun SettingsTab(binding: Binding, state: HomeState, onLogout: () -> Unit) {
     var confirmLogout by remember { mutableStateOf(false) }
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var updateCheck by remember { mutableStateOf<ClientUpdateCheck?>(null) }
+    var updateError by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val uriHandler = LocalUriHandler.current
+    val updateChecker = remember(binding.serverIp) { ClientUpdateChecker(binding.serverIp) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("设置", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Surface(shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
@@ -1824,7 +2020,47 @@ private fun SettingsTab(binding: Binding, state: HomeState, onLogout: () -> Unit
         Surface(shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Batona Mobile", fontWeight = FontWeight.SemiBold)
-                Text("当前版本：${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("当前版本：${BuildConfig.VERSION_NAME}", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedButton(
+                        enabled = !checkingUpdate,
+                        onClick = {
+                            checkingUpdate = true
+                            updateCheck = null
+                            updateError = null
+                            scope.launch {
+                                try {
+                                    updateCheck = updateChecker.check("android", BuildConfig.VERSION_NAME)
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (_: Exception) {
+                                    updateError = "检查更新失败，请确认网络后重试。"
+                                } finally {
+                                    checkingUpdate = false
+                                }
+                            }
+                        },
+                    ) { Text(if (checkingUpdate) "检查中…" else "检查更新") }
+                }
+                updateCheck?.let { result ->
+                    Text(
+                        when {
+                            result.updateAvailable -> "发现新版本 v${result.latestVersion}（当前 v${result.currentVersion}）"
+                            result.siteVersionIsOlder -> "当前版本 v${result.currentVersion}，高于官网登记版本 v${result.latestVersion}。"
+                            else -> "当前已是官网最新版本 v${result.latestVersion}。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (result.updateAvailable) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (result.updateAvailable) {
+                        if (result.note.isNotBlank()) Text(result.note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Button(onClick = {
+                            try { uriHandler.openUri(result.download.url) }
+                            catch (_: Exception) { updateError = "无法打开官网安装包链接，请稍后重试。" }
+                        }) { Text(result.download.label) }
+                    }
+                }
+                updateError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                 Text("任务在电脑执行，手机同步工作区与会话。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -1846,28 +2082,29 @@ private fun SettingsTab(binding: Binding, state: HomeState, onLogout: () -> Unit
  * 从而消除符号在手机端外露。未覆盖语法（表格/嵌套等）原样保留文本。
  */
 private fun markdownToAnnotated(text: String): AnnotatedString {
+    // PC/Agent 事件会保留原始 CR/LF；统一换行并忽略正文末尾的换行，避免 Text 在气泡底部多出空行。
+    val normalizedText = text.replace("\r\n", "\n").replace('\r', '\n').trimEnd('\n')
     return buildAnnotatedString {
         var i = 0
-        val n = text.length
+        val n = normalizedText.length
         while (i < n) {
-            val c = text[i]
+            val c = normalizedText[i]
             // fenced 代码块 ``` ... ```
-            if (c == '`' && text.startsWith("```", i)) {
-                val close = text.indexOf("```", i + 3)
+            if (c == '`' && normalizedText.startsWith("```", i)) {
+                val close = normalizedText.indexOf("```", i + 3)
                 if (close >= 0) {
                     var bodyStart = i + 3
-                    if (bodyStart < n && text[bodyStart] == '\r') bodyStart++
-                    if (bodyStart < n && text[bodyStart] == '\n') bodyStart++
-                    val body = text.substring(bodyStart, close).trimEnd('\n')
+                    if (bodyStart < n && normalizedText[bodyStart] == '\n') bodyStart++
+                    val body = normalizedText.substring(bodyStart, close).trimEnd('\n')
                     withStyle(codeStyle()) { append(body) }
-                    if (close + 3 < n && text[close + 3] == '\n') append('\n')
+                    if (close + 3 < n && normalizedText[close + 3] == '\n') append('\n')
                     i = close + 3
                     continue
                 }
             }
             // 非代码块：按行处理（标题/列表/行内）
-            val lineEnd = text.indexOf('\n', i).let { if (it < 0) n else it }
-            val line = text.substring(i, lineEnd)
+            val lineEnd = normalizedText.indexOf('\n', i).let { if (it < 0) n else it }
+            val line = normalizedText.substring(i, lineEnd)
             if (!line.startsWith("```")) renderLine(line)
             if (lineEnd < n) append('\n')
             i = lineEnd + 1

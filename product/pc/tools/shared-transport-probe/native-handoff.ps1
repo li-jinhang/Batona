@@ -59,6 +59,95 @@ function New-DesktopStartInfo([string]$Executable, [string]$SharedUrl) {
   return $startInfo
 }
 
+function Start-PackagedDesktop($StartInfo, [string]$PackageFamilyName, [string]$PackageFullName) {
+  # Package activation does not inherit our environment. Use a hidden package-bound
+  # bootstrap to inject only the shared connection settings into its Desktop child.
+  $resultPath = [System.IO.Path]::GetTempFileName()
+  try {
+    $payload = @{
+      executable = $StartInfo.FileName; arguments = $StartInfo.Arguments
+      url = $StartInfo.EnvironmentVariables['CODEX_APP_SERVER_WS_URL']
+      package = $PackageFullName; result = $resultPath
+    } | ConvertTo-Json -Compress
+    $encodedPayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload))
+    $bootstrap = @'
+$ErrorActionPreference = 'Stop'
+$data = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json
+try {
+  Add-Type -TypeDefinition @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class BatonaPackageIdentity {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+  public static extern int GetCurrentPackageFullName(ref uint length, StringBuilder name);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+  public static extern int GetPackageFullName(IntPtr process, ref uint length, StringBuilder name);
+}
+"@
+  [uint32]$length = 1024
+  $name = New-Object Text.StringBuilder 1024
+  $code = [BatonaPackageIdentity]::GetCurrentPackageFullName([ref]$length, $name)
+  if ($code -ne 0 -or $name.ToString() -ne $data.package) { throw 'Package bootstrap identity verification failed.' }
+  __START_INFO_FUNCTION__
+  $info = New-DesktopStartInfo -Executable $data.executable -SharedUrl $data.url
+  $info.Arguments = $data.arguments
+  $info.CreateNoWindow = $true
+  $child = [Diagnostics.Process]::Start($info)
+  if (!$child) { throw 'Codex Desktop process did not start.' }
+  $child.BeginOutputReadLine()
+  $child.BeginErrorReadLine()
+  $length = 1024
+  $name.Clear() | Out-Null
+  $code = [BatonaPackageIdentity]::GetPackageFullName($child.Handle, [ref]$length, $name)
+  if ($code -ne 0 -or $name.ToString() -ne $data.package) { throw 'Desktop child package identity verification failed.' }
+  @{ ok = $true; processId = $child.Id } | ConvertTo-Json -Compress | Set-Content -LiteralPath $data.result -Encoding utf8
+} catch {
+  @{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress | Set-Content -LiteralPath $data.result -Encoding utf8
+}
+'@
+    $definition = 'function New-DesktopStartInfo {' + ${function:New-DesktopStartInfo}.ToString() + '}'
+    $bootstrap = $bootstrap.Replace('__PAYLOAD__', $encodedPayload).Replace('__START_INFO_FUNCTION__', $definition)
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))
+    Invoke-CommandInDesktopPackage -PackageFamilyName $PackageFamilyName -AppId 'App' `
+      -Command "$PSHOME\powershell.exe" `
+      -Args "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand $encodedCommand" `
+      -PreventBreakaway -ErrorAction Stop | Out-Null
+    for ($attempt = 0; $attempt -lt 60; $attempt++) {
+      $result = Get-Content -LiteralPath $resultPath -Raw
+      if ($result) {
+        # The bootstrap may still be completing its single small JSON write.
+        try { $result = $result | ConvertFrom-Json } catch { Start-Sleep -Milliseconds 250; continue }
+        if (!$result.ok) { throw $result.error }
+        return [int]$result.processId
+      }
+      Start-Sleep -Milliseconds 250
+    }
+    throw 'Timed out starting Codex with Windows package identity.'
+  } finally {
+    Remove-Item -LiteralPath $resultPath -ErrorAction SilentlyContinue
+  }
+}
+
+function Stop-RetiredSharedServer($Snapshot) {
+  if (!$Snapshot) { return }
+  # Called only after Desktop has closed. Recheck identity rather than trusting a saved PID.
+  $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($Snapshot.ProcessId)"
+  if (!$current) { return }
+  if ($current.ExecutablePath -ne $Snapshot.ExecutablePath -or
+      $current.CreationDate -ne $Snapshot.CreationDate -or
+      $current.CommandLine -ne $Snapshot.CommandLine) {
+    throw 'Previous shared app-server identity changed; no process was terminated.'
+  }
+  Stop-Process -Id $current.ProcessId -ErrorAction Stop
+  for ($attempt = 0; $attempt -lt 25; $attempt++) {
+    $remaining = Get-CimInstance Win32_Process -Filter "ProcessId=$($Snapshot.ProcessId)"
+    if (!$remaining -or $remaining.CreationDate -ne $Snapshot.CreationDate) { return }
+    Start-Sleep -Milliseconds 200
+  }
+  throw 'Previous shared app-server did not exit; fresh startup was cancelled.'
+}
+
 if ($Stop) {
   if (!(Test-Path -LiteralPath $statePath)) { throw 'No shared app-server handoff state found.' }
   if (Get-DesktopRoot) { throw 'Quit Codex Desktop before stopping its shared app-server.' }
@@ -95,18 +184,33 @@ $url = "ws://127.0.0.1:$Port"
 $state = if (Test-Path -LiteralPath $statePath) {
   Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
 } else { $null }
-if ($Restart -and $state -and $state.url -match '^ws://127\.0\.0\.1:(\d+)$') {
+if (($Restart -or $Status) -and $state -and $state.url -match '^ws://127\.0\.0\.1:(\d+)$') {
   $Port = [int]$Matches[1]
   $url = "ws://127.0.0.1:$Port"
 }
 $listener = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-if ($state -and ($state.url -ne $url -or $state.cliPath -ne $cli.FullName -or
-    $state.packageVersion -ne "$($package.Version)")) {
-  throw 'Saved shared server belongs to a different URL or Codex version. Quit Desktop, then use -Stop before a fresh -Launch.'
-}
+$retiredServer = $null
 $managedServer = if ($state) {
   Get-CimInstance Win32_Process -Filter "ProcessId=$($state.serverPid)"
 } else { $null }
+if ($state -and ($state.url -ne $url -or $state.cliPath -ne $cli.FullName -or
+    $state.packageVersion -ne "$($package.Version)")) {
+  if (!$Launch -and !$Restart) {
+    throw 'Saved shared server uses an outdated Codex version or URL; start or restart the shared connection to refresh it.'
+  }
+  if ($managedServer) {
+    if ($managedServer.ExecutablePath -ne $state.cliPath -or
+        !$managedServer.CommandLine -or !$managedServer.CommandLine.Contains('app-server') -or
+        !$managedServer.CommandLine.Contains($state.url)) {
+      throw 'Saved PID belongs to another process; refusing to stop it.'
+    }
+    $retiredServer = $managedServer
+  }
+  # Do not remove the on-disk record or stop the old server during preflight.
+  # A confirmed restart closes Desktop first, then retires the verified old server.
+  $state = $null
+  $managedServer = $null
+}
 if ($managedServer -and ($managedServer.ExecutablePath -ne $cli.FullName -or
     !$managedServer.CommandLine.Contains('app-server') -or !$managedServer.CommandLine.Contains($url))) {
   throw 'Saved PID belongs to another process; refusing to reuse it.'
@@ -139,6 +243,7 @@ if ($Status -or (!$Launch -and !$Restart)) {
 }
 
 # Prepare the Desktop launch before closing an existing process on -Restart.
+$null = Get-Command Invoke-CommandInDesktopPackage -ErrorAction Stop
 $desktopStartInfo = New-DesktopStartInfo -Executable $desktopExe -SharedUrl $url
 
 if ($Restart -and $desktopRoot) {
@@ -173,6 +278,7 @@ if ($Restart -and $desktopRoot) {
   $desktopRoot = Get-DesktopRoot | Select-Object -First 1
 }
 if ($desktopRoot) { throw 'Codex Desktop is still running; shared connection startup was cancelled.' }
+Stop-RetiredSharedServer $retiredServer
 $newServer = $false
 $serverPid = if ($managedServer) { [int]$state.serverPid } else { 0 }
 try {
@@ -197,10 +303,8 @@ try {
   @{ url = $url; serverPid = $serverPid; cliPath = $cli.FullName;
      desktopPid = 0; packageVersion = "$($package.Version)" } |
     ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding utf8
-  $desktop = [System.Diagnostics.Process]::Start($desktopStartInfo)
-  if (!$desktop) { throw 'Codex Desktop process did not start.' }
-  $desktop.BeginOutputReadLine()
-  $desktop.BeginErrorReadLine()
+  $launchedDesktopPid = Start-PackagedDesktop -StartInfo $desktopStartInfo `
+    -PackageFamilyName $package.PackageFamilyName -PackageFullName $package.PackageFullName
   for ($attempt = 0; $attempt -lt 40; $attempt++) {
     $desktopRoot = Get-DesktopRoot | Select-Object -First 1
     if ($desktopRoot -and (Test-DesktopConnection $desktopRoot.ProcessId $Port)) { break }

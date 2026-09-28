@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('batona', {
     return { dsh: true, frpc: true };
   },
   dshStart: async () => { calls.push('dsh-start'); dshRunning = true; return { ok: true }; },
+  dshRestart: async () => { calls.push('dsh-restart'); await new Promise(resolve => setTimeout(resolve, 250)); dshRunning = true; return { ok: true }; },
   dshOpen: async () => { calls.push('dsh-open'); return dshRunning ? { ok: true } : { ok: false, error: '请先启动 DSH 服务。' }; },
   serviceStop: async () => {
     started = false;

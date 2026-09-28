@@ -20,6 +20,13 @@ class GatewayFailure(val code: String) : Exception(when (code) {
     "native-profile-unavailable" ->
         "电脑端权限未能确认。切换到完全访问时，请先在 Codex 电脑端完成确认。"
     "native-profile-unconfirmed" -> "电脑端权限已操作，但后台状态尚未确认，请刷新核对。"
+    "native-workspace-rename-unavailable" -> "未能在电脑端唯一定位目标 Codex 工作区，请检查电脑端工作区名称后刷新重试。"
+    "native-workspace-rename-unconfirmed" -> "电脑端未确认工作区重命名结果，请刷新工作区列表核对名称。"
+    "workspace-not-found" -> "工作区列表已变化，请刷新后重新选择工作区。"
+    "workspace-write-unconfirmed" -> "电脑端尚未确认工作区更改，请刷新列表核对后重试。"
+    "workspace-ambiguous" -> "工作区对应多个项目或目录，请在 Codex 电脑端管理后刷新。"
+    "workspace-invalid-path" -> "电脑上的目录不存在或不可用，请重新选择。"
+    "codex-projects-unavailable", "shared-transport-readonly" -> "请在电脑端启用 Codex 共享连接，并确认 Codex 版本支持项目管理后重试。"
     "native-control-busy" -> "电脑端正在执行另一项操作，请稍后重试。"
     "codex-offline", "codex-unavailable" -> "Codex 电脑端未连接，请确认 Batona PC 与 Codex 正在运行。"
     "timeout", "not-connected", "send-failed", "transport-error" -> "连接中断或请求超时，请检查电脑端与网络后重试。"

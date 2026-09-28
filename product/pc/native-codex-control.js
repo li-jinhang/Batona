@@ -128,6 +128,30 @@ class NativeCodexControl {
     return result;
   }
 
+  async renameWorkspace(currentTitle, newTitle) {
+    const argsFor = (processId) => [
+      'rename-workspace', String(processId),
+      Buffer.from(currentTitle, 'utf8').toString('base64'),
+      Buffer.from(newTitle, 'utf8').toString('base64'),
+    ];
+    try {
+      const result = await this.invoke(argsFor(await this.processId()));
+      if (result?.accepted !== true) throw controlError('native-workspace-rename-unconfirmed');
+      return result;
+    } catch (error) {
+      if (!isStaleProcessError(error)) throw error;
+      this.verifiedProcessId = null;
+      try {
+        const result = await this.invoke(argsFor(await this.processId()));
+        if (result?.accepted !== true) throw controlError('native-workspace-rename-unconfirmed');
+        return result;
+      } catch (retryError) {
+        if (isStaleProcessError(retryError)) this.verifiedProcessId = null;
+        throw retryError;
+      }
+    }
+  }
+
   async readProgress(threadId) {
     let entry = this.progressBindings.get(threadId);
     if (!entry || Date.now() - entry.checkedAt > 30_000) {

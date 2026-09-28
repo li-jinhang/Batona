@@ -23,6 +23,8 @@
 
 ## 端内约束
 
+- 工作区创建的 RPC 失败必须抛出明确错误，不能返回空的成功对象。弹窗在后端确认工作区后关闭，失败保留路径并可重试，提交期间禁用重复操作。Codex 项目创建/重命名/移除遵循 `../README.md` 的共享项目契约。
+
 - 连接串、配对二维码、认证字段、RPC 信封或事件名称以 `../README.md` 的跨端契约为准；不得只改客户端来“兼容”未定义的新字段。
 - 托管版固定预设网关 117.72.10.87:443（非秘密）；账号/管理员密钥不进入手机。设备授权与设备身份使用 AndroidKeyStore 加密保存，关闭备份；敏感值不进入源码/日志。
 - Android 只能连接网关的 HTTPS/WSS 入口，不能假设手机可访问 PC 的 `localhost:3080` 或服务器内部端口。
@@ -41,7 +43,7 @@
 
 ## 验证
 
-完成 Android 源码改动时自动递增版本并构建 Debug APK；会话 UI 改动还要编译测试 APK、运行单元测试并在隔离 AVD 验证，再按下方流程覆盖安装手测 AVD。构建失败应修复后重试，交付时说明产物和未覆盖的现场验证。
+每次用户要求构建 Android（包括跨端构建）时，默认运行下方的模拟器刷新脚本；它会构建 Debug APK、覆盖安装到手测 AVD 并启动 App。只有用户明确要求只生成 APK 时，才单独运行 `assembleDebug` 而不刷新模拟器。Android 源码改动时自动递增版本；会话 UI 改动还要编译测试 APK、运行单元测试并在隔离 AVD 验证。构建失败应修复后重试，交付时说明产物和未覆盖的现场验证。
 
 在 `product/android/` 运行：
 
@@ -53,7 +55,7 @@
 
 ## Android Studio 模拟器基线
 
-- 手测机固定为 `dsh_hosted_qa`，保留用户的配对、登录和应用数据；隔离自动化固定使用 `dsh_test`。完成可供用户体验的 Android 改动后，主动运行 `tools/update-test-device.ps1`：它构建 Debug APK、按 AVD 名定位或启动手测机、执行 `adb install -r` 覆盖安装并打开 App。完成条件是脚本核验手测机中的 applicationId、versionName 和 versionCode。包名或签名变化会形成新的数据空间，须明确报告需要重新配对。
+- 手测机固定为 `dsh_hosted_qa`，保留用户的配对、登录和应用数据；隔离自动化固定使用 `dsh_test`。每次 Android 构建都运行 `tools/update-test-device.ps1`：它按 AVD 名定位或启动手测机，构建 Debug APK，执行 `adb install -r` 覆盖安装并打开 App。完成条件是脚本核验手测机中的 applicationId、versionName 和 versionCode。包名或签名变化会形成新的数据空间，须明确报告需要重新配对。
 - 自动化测试 APK 和 `connectedDebugAndroidTest` 只在 `dsh_test` 上运行。不要把它们装入 `dsh_hosted_qa`，不要卸载或清空手测机 App；普通更新只用 `adb install -r`。
 - 当前完整功能验收固定在 Android Studio Emulator 上进行；不要将真机开发者模式、USB 调试或物理相机作为验收前提。
 - 用 Android Studio 打开 `product/android/`，选择模拟器并运行 Debug 变体。模拟器联网后应通过服务器的 HTTPS/WSS 公网入口联调，不应访问 PC 或服务器的回环地址。

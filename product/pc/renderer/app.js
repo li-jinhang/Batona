@@ -30,6 +30,7 @@ let lastStatus = null,
   polling = false,
   operating = false;
 let codexControlRunning = false;
+let dshActionRunning = false;
 let pollDone = Promise.resolve();
 let toastTimer;
 const messages = {
@@ -98,8 +99,9 @@ function renderCodexControl(s = lastStatus) {
 function renderDetail(s = lastStatus) {
   const dialog = $('detail-dialog');
   const isCodex = dialog.dataset.detail === 'codex';
-  $('btn-dsh-open').disabled = !s?.dsh;
-  $('btn-dsh-start').disabled = !!s?.dsh;
+  $('btn-dsh-open').disabled = dshActionRunning || !s?.dsh;
+  $('btn-dsh-start').disabled = dshActionRunning || !!s?.dsh;
+  $('btn-dsh-restart').disabled = dshActionRunning;
   $('detail-body').textContent = isCodex
     ? [
       `桌面应用：${$('codex-process').textContent}`,
@@ -439,6 +441,36 @@ $('btn-unbind').onclick = () =>
     if (!r.ok) throw new Error(messages[r.error] || r.error);
     showBind();
   }, $('btn-unbind'));
+$('btn-check-update').onclick = () =>
+  guard(async () => {
+    const status = $('update-status');
+    const note = $('update-note');
+    const download = $('btn-open-update-page');
+    status.textContent = '正在检查官网版本…';
+    note.textContent = '';
+    note.hidden = true;
+    download.hidden = true;
+    const result = await api.updateCheck();
+    if (!result?.ok) {
+      status.textContent = '无法获取官网更新信息，请检查网络后重试。';
+      return;
+    }
+    if (result.updateAvailable) {
+      status.textContent = `发现新版本 v${result.latestVersion}（当前 v${result.currentVersion}）`;
+      note.textContent = result.note || '';
+      note.hidden = !note.textContent;
+      download.hidden = false;
+    } else if (result.siteVersionIsOlder) {
+      status.textContent = `当前版本 v${result.currentVersion}，高于官网登记版本 v${result.latestVersion}。`;
+    } else {
+      status.textContent = `当前已是官网最新版本 v${result.latestVersion}。`;
+    }
+  }, $('btn-check-update'));
+$('btn-open-update-page').onclick = () =>
+  guard(async () => {
+    const result = await api.updateOpenDownloadPage();
+    if (!result?.ok) throw new Error('无法打开官网下载页，请稍后重试。');
+  }, $('btn-open-update-page'));
 $('autostart').onchange = () =>
   guard(async () => {
     const requested = $('autostart').checked;
@@ -472,6 +504,9 @@ document.querySelectorAll('.backend-card[data-detail]').forEach((card) => {
 });
 $('btn-detail-close').onclick = () => $('detail-dialog').close();
 $('btn-dsh-start').onclick = async () => {
+  if (dshActionRunning) return;
+  dshActionRunning = true;
+  renderDetail();
   const button = $('btn-dsh-start');
   button.disabled = true;
   $('dsh-detail-result').hidden = true;
@@ -481,7 +516,26 @@ $('btn-dsh-start').onclick = async () => {
     await refreshStatus();
     $('dsh-detail-result').textContent = result.alreadyRunning ? 'DSH 已在运行。' : 'DSH 服务已启动。';
   } catch (error) { $('dsh-detail-result').textContent = error.message || 'DSH 启动失败。'; }
-  finally { $('dsh-detail-result').hidden = false; if (!lastStatus?.dsh) button.disabled = false; }
+  finally { dshActionRunning = false; $('dsh-detail-result').hidden = false; renderDetail(); }
+};
+$('btn-dsh-restart').onclick = async () => {
+  if (dshActionRunning) return;
+  dshActionRunning = true;
+  $('btn-dsh-restart').textContent = '正在重启…';
+  $('dsh-detail-result').hidden = true;
+  renderDetail();
+  try {
+    const result = await api.dshRestart();
+    if (!result?.ok) throw new Error(result?.error || 'DSH 重启失败。');
+    $('dsh-detail-result').textContent = 'DSH 服务已重启。';
+  } catch (error) { $('dsh-detail-result').textContent = error.message || 'DSH 重启失败。'; }
+  finally {
+    dshActionRunning = false;
+    $('btn-dsh-restart').textContent = '重启 DSH 服务';
+    $('dsh-detail-result').hidden = false;
+    await refreshStatus();
+    renderDetail();
+  }
 };
 $('btn-dsh-open').onclick = async () => {
   const result = await api.dshOpen();

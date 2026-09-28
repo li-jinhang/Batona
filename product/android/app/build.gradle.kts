@@ -13,8 +13,8 @@ android {
         applicationId = "com.batona.mobile"
         minSdk = 26
         targetSdk = 34
-        versionCode = 53
-        versionName = "0.3.17"
+        versionCode = 57
+        versionName = "0.3.21"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

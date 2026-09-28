@@ -23,6 +23,77 @@ import com.batona.mobile.data.SessionPermissionPresetState
 import com.batona.mobile.data.requireValue
 
 class HomeStateTest {
+    @Test fun validatedRefreshRemovesArchivedCacheAndRejectsLateDiskSnapshot() {
+        val state = HomeState("codex")
+        val old = WorkspaceNode(WorkspaceMini("old", "C:/old", "Old", ""), listOf(SessionNode("archived")))
+        val current = WorkspaceNode(WorkspaceMini("new", "C:/new", "New", ""), listOf(SessionNode("active")))
+        val cache = com.batona.mobile.data.CodexMirrorCache(listOf(old), mapOf("archived" to emptyList()))
+        state.restoreCodexMirror(cache)
+        state.codexCachedHistories["active"] = emptyList()
+        state.applyWorkspaceTree(com.batona.mobile.data.WorktreeResult(listOf(current)))
+        state.restoreCodexMirror(cache)
+        assertEquals(listOf(current), state.worktree.toList())
+        assertEquals(setOf("active"), state.codexCachedHistories.keys.toSet())
+        assertEquals(listOf(current), state.codexCachedTree)
+        state.applyWorkspaceTree(com.batona.mobile.data.WorktreeResult())
+        assertTrue(state.worktree.isEmpty())
+        assertTrue(state.codexCachedHistories.isEmpty())
+        state.restoreCodexMirror(cache)
+        assertTrue(state.worktree.isEmpty())
+    }
+
+    @Test fun workspaceCreationFailureKeepsDialogAndPathForRetry() = runBlocking {
+        val state = HomeState("codex").apply { showNewWs = true; wsPath = "C:/repo" }
+        assertNull(state.submitWorkspace { throw GatewayFailure("codex-projects-unavailable") })
+        assertTrue(state.showNewWs)
+        assertEquals("C:/repo", state.wsPath)
+        assertNotNull(state.workspaceCreateError)
+        assertFalse(state.workspaceCreateBusy)
+        assertNull(state.submitWorkspace { com.batona.mobile.data.WorkspaceCreateResult() })
+        assertTrue(state.showNewWs)
+        val result = state.submitWorkspace { com.batona.mobile.data.WorkspaceCreateResult(
+            com.batona.mobile.data.WorkspaceView("ws", "C:/repo", "Repo", createdAt = "", updatedAt = ""), true) }
+        assertNotNull(result)
+        assertFalse(state.showNewWs)
+        assertEquals("", state.wsPath)
+        assertNull(state.workspaceCreateError)
+    }
+
+    @Test fun processingTimerSurvivesPhaseChangesAndIgnoresOtherSessions() {
+        for (backend in listOf("codex", "dsh")) {
+            var now = 1_000L
+            val state = HomeState(backend) { now }.apply {
+                currentId = "current"
+                gatewaySessionIds.add("other")
+                input = "test"
+            }
+            val sendId = state.beginSend("current")!!
+            assertEquals(0L, state.processingSeconds())
+            now = 6_000L
+            state.finishSend("current", sendId)
+            state.handlePush(event("current", "session/thinking"))
+            assertEquals("thinking", state.progress)
+            assertEquals(5L, state.processingSeconds())
+            state.handlePush(event("current", "tool/call"))
+            assertEquals("running", state.progress)
+            state.handlePush(event("other", "turn/end"))
+            assertEquals(5L, state.processingSeconds())
+            state.handlePush(event("current", "turn/end"))
+            assertNull(state.processingSeconds())
+            state.input = "again"
+            val nextId = state.beginSend("current")!!
+            assertEquals(0L, state.processingSeconds())
+            state.failSend("current", nextId)
+            assertNull(state.processingSeconds())
+            state.beginSend("current")
+            state.clearSessionActivity()
+            assertNull(state.processingSeconds())
+            state.progress = "thinking"
+            state.handlePush(event("current", "error"))
+            assertNull(state.processingSeconds())
+        }
+    }
+
     @Test fun gatewayEventsUpdateBackendSessionAndProgressOnlyForCurrentChat() {
         val state = HomeState("codex").apply {
             currentId = "gateway-one"

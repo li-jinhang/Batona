@@ -14,13 +14,14 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, safeStorage, powerMonitor, clipboard, shell } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
 const https = require('node:https');
 const http = require('node:http');
 const QRCode = require('qrcode');
 const { DirectoryService } = require('./dir-service.js');
-const { resolveDshLauncher, hasNodeRuntime, isDshAuthenticated, createDshOutputParser } = require('./dsh-launcher.js');
+const { resolveDshLauncher, hasNodeRuntime, isDshAuthenticated, createDshOutputParser, stopDshProcesses, restartDshService } = require('./dsh-launcher.js');
 const { CodexBridge, redactText } = require('./codex-bridge.js');
 const { launchSharedCodexDesktop } = require('./codex-handoff.js');
 const { loadControlMode, saveControlMode } = require('./codex-control-mode.js');
@@ -299,12 +300,37 @@ function captureDshToken({ port, token }) {
 
 let dshProc = null;
 let dshStartPromise = null;
+let dshRestartPromise = null;
 
 async function startDsh() {
+  if (dshRestartPromise) return dshRestartPromise;
   if (dshStartPromise) return dshStartPromise;
   dshStartPromise = startDshInternal();
   try { return await dshStartPromise; }
   finally { dshStartPromise = null; }
+}
+
+async function restartDsh() {
+  if (dshRestartPromise) return dshRestartPromise;
+  dshRestartPromise = (async () => {
+    if (dshStartPromise) await dshStartPromise;
+    const port = state.dshPort || DSH_PORT_DEFAULT;
+    return restartDshService({
+      stop: () => stopDshProcesses({ port, managedPid: dshProc?.exitCode == null ? dshProc?.pid || 0 : 0 }),
+      isListening: () => portOpen(DSH_HOST, port),
+      reset: () => {
+        dshProc = null;
+        state.dshRunning = false;
+        state.dshAuthed = false;
+        state.dshToken = null;
+        state.dshCookie = null;
+        saveDshToken();
+      },
+      start: () => startDshInternal(),
+    });
+  })();
+  try { return await dshRestartPromise; }
+  finally { dshRestartPromise = null; }
 }
 
 async function startDshInternal() {
@@ -334,11 +360,13 @@ async function startDshInternal() {
     // 会导致 DSH 输出的 UTF-8 中文被以 GBK 渲染成乱码（锟斤拷）。先 chcp 65001 强制 UTF-8。
     const cmdLine = `${launcher.command} ${args.join(' ')}`;
     dshProc = spawn('cmd.exe', ['/c', `chcp 65001 >nul && ${cmdLine}`], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    const stdout = createDshOutputParser(captureDshToken, line => log(`[dsh] ${line}`));
-    const stderr = createDshOutputParser(captureDshToken, line => log(`[dsh!] ${line}`));
+    const launched = dshProc;
+    const capture = token => { if (dshProc === launched) captureDshToken(token); };
+    const stdout = createDshOutputParser(capture, line => log(`[dsh] ${line}`));
+    const stderr = createDshOutputParser(capture, line => log(`[dsh!] ${line}`));
     dshProc.stdout?.on('data', d => stdout(String(d)));
     dshProc.stderr.on('data', d => stderr(String(d)));
-    dshProc.on('exit', (code) => { state.dshRunning = false; log(`dsh exited (${code})`); });
+    dshProc.on('exit', (code) => { if (dshProc === launched) state.dshRunning = false; log(`dsh exited (${code})`); });
     // 等待就绪：须同时拿到 launch token 且 /api 认证通过（未认证探测恒 401，不能只看端口）
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 1000));
@@ -457,6 +485,7 @@ function startCodexBridge(config = codexControl) {
         host: '127.0.0.1',
         port: CODEX_SERVICE_PORT,
         userDataDir: app.getPath('userData'),
+        codexStatePath: path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), '.codex-global-state.json'),
         websocketUrl: config?.websocketUrl,
         enableSharedWrites: config?.enableSharedWrites === true,
         log,
@@ -597,8 +626,98 @@ function createTray() {
 }
 
 // ── IPC ───────────────────────────────────────────────────────────────
+const clientReleaseOrigin = 'https://117.72.10.87';
+const clientReleaseManifestUrl = `${clientReleaseOrigin}/data/dsh-link.json`;
+const clientReleasePageUrl = `${clientReleaseOrigin}/projects/dsh-link/index.html#downloads`;
+
+function fetchClientReleaseManifest() {
+  return new Promise((resolve, reject) => {
+    const req = https.get(clientReleaseManifestUrl, {
+      headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+    }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        reject(new Error('release-manifest-unavailable'));
+        return;
+      }
+      let body = '';
+      let size = 0;
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => {
+        size += Buffer.byteLength(chunk, 'utf8');
+        if (size > 128 * 1024) {
+          req.destroy(new Error('release-manifest-too-large'));
+          return;
+        }
+        body += chunk;
+      });
+      res.on('end', () => {
+        try { resolve(JSON.parse(body)); }
+        catch { reject(new Error('release-manifest-invalid')); }
+      });
+    });
+    req.setTimeout(8000, () => req.destroy(new Error('release-manifest-timeout')));
+    req.on('error', reject);
+  });
+}
+
+function compareReleaseVersions(left, right) {
+  const parts = (value) => {
+    if (typeof value !== 'string' || !/^\d+(?:\.\d+)*$/.test(value)) throw new Error('release-version-invalid');
+    return value.split('.').map((part) => {
+      const number = Number(part);
+      if (!Number.isSafeInteger(number)) throw new Error('release-version-invalid');
+      return number;
+    });
+  };
+  const a = parts(left);
+  const b = parts(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const difference = (a[index] || 0) - (b[index] || 0);
+    if (difference !== 0) return Math.sign(difference);
+  }
+  return 0;
+}
+
+function hasPublishedWindowsPackage(files) {
+  return Array.isArray(files) && files.some((file) => {
+    if (typeof file?.url !== 'string' || !/^[a-f\d]{64}$/i.test(file?.sha256 || '')) return false;
+    try {
+      const url = new URL(file.url, `${clientReleaseOrigin}/`);
+      return url.protocol === 'https:' && url.host === '117.72.10.87'
+        && url.pathname.startsWith('/downloads/dsh-link/');
+    } catch { return false; }
+  });
+}
+
+async function checkClientUpdate() {
+  try {
+    const manifest = await fetchClientReleaseManifest();
+    const release = manifest?.platforms?.windows;
+    const latestVersion = release?.version;
+    if (!hasPublishedWindowsPackage(release?.files)) throw new Error('release-package-missing');
+    const currentVersion = app.getVersion();
+    const comparison = compareReleaseVersions(latestVersion, currentVersion);
+    return {
+      ok: true,
+      currentVersion,
+      latestVersion,
+      updateAvailable: comparison > 0,
+      siteVersionIsOlder: comparison < 0,
+      note: typeof release.note === 'string' ? release.note : '',
+    };
+  } catch {
+    return { ok: false, error: 'update-check-failed' };
+  }
+}
+
 function registerIpc() {
   ipcMain.handle('binding:get', () => ({ ...access.publicState(), appVersion: app.getVersion() }));
+  ipcMain.handle('update:check', checkClientUpdate);
+  ipcMain.handle('update:open-download-page', async () => {
+    try { await shell.openExternal(clientReleasePageUrl); return { ok: true }; }
+    catch { return { ok: false, error: 'download-page-open-failed' }; }
+  });
   ipcMain.handle('access:login', async (_e, key, replace) => {
     try { const r = await access.login(String(key), replace === true); stopFrpc(); loadBinding(); return r; }
     catch(e) { return {ok:false,error:e.code || e.message}; }
@@ -645,6 +764,16 @@ function registerIpc() {
     if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: 'DSH 端口无效。' };
     await shell.openExternal(`http://${DSH_HOST}:${port}/?token=${encodeURIComponent(state.dshToken)}`);
     return { ok: true };
+  });
+  ipcMain.handle('dsh:restart', async () => {
+    if (!runtimeProfile.dshEnabled) return { ok: false, error: '当前运行配置未启用 DSH。' };
+    if (!hasNodeRuntime() || !resolveDshLauncher()) return { ok: false, error: '未找到可运行的 Node.js 或 DSH 启动器。' };
+    try {
+      log('正在重启 DSH 服务');
+      const ok = await restartDsh();
+      if (ok) void reportLaunchToken();
+      return ok ? { ok: true } : { ok: false, error: '原 DSH 已结束，但重新启动未就绪，请查看运行日志。' };
+    } catch (error) { return { ok: false, error: error.message }; }
   });
   ipcMain.handle('service:stop', () => { stopFrpc(); return { ok: true }; });
   ipcMain.handle('service:status', () => status());

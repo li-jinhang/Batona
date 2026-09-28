@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('batona', {
   serviceStart: () => ipcRenderer.invoke('service:start'),
   serviceStartFrpc: () => ipcRenderer.invoke('service:startFrpc'),
   dshStart: () => ipcRenderer.invoke('dsh:start'),
+  dshRestart: () => ipcRenderer.invoke('dsh:restart'),
   dshOpen: () => ipcRenderer.invoke('dsh:open'),
   serviceStop: () => ipcRenderer.invoke('service:stop'),
   serviceStatus: () => ipcRenderer.invoke('service:status'),
@@ -21,4 +22,6 @@ contextBridge.exposeInMainWorld('batona', {
   logTail: () => ipcRenderer.invoke('log:tail'),
   autostartGet: () => ipcRenderer.invoke('settings:autostart:get'),
   autostartSet: (on) => ipcRenderer.invoke('settings:autostart:set', on),
+  updateCheck: () => ipcRenderer.invoke('update:check'),
+  updateOpenDownloadPage: () => ipcRenderer.invoke('update:open-download-page'),
 });

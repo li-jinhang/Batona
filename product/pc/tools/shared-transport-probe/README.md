@@ -149,10 +149,20 @@ success. It refuses to launch while Desktop is running and never terminates it.
 It will not attach to an unknown listener; if the default port is occupied, it
 selects a free loopback port instead. The ordinary Codex shortcut does not
 inherit this temporary environment setting; use `-Launch` for each shared-mode
-Desktop start. `-Stop` is only needed when
-ending the experiment or replacing the server after a Codex update, and
+Desktop start. Outdated records after a Codex update are refreshed by `-Launch`
+or `-Restart`; a still-running old server is identity-checked and stopped only
+after Desktop exits. `-Stop` is needed when ending the experiment, and
 requires Desktop to be closed. The script does not set persistent environment
 variables.
+
+Desktop must retain its Windows package identity. Directly creating the
+`ChatGPT.exe` process from an unpackaged launcher can fail with Windows error
+15700 (no package identity). The handoff uses `Invoke-CommandInDesktopPackage`
+with a hidden PowerShell bootstrap and `-PreventBreakaway`. Since package
+activation does not inherit the caller's environment, the bootstrap explicitly
+passes the shared URL to its child and verifies both processes' package identity.
+`npm run test:codex-package` tests this path with a harmless hidden child using
+the installed Codex package; it does not start or restart Codex Desktop.
 
 The PC confirmation dialog uses `-Restart`: it checks the installed Desktop
 process, requests a normal close, waits up to 15 seconds, then ends only the

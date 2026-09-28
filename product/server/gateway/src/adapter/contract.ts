@@ -171,6 +171,8 @@ export interface AgentAdapter {
   /** 以下为可选能力方法（capabilities 声明为 false 时网关不路由） */
   listWorkspaces?(): Promise<WorkspaceView[]>;
   createWorkspace?(path: string): Promise<{ workspace: WorkspaceView; created: boolean }>;
+  /** Rename a workspace's display title without changing its directory. */
+  renameWorkspace?(workspaceId: string, title: string): Promise<WorkspaceView>;
   /** 删除工作区（DSH：workspace.delete，仅取消注册，目录/数据保留） */
   deleteWorkspace?(workspaceId: string): Promise<void>;
   /** 归档会话（DSH：workspace.archiveSession，从分组表面隐藏） */

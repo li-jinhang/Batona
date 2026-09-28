@@ -1,6 +1,58 @@
 'use strict';
 
-const { spawnSync } = require('node:child_process');
+const { spawnSync, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+
+// Terminate only this instance's launch tree and/or the verified DSH listener.
+// Capture and recheck process identity before taskkill to avoid reusing stale PIDs.
+async function stopDshProcesses({ port, managedPid = 0, parentPid = process.pid }, run = promisify(execFile)) {
+  if (![port, managedPid, parentPid].every(Number.isInteger) || port < 1 || port > 65535 || managedPid < 0 || parentPid < 1)
+    throw new Error('DSH 进程参数无效。');
+  const script = String.raw`
+$ErrorActionPreference = 'Stop'
+$targets = @{}
+$listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -eq ${port} } | Select-Object -ExpandProperty OwningProcess -Unique)
+foreach ($owner in $listeners) {
+  $candidate = Get-CimInstance Win32_Process -Filter "ProcessId=$owner"
+  if (!$candidate -or $candidate.Name -ne 'node.exe' -or
+      $candidate.CommandLine -notmatch '[\\/]@deepseek-ai[\\/]dsh[\\/]lib[\\/]bin\.js' -or
+      $candidate.CommandLine -notmatch '(?:\bweb\b|--profile\s+web)') { throw 'dsh-process-unverified' }
+  $targets[[int]$candidate.ProcessId] = $candidate
+}
+if (${managedPid} -gt 0) {
+  $managed = Get-CimInstance Win32_Process -Filter 'ProcessId=${managedPid}'
+  if ($managed) {
+    if ($managed.ParentProcessId -ne ${parentPid} -or $managed.Name -ne 'cmd.exe') { throw 'dsh-process-unverified' }
+    $targets[[int]$managed.ProcessId] = $managed
+  }
+}
+foreach ($candidate in $targets.Values) {
+  $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($candidate.ProcessId)"
+  if (!$current) { continue }
+  if ($current.CreationDate -ne $candidate.CreationDate -or $current.ExecutablePath -ne $candidate.ExecutablePath) { throw 'dsh-process-changed' }
+  & "$env:WINDIR\System32\taskkill.exe" /PID $current.ProcessId /T /F 2>&1 | Out-Null
+  if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $current.ProcessId -ErrorAction SilentlyContinue)) { throw 'dsh-stop-failed' }
+}
+`;
+  try {
+    await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+      { windowsHide: true, timeout: 20_000, maxBuffer: 16 * 1024 });
+  } catch {
+    throw new Error('无法确认或结束原 DSH 进程，请检查端口占用与进程权限后重试。');
+  }
+}
+
+async function restartDshService({ stop, isListening, reset, start, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+  await stop();
+  for (let attempt = 0; attempt < 30; attempt++) {
+    if (!await isListening()) {
+      reset();
+      return start();
+    }
+    await wait(200);
+  }
+  throw new Error('原 DSH 端口尚未释放，未启动新进程，请稍后重试。');
+}
 
 function commandExists(command) {
   return spawnSync('where.exe', [command], { stdio: 'ignore', windowsHide: true }).status === 0;
@@ -46,4 +98,4 @@ function createDshOutputParser(onToken, onLine) {
   };
 }
 
-module.exports = { resolveDshLauncher, hasNodeRuntime, isDshAuthenticated, createDshOutputParser };
+module.exports = { resolveDshLauncher, hasNodeRuntime, isDshAuthenticated, createDshOutputParser, stopDshProcesses, restartDshService };

@@ -66,6 +66,13 @@ app.whenReady().then(async () => {
     await run(`document.getElementById('btn-dsh-start').click()`);
     await waitFor(`!document.getElementById('btn-dsh-open').disabled`);
     assert.equal(await run(`window.uiFixture.calls().includes('dsh-start')`), true);
+    await run(`document.getElementById('btn-dsh-restart').click()`);
+    assert.equal(await run(`document.getElementById('btn-dsh-restart').disabled`), true);
+    assert.equal(await run(`document.getElementById('btn-dsh-start').disabled`), true);
+    await run(`document.getElementById('btn-refresh').click()`);
+    await waitFor(`document.getElementById('dsh-detail-result').textContent==='DSH 服务已重启。'`);
+    await waitFor(`!document.getElementById('btn-dsh-restart').disabled`);
+    assert.equal(await run(`window.uiFixture.calls().filter(x=>x==='dsh-restart').length`), 1);
     await run(`document.getElementById('btn-detail-close').click()`);
     await run(`document.querySelector('.backend-card[data-detail="codex"] .backend-content').click()`);
     assert.match(await run(`document.getElementById('detail-body').textContent`), /登录状态：已登录/);

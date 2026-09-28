@@ -35,9 +35,11 @@ namespace Batona.NativeCodexProbe
             int processId;
             if (args.Length < 3 || !int.TryParse(args[1], out processId)
                 || (args[0] != "inspect" && args[0] != "status" && args[0] != "send" && args[0] != "open-permission"
-                    && args[0] != "close-permission" && args[0] != "set-permission" && args[0] != "set-model"))
+                    && args[0] != "close-permission" && args[0] != "set-permission" && args[0] != "set-model"
+                    && args[0] != "rename-workspace"))
                 return Fail("usage", 2);
             if (args[0] == "inspect" && args.Length != 3) return Fail("usage", 2);
+            if (args[0] == "rename-workspace" && args.Length != 4) return Fail("usage", 2);
             if (args[0] == "status" && args.Length != 6) return Fail("usage", 2);
             if (args[0] == "send" && args.Length != 8) return Fail("usage", 2);
             if ((args[0] == "open-permission" || args[0] == "close-permission") && args.Length != 6) return Fail("usage", 2);
@@ -62,6 +64,26 @@ namespace Batona.NativeCodexProbe
                 if (title.Length == 0) return Fail("native-task-title-missing", 8);
                 stage = "automation-root";
                 AutomationElement root = AutomationElement.FromHandle(windowHandle);
+                if (args[0] == "rename-workspace")
+                {
+                    stage = "workspace-title-decode";
+                    string currentWorkspaceTitle = Decode(args[2]);
+                    string newWorkspaceTitle = Decode(args[3]);
+                    if (string.IsNullOrWhiteSpace(currentWorkspaceTitle) || string.IsNullOrWhiteSpace(newWorkspaceTitle)
+                        || currentWorkspaceTitle.Length > 128 || newWorkspaceTitle.Length > 128
+                        || Regex.IsMatch(newWorkspaceTitle, @"[\x00-\x1f\x7f]"))
+                        return Fail("native-workspace-rename-invalid", 8);
+                    if (string.Equals(currentWorkspaceTitle, newWorkspaceTitle, StringComparison.Ordinal))
+                    {
+                        Console.WriteLine("{\"accepted\":true}");
+                        return 0;
+                    }
+                    stage = "workspace-rename";
+                    if (!RenameWorkspace(root, currentWorkspaceTitle, newWorkspaceTitle))
+                        return Fail("native-workspace-rename-unavailable", 18);
+                    Console.WriteLine("{\"accepted\":true}");
+                    return 0;
+                }
                 // Permission selection changes settings but sends no message.
                 // The app-server binder already proved this title is unique;
                 // require that exact task to be active without depending on
@@ -207,6 +229,174 @@ namespace Batona.NativeCodexProbe
             {
                 return Fail("native-control-failed:" + stage + ":" + error.GetType().Name, 17);
             }
+        }
+
+        private static bool RenameWorkspace(AutomationElement root, string currentTitle, string newTitle)
+        {
+            List<AutomationElement> currentActions = FindProjectActionButtons(root, currentTitle);
+            if (currentActions.Count != 1 || FindProjectActionButtons(root, newTitle).Count != 0) return false;
+            object invoke;
+            if (!currentActions[0].TryGetCurrentPattern(InvokePattern.Pattern, out invoke)) return false;
+            ((InvokePattern)invoke).Invoke();
+
+            List<AutomationElement> renameCommands = new List<AutomationElement>();
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                renameCommands = FindWorkspaceRenameCommands(root);
+                if (renameCommands.Count > 0) break;
+                Thread.Sleep(100);
+            }
+            if (renameCommands.Count != 1) return false;
+            if (!renameCommands[0].TryGetCurrentPattern(InvokePattern.Pattern, out invoke)) return false;
+
+            bool dialogOpened = false;
+            bool confirmed = false;
+            try
+            {
+                ((InvokePattern)invoke).Invoke();
+                List<AutomationElement> editors = new List<AutomationElement>();
+                ValuePattern valuePattern = null;
+                for (int attempt = 0; attempt < 20; attempt++)
+                {
+                    editors = FindWorkspaceNameEditors(root, currentTitle);
+                    if (editors.Count > 0) break;
+                    Thread.Sleep(100);
+                }
+                dialogOpened = editors.Count > 0;
+                if (editors.Count != 1 || !editors[0].TryGetCurrentPattern(ValuePattern.Pattern, out invoke)) return false;
+                valuePattern = (ValuePattern)invoke;
+                valuePattern.SetValue(newTitle);
+                if (!string.Equals(valuePattern.Current.Value, newTitle, StringComparison.Ordinal)) return false;
+
+                List<AutomationElement> confirmButtons = new List<AutomationElement>();
+                for (int attempt = 0; attempt < 10; attempt++)
+                {
+                    confirmButtons = FindWorkspaceRenameConfirmButtons(root);
+                    if (confirmButtons.Count > 0) break;
+                    Thread.Sleep(100);
+                }
+                if (confirmButtons.Count != 1 || !confirmButtons[0].TryGetCurrentPattern(InvokePattern.Pattern, out invoke)) return false;
+                ((InvokePattern)invoke).Invoke();
+
+                for (int attempt = 0; attempt < 30; attempt++)
+                {
+                    Thread.Sleep(100);
+                    if (FindProjectActionButtons(root, currentTitle).Count == 0
+                        && FindProjectActionButtons(root, newTitle).Count == 1)
+                    {
+                        confirmed = true;
+                        return true;
+                    }
+                }
+                return false;
+            }
+            finally
+            {
+                if (dialogOpened && !confirmed) CancelWorkspaceRename(root);
+            }
+        }
+
+        private static List<AutomationElement> FindProjectActionButtons(AutomationElement root, string title)
+        {
+            var matches = new List<AutomationElement>();
+            string[] names = new string[] {
+                title + " 的项目操作",
+                title + " project actions",
+                "Project actions for " + title,
+            };
+            foreach (AutomationElement button in Find(root, ControlType.Button, null, false))
+            {
+                try
+                {
+                    string name = button.Current.Name ?? "";
+                    foreach (string candidate in names)
+                    {
+                        if (string.Equals(name, candidate, StringComparison.OrdinalIgnoreCase))
+                        {
+                            matches.Add(button);
+                            break;
+                        }
+                    }
+                }
+                catch { }
+            }
+            return matches;
+        }
+
+        private static List<AutomationElement> FindWorkspaceRenameCommands(AutomationElement root)
+        {
+            return FindNamedControls(root, new ControlType[] { ControlType.MenuItem, ControlType.Button }, new string[] {
+                "重命名项目", "重命名工作区", "重命名", "Rename project", "Rename Project", "Rename workspace", "Rename",
+                "编辑项目", "Edit project",
+            });
+        }
+
+        private static List<AutomationElement> FindWorkspaceNameEditors(AutomationElement root, string currentTitle)
+        {
+            var matches = new List<AutomationElement>();
+            foreach (AutomationElement editor in Find(root, ControlType.Edit, null, false))
+            {
+                try
+                {
+                    object pattern;
+                    if (!editor.Current.IsEnabled || !editor.TryGetCurrentPattern(ValuePattern.Pattern, out pattern)) continue;
+                    string value = ((ValuePattern)pattern).Current.Value ?? "";
+                    string descriptor = (editor.Current.Name ?? "") + " " + (editor.Current.AutomationId ?? "");
+                    AutomationElement label = editor.Current.LabeledBy;
+                    if (label != null) descriptor += " " + (label.Current.Name ?? "");
+                    bool namesWorkspace = descriptor.IndexOf("project name", StringComparison.OrdinalIgnoreCase) >= 0
+                        || descriptor.IndexOf("workspace name", StringComparison.OrdinalIgnoreCase) >= 0
+                        || descriptor.IndexOf("project-name", StringComparison.OrdinalIgnoreCase) >= 0
+                        || descriptor.IndexOf("workspace-name", StringComparison.OrdinalIgnoreCase) >= 0
+                        || descriptor.IndexOf("项目名称", StringComparison.Ordinal) >= 0
+                        || descriptor.IndexOf("项目名", StringComparison.Ordinal) >= 0
+                        || descriptor.IndexOf("工作区名称", StringComparison.Ordinal) >= 0;
+                    if (string.Equals(value, currentTitle, StringComparison.Ordinal) || namesWorkspace) matches.Add(editor);
+                }
+                catch { }
+            }
+            return matches;
+        }
+
+        private static List<AutomationElement> FindWorkspaceRenameConfirmButtons(AutomationElement root)
+        {
+            return FindNamedControls(root, new ControlType[] { ControlType.Button }, new string[] {
+                "重命名", "重命名项目", "重命名工作区", "保存", "确定", "Rename", "Rename project", "Rename Project", "Rename workspace", "Save", "OK",
+            });
+        }
+
+        private static List<AutomationElement> FindNamedControls(AutomationElement root, ControlType[] types, string[] names)
+        {
+            var matches = new List<AutomationElement>();
+            foreach (ControlType type in types)
+            {
+                foreach (AutomationElement element in Find(root, type, null, false))
+                {
+                    try
+                    {
+                        string name = element.Current.Name ?? "";
+                        foreach (string candidate in names)
+                        {
+                            if (string.Equals(name, candidate, StringComparison.OrdinalIgnoreCase))
+                            {
+                                matches.Add(element);
+                                break;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            return matches;
+        }
+
+        private static void CancelWorkspaceRename(AutomationElement root)
+        {
+            List<AutomationElement> buttons = FindNamedControls(root, new ControlType[] { ControlType.Button }, new string[] { "取消", "Cancel" });
+            if (buttons.Count != 1) return;
+            object invoke;
+            if (buttons[0].TryGetCurrentPattern(InvokePattern.Pattern, out invoke))
+                ((InvokePattern)invoke).Invoke();
         }
 
         private static bool Matches(Identity.Evidence evidence, string titleHash, string userHash, string assistantHash)

@@ -13,7 +13,7 @@
 - 共享权限读回在持久 App Server 连接返回空值或旧值时，使用新的只读共享连接再次核对目标任务；只有目标任务的后台档位和审批策略匹配后，才向手机返回成功。隔离任务实测工作区外写入在受限档失败、直接改为完全访问后下一轮成功；Desktop 持有任务是否在下一轮覆盖后台策略仍须现场验收。原生权限操作的任务标题不匹配只可在触碰控件之前短暂重试一次；消息发送不得按此规则重试。
 - 共享连接交接由 Windows PowerShell 5.1 的 `powershell.exe` 执行；为 Codex Desktop 单独注入共享地址时使用 .NET Framework `ProcessStartInfo.EnvironmentVariables` 和 `UseShellExecute=false`，不依赖单独安装的 PowerShell 7。保留关闭前的 Desktop 身份、CLI 哈希、监听端口与托管进程核验；改变进程启动方式后，先用 5.1 运行只读 `-Status` 和无害子进程环境测试，再在隔离环境验收真实重启。
 - 内置 handoff 脚本使用本次 `powershell.exe` 的 `-ExecutionPolicy Bypass` 参数，保留系统/用户策略；若 Group Policy 仍阻止脚本，返回明确错误并保持 Desktop 进程。原生界面模型操作后从 App Server 设置事件或 `thread/read` 核对模型与思考强度，未确认时返回失败；`/v1/sessions/:id/model` 的响应携带核对后的模型。DSH 详情的启动按钮先验证可运行的 Node.js，浏览器按钮只在本地认证就绪后由主进程用 token 打开回环 URL。
-- Codex 共享连接的进度来自 App Server 通知；独立界面控制模式对手机当前恢复的 Desktop 任务采用只读、已核验进程/任务身份的 UI Automation 观察。仅投影可见的思考或重连提示，提示本身带次数时才传次数；窗口锁定、任务切换或无可见状态时不推断。会话树对缺目录任务分批补读，每次最多 24 个、单项最多 2 秒，避免超过网关读取期限。
+- Codex 共享连接的进度来自 App Server 通知；独立界面控制模式对手机当前恢复的 Desktop 任务采用只读、已核验进程/任务身份的 UI Automation 观察。仅投影可见的思考或重连提示，提示本身带次数时才传次数；窗口锁定、任务切换或无可见状态时不推断。工作区操作以 ../README.md 的共享项目契约为准：当前已安装 CLI 的实验 schema 和隔离服务实测确认 project/list/create/read/update/delete 可用。共享模式按目录唯一匹配真实项目 ID，写入后回读确认；项目列表名称优先于本地缓存。创建/移除要求共享写入已开启，旧服务明确失败，不能只登记或隐藏本地条目。stdio 重命名保留已签名 Desktop UI Automation，兼容“重命名”与新版“编辑项目”入口。会话树对缺目录任务分批补读，每次最多 24 个、单项最多 2 秒，避免超过网关读取期限；归组时使用 PC 显式登记和 Codex Desktop 保存根目录，再按会话 `cwd` 自动补出工作区，未解析出有效 `cwd` 时才留在未分组。
 - 依赖与打包配置在 `package.json`。`electron-builder` 的 `files` 白名单决定进安装包的文件：`main.js` 直接 `require` 的每个本地文件或目录（当前包括 `tunnel/**/*`）都必须列入。Windows 发布包只允许内置 WSS 隧道模块，不能打包或下载第三方隧道二进制。
 
 ## 托管接入候选版
@@ -23,6 +23,8 @@
 - PC 0.5.21 的 Codex 卡片以只读 `account/read`（不主动刷新令牌）显示本地账户状态；只向 renderer 返回已登录、未登录、无需登录或状态未知，不暴露账户邮箱，也不把桥初始化当作认证成功。DSH/Codex 远程就绪时隐藏重复的“隧道与网关已连接”说明。连接手机入口为“显示配对信息”，复制配对码仅在弹窗内，实际复制由主进程针对当前有效配对码执行。`test:codex-auth`、`test:codex-transport`、`test:ui`、`smoke` 和 0.5.21 安装版/便携版构建已通过；0.5.21 便携版已切换为本机运行版；窗口显示已登录、DSH/Codex 远程就绪，桥 /healthz、模型和权限只读接口正常，原 DSH 进程未中断。此机通过 Computer Use 的 launch_app 启动打包程序时两版均显示 safeStorage 解密失败；同一密文在开发 Electron 和命令行启动的打包探针中可读，最终由当前用户 PowerShell 的 Start-Process 启动 0.5.21 便携版后正常登录。不要把该现场现象误判为密文损坏；确切的启动环境差异尚未定位。
 
 ## 端内约束
+
+- DSH 服务详情的“重启”经 `dsh:restart` 在主进程执行：结束当前实例托管的启动树与已核验的 DSH 端口进程，核对 PID/创建时间后终止，等待端口释放，清理旧认证再启动并验证就绪。重启与启动互斥；未知端口占用不得终止。`test/dsh-restart-windows.cjs` 仅使用隔离进程验证 Windows 终止路径。
 
 - DSH、Agent、LLM 与工具始终在 PC 执行；不要将 DSH API、launch token 或本地端口暴露到公网，也不要让渲染进程直接持有敏感凭据。
 - 账号/设备授权、配对二维码、launch-token 上报、网关 RPC 与隧道协议变更必须遵循 `../README.md` 的跨端契约，并与 Android/服务器一起做兼容评估。

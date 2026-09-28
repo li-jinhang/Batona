@@ -13,9 +13,9 @@ const { CodexBridge } = require('../codex-bridge');
     id: params.threadId, cwd: params.threadId === 'needs-read' ? 'C:/other' : '',
   } });
   const tree = await bridge.workspaceTree();
-  assert.equal(tree.items.length, 2);
-  assert.deepEqual(tree.ungroupedSessions.map((session) => session.sessionId), ['loose']);
-  assert.equal(tree.items.flatMap((item) => item.sessions).length, 2);
+  assert.equal(tree.items.length, 0, 'cwd alone must never manufacture a workspace');
+  assert.deepEqual(tree.ungroupedSessions.map((session) => session.sessionId), ['grouped', 'needs-read', 'loose']);
+  assert.equal(tree.items.flatMap((item) => item.sessions).length, 0);
   const large = new CodexBridge();
   large.listThreads = async () => Array.from({ length: 30 }, (_, index) => ({
     id: `missing-${index}`, cwd: '', title: '', state: 'idle', createdAt: index, updatedAt: 30 - index,

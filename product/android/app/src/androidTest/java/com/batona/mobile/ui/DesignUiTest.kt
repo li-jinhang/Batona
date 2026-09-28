@@ -40,7 +40,7 @@ class DesignUiTest {
         worktree.add(WorkspaceNode(WorkspaceMini("web", "D:/ExampleWeb", "个人网站", "")))
     }
 
-    private fun show(state: HomeState, answer: (JsonObject) -> Unit = {}) {
+    private fun show(state: HomeState, refresh: () -> Unit = {}, answer: (JsonObject) -> Unit = {}) {
         compose.setContent {
             BatonaTheme {
                 val tab = if (state.backend == "codex") 1 else 0
@@ -48,10 +48,31 @@ class DesignUiTest {
                     Box(Modifier.padding(pad)) {
                         ChatTab(state, client, state.backend, onSelectSession = { _, _ -> }, onBack = {}, onToggle = {},
                             onNewSession = { _, _, _ -> }, onDeleteWs = {}, onArchive = {}, onNewWorkspace = {},
-                            onAnswer = answer, onWsChanged = {})
+                            onAnswer = answer, onWsChanged = refresh)
                     }
                 }
             }
+        }
+    }
+
+    @Test fun refreshReplacesArchivedWorkspaceAndPersistedMirror() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val store = com.batona.mobile.SettingsStore(app)
+        val old = WorkspaceNode(WorkspaceMini("old", "C:/old", "已归档项目", ""), listOf(SessionNode("old-session")))
+        val current = WorkspaceNode(WorkspaceMini("new", "C:/new", "当前项目", ""), listOf(SessionNode("new-session")))
+        val state = HomeState("codex")
+        state.restoreCodexMirror(CodexMirrorCache(listOf(old), mapOf("old-session" to emptyList())))
+        state.connected = true
+        show(state, refresh = { state.applyWorkspaceTree(WorktreeResult(listOf(current))) })
+        compose.onNodeWithText("已归档项目").assertExists()
+        compose.onNodeWithContentDescription("刷新工作区").performClick()
+        compose.onNodeWithText("已归档项目").assertDoesNotExist()
+        compose.onNodeWithText("当前项目").assertExists()
+        kotlinx.coroutines.runBlocking {
+            state.persistCodexMirror(store)
+            val saved = store.loadCodexMirror()!!
+            assertEquals(listOf(current), saved.worktree)
+            assertFalse(saved.histories.containsKey("old-session"))
         }
     }
 
@@ -61,6 +82,25 @@ class DesignUiTest {
         File(app.getExternalFilesDir(null), name).outputStream().use {
             compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
         }
+    }
+
+    @Test fun workspaceCreateFailureRemainsVisibleForRetry() {
+        val state = fixture().apply { showNewWs = true; wsPath = "C:/repo" }
+        show(state)
+        compose.waitForIdle()
+        compose.runOnIdle {
+            kotlinx.coroutines.runBlocking {
+                state.submitWorkspace { throw GatewayFailure("codex-projects-unavailable") }
+            }
+        }
+        compose.onNodeWithText("创建工作区").assertIsDisplayed()
+        compose.onNodeWithText("C:/repo").assertIsDisplayed()
+        compose.onNodeWithText(GatewayFailure("codex-projects-unavailable").message!!).assertIsDisplayed()
+        compose.onNodeWithText("创建", useUnmergedTree = true).performClick()
+        compose.onNodeWithText("创建工作区").assertIsDisplayed()
+        compose.runOnIdle { state.workspaceCreateBusy = true }
+        compose.onNodeWithText("正在创建…").assertIsNotEnabled()
+        compose.onNodeWithText("取消").assertIsNotEnabled()
     }
 
     @Test fun workspaceMenusAndOlderSessionsRemainAccessible() {
@@ -142,19 +182,59 @@ class DesignUiTest {
         compose.onNodeWithText("已读取界面文件").assertDoesNotExist()
         compose.onNodeWithText("成功读取 1 个文件").assertDoesNotExist()
         compose.runOnIdle {
-            state.lines.add(ChatLine(4, "tool", "核对文件版本", "读取文件"))
+            state.lines.add(ChatLine(4, "assistant", reasoning = "核对文件版本"))
             state.lines.add(ChatLine(5, "assistant", "已经定位到问题。"))
         }
         compose.onNodeWithText("4 项").assertIsDisplayed()
         compose.onNodeWithText("已经定位到问题。").assertIsDisplayed()
         capture("android-analysis-collapsed.png")
         compose.onNodeWithContentDescription("展开分析过程").performClick()
+        compose.onAllNodesWithText("思考过程").assertCountEquals(2)
+        val firstThought = compose.onAllNodesWithText("思考过程")[0].fetchSemanticsNode().boundsInRoot.top
+        val call = compose.onNodeWithText("工具调用 · 读取文件").fetchSemanticsNode().boundsInRoot.top
+        val result = compose.onNodeWithText("工具结果 · 读取文件").fetchSemanticsNode().boundsInRoot.top
+        val lastThought = compose.onAllNodesWithText("思考过程")[1].fetchSemanticsNode().boundsInRoot.top
+        assertTrue("Analysis entries must retain event order", firstThought < call && call < result && result < lastThought)
+        compose.onAllNodesWithContentDescription("展开思考过程")[0].performClick()
         compose.onNodeWithText("先确认相关文件。").assertIsDisplayed()
+        compose.onNodeWithText("核对文件版本").assertDoesNotExist()
+        compose.onNodeWithContentDescription("展开工具调用 · 读取文件").performClick()
         compose.onNodeWithText("已读取界面文件").assertIsDisplayed()
+        compose.onNodeWithContentDescription("展开工具结果 · 读取文件").performClick()
         compose.onNodeWithText("成功读取 1 个文件").assertIsDisplayed()
         capture("android-analysis-expanded.png")
         compose.onNodeWithContentDescription("收起分析过程").performClick()
         compose.onNodeWithText("已读取界面文件").assertDoesNotExist()
+    }
+
+    @Test fun requestShowsThinkingAndElapsedTimeUntilCompleted() {
+        var now = 0L
+        val state = HomeState("codex") { now }.apply {
+            connected = true
+            currentId = "gateway-session"; currentTitle = "状态测试"
+            input = "检查代码"
+            beginSend("gateway-session")
+        }
+        show(state)
+        compose.onNodeWithText("已处理 0 秒").assertIsDisplayed()
+        compose.runOnIdle {
+            state.handlePush(ServerRequest(rpcId = "thinking", method = "session/event", payload = kotlinx.serialization.json.buildJsonObject {
+                put("sessionId", kotlinx.serialization.json.JsonPrimitive("gateway-session"))
+                put("event", kotlinx.serialization.json.buildJsonObject {
+                    put("type", kotlinx.serialization.json.JsonPrimitive("assistant/chunk"))
+                    put("reasoning", kotlinx.serialization.json.JsonPrimitive("检查实现"))
+                })
+            }))
+        }
+        compose.onNodeWithText("正在思考").assertIsDisplayed()
+        compose.runOnIdle { now = 5_000L }
+        compose.waitUntil(3_000) {
+            compose.onAllNodesWithText("已处理 5 秒").fetchSemanticsNodes().isNotEmpty()
+        }
+        capture("android-thinking-duration.png")
+        compose.runOnIdle { state.progress = null }
+        compose.onNodeWithText("已处理", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("正在思考").assertDoesNotExist()
     }
 
     @Test fun codexThinkingStrengthIsAvailableSeparatelyFromModel() {

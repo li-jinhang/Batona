@@ -67,8 +67,8 @@ internal fun UngroupedSessionCard(
     val showOlder = state.olderExpanded["ungrouped"] ?: false
     Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(8.dp)) {
-            Row(Modifier.fillMaxWidth().clickable { state.expanded["ungrouped"] = !open }.padding(8.dp),
+        Column(Modifier.padding(4.dp)) {
+            Row(Modifier.fillMaxWidth().clickable { state.expanded["ungrouped"] = !open }.padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Outlined.FolderOpen, null, Modifier.size(26.dp))
                 Spacer(Modifier.width(12.dp))
@@ -84,7 +84,7 @@ internal fun UngroupedSessionCard(
                 (if (showOlder) sessions else sessions.take(5)).forEach { session ->
                     var menu by remember(session.sessionId) { mutableStateOf(false) }
                     Row(Modifier.fillMaxWidth().testTag("session-${session.sessionId}")
-                        .clickable { onSelect(session.sessionId, "未分组") }.padding(start = 12.dp, top = 6.dp, bottom = 6.dp),
+                        .clickable { onSelect(session.sessionId, "未分组") }.padding(start = 12.dp, top = 4.dp, bottom = 4.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(session.title ?: session.sessionId, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -122,9 +122,9 @@ internal fun WorkspaceCard(
     var workspaceMenu by remember { mutableStateOf(false) }
     Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(8.dp)) {
+        Column(Modifier.padding(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Row(Modifier.weight(1f).clickable { state.expanded[ws.workspaceId] = !open }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f).clickable { state.expanded[ws.workspaceId] = !open }.padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Outlined.Folder, null, Modifier.size(26.dp))
                     Spacer(Modifier.width(12.dp))
                     Column {
@@ -138,6 +138,13 @@ internal fun WorkspaceCard(
                 Box {
                     IconButton(onClick = { workspaceMenu = true }) { Icon(Icons.Outlined.MoreVert, "工作区菜单 ${ws.title}") }
                     DropdownMenu(workspaceMenu, onDismissRequest = { workspaceMenu = false }) {
+                        DropdownMenuItem(text = { Text("重命名") }, enabled = state.connected && !state.workspaceRenameBusy,
+                            onClick = {
+                                workspaceMenu = false
+                                state.renamingWorkspaceId = ws.workspaceId
+                                state.workspaceRenameText = ws.title
+                                state.workspaceRenameError = null
+                            })
                         DropdownMenuItem(text = { Text("移除工作区") }, enabled = state.connected,
                             onClick = { workspaceMenu = false; state.deletingWs = ws.workspaceId })
                     }
@@ -149,9 +156,9 @@ internal fun WorkspaceCard(
                 sessions.forEachIndexed { index, session ->
                     var menu by remember(session.sessionId) { mutableStateOf(false) }
                     Row(Modifier.fillMaxWidth().testTag("session-${session.sessionId}")
-                        .clickable { onSelect(session.sessionId, ws.title) }.padding(start = 12.dp, top = 6.dp, bottom = 6.dp),
+                        .clickable { onSelect(session.sessionId, ws.title) }.padding(start = 12.dp, top = 4.dp, bottom = 4.dp),
                         verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(session.title ?: session.sessionId, maxLines = 2, overflow = TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                             SessionStatus(session.state)

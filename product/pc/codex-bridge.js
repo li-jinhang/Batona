@@ -8,16 +8,19 @@
  */
 
 const { EventEmitter } = require('node:events');
+const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
+const { fileURLToPath } = require('node:url');
 const { WebSocketServer, WebSocket } = require('ws');
 const { NativeCodexControl } = require('./native-codex-control');
 
 const MAX_BODY_BYTES = 64 * 1024;
 const HISTORY_EVENT_LIMIT = 200;
 const THREAD_PAGE_LIMIT = 100;
+const ARCHIVED_WORKSPACE_CACHE_TTL_MS = 60_000;
 
 class AppServerClient extends EventEmitter {
   constructor({ executable, websocketUrl, log = () => {} } = {}) {
@@ -183,7 +186,7 @@ class AppServerClient extends EventEmitter {
 }
 
 class CodexBridge {
-  constructor({ host = '127.0.0.1', port = 3082, userDataDir, executable, websocketUrl, enableSharedWrites = false, nativeControl, log = () => {} } = {}) {
+  constructor({ host = '127.0.0.1', port = 3082, userDataDir, codexStatePath, executable, websocketUrl, enableSharedWrites = false, nativeControl, log = () => {} } = {}) {
     this.host = host;
     this.port = port;
     this.log = log;
@@ -201,6 +204,10 @@ class CodexBridge {
     this.threadSettingsWaiters = new Map();
     this.knownThreads = new Map();
     this.cwdLookupCache = new Map();
+    this.archivedWorkspacePathKeys = new Set();
+    this.archivedWorkspacePathsLoadedAt = 0;
+    this.archivedWorkspacePathGeneration = 0;
+    this.archivedWorkspacePathRefresh = null;
     this.pollTimer = null;
     this.nativeProgressTimer = null;
     this.nativeObservedThreadId = null;
@@ -208,6 +215,9 @@ class CodexBridge {
     this.lastNativeProgress = null;
     this.workspaceStore = userDataDir ? path.join(userDataDir, 'codex-workspaces.json') : null;
     this.explicitWorkspaces = loadWorkspaceStore(this.workspaceStore);
+    this.codexStatePath = codexStatePath || null;
+    this.workspaceIndex = new Map();
+    this.workspaceCreateKeys = new Map();
 
     this.appServer.on('notification', (msg) => this.onNotification(msg));
     this.appServer.on('server-request', (msg) => this.onServerRequest(msg));
@@ -281,6 +291,7 @@ class CodexBridge {
   startPolling() {
     if (this.pollTimer) return;
     void this.pollThreads();
+    void this.refreshArchivedWorkspacePathCache();
     this.pollTimer = setInterval(() => { void this.pollThreads(); }, 5_000);
   }
 
@@ -354,6 +365,9 @@ class CodexBridge {
       if (this.appServer.websocketUrl && req.method !== 'GET'
         && !(req.method === 'POST' && /^\/v1\/sessions\/[^/]+\/resume$/.test(url.pathname))
         && !(req.method === 'POST' && /^\/v1\/sessions\/[^/]+\/permission-menu$/.test(url.pathname))
+        && !(this.enableSharedWrites && req.method === 'POST' && ['/v1/workspaces', '/v1/sessions'].includes(url.pathname))
+        && !(this.enableSharedWrites && req.method === 'POST' && /^\/v1\/workspaces\/[^/]+\/rename$/.test(url.pathname))
+        && !(this.enableSharedWrites && req.method === 'DELETE' && /^\/v1\/workspaces\/[^/]+$/.test(url.pathname))
         && !(this.enableSharedWrites && req.method === 'POST'
           && /^\/v1\/sessions\/[^/]+\/(prompt|respond|model|permission)$/.test(url.pathname))) {
         throw Object.assign(new Error('共享 Codex 连接尚未开放写入'), { code: 'shared-transport-readonly' });
@@ -380,17 +394,50 @@ class CodexBridge {
         if (!cwd) throw Object.assign(new Error('工作区路径不能为空'), { code: 'bad-request' });
         const absolute = path.resolve(cwd);
         if (!fs.existsSync(absolute) || !fs.statSync(absolute).isDirectory()) throw Object.assign(new Error('工作区目录不可用'), { code: 'workspace-invalid-path' });
-        this.explicitWorkspaces.set(absolute, { path: absolute, createdAt: Date.now() });
+        const { project, created } = await this.createWorkspace(absolute);
+        const entry = { path: absolute, createdAt: project.createdAt * 1000 || Date.now(), title: project.name };
+        setWorkspaceStoreEntry(this.explicitWorkspaces, entry);
         saveWorkspaceStore(this.workspaceStore, this.explicitWorkspaces);
-        writeJson(res, 200, { workspace: workspaceFor(absolute, this.explicitWorkspaces.get(absolute).createdAt), created: true });
+        const workspace = workspaceFor(absolute, entry.createdAt, entry.title);
+        this.workspaceIndex.set(workspace.workspaceId, { ...entry, title: workspace.title, source: 'explicit' });
+        writeJson(res, 200, { workspace, created });
+        return;
+      }
+      const workspaceRename = /^\/v1\/workspaces\/([^/]+)\/rename$/.exec(url.pathname);
+      if (req.method === 'POST' && workspaceRename) {
+        const workspaceIdValue = decodeURIComponent(workspaceRename[1]);
+        const entry = this.workspaceIndex.get(workspaceIdValue);
+        if (!entry || workspaceId(entry.path) !== workspaceIdValue)
+          throw Object.assign(new Error('未知工作区'), { code: 'workspace-not-found' });
+        const body = await readJson(req);
+        const title = asString(body.title).trim();
+        if (!title || title.length > 128 || /[\u0000-\u001f\u007f]/.test(title))
+          throw Object.assign(new Error('工作区名称无效'), { code: 'bad-request' });
+        const existing = findWorkspaceStoreEntry(this.explicitWorkspaces, entry.path);
+        const currentTitle = loadCodexWorkspaceState(this.codexStatePath).labels.get(workspacePathKey(entry.path))
+          || entry.title || path.basename(entry.path) || entry.path;
+        if (this.appServer.websocketUrl) await this.renameProject(entry.path, title);
+        else if (title !== currentTitle) await this.renameWorkspace(currentTitle, title);
+        const renamed = { path: entry.path, createdAt: existing?.createdAt || entry.createdAt || Date.now(), title };
+        setWorkspaceStoreEntry(this.explicitWorkspaces, renamed);
+        saveWorkspaceStore(this.workspaceStore, this.explicitWorkspaces);
+        this.workspaceIndex.set(workspaceIdValue, { ...entry, ...renamed, source: 'explicit' });
+        writeJson(res, 200, { workspace: workspaceFor(renamed.path, renamed.createdAt, renamed.title) });
         return;
       }
       const workspaceDelete = /^\/v1\/workspaces\/([^/]+)$/.exec(url.pathname);
       if (req.method === 'DELETE' && workspaceDelete) {
-        const cwd = decodeWorkspaceId(decodeURIComponent(workspaceDelete[1]));
-        if (!cwd) throw Object.assign(new Error('未知工作区'), { code: 'workspace-not-found' });
-        this.explicitWorkspaces.delete(cwd);
+        const workspaceIdValue = decodeURIComponent(workspaceDelete[1]);
+        const entry = this.workspaceIndex.get(workspaceIdValue);
+        if (!entry || workspaceId(entry.path) !== workspaceIdValue)
+          throw Object.assign(new Error('未知工作区'), { code: 'workspace-not-found' });
+        await this.deleteProject(entry.path);
+        const existing = findWorkspaceStoreEntry(this.explicitWorkspaces, entry.path);
+        setWorkspaceStoreEntry(this.explicitWorkspaces, {
+          ...(existing || {}), path: entry.path, createdAt: existing?.createdAt || entry.createdAt || Date.now(), hidden: true,
+        });
         saveWorkspaceStore(this.workspaceStore, this.explicitWorkspaces);
+        this.workspaceIndex.delete(workspaceIdValue);
         writeJson(res, 200, { deleted: true });
         return;
       }
@@ -479,11 +526,15 @@ class CodexBridge {
     return data.map(normalizeThread);
   }
 
-  async listAllThreads() {
+  async listAllThreads({ archived = false } = {}) {
     const out = [];
     let cursor = null;
     for (let page = 0; page < 20; page++) {
-      const result = await this.appServer.request('thread/list', { limit: THREAD_PAGE_LIMIT, cursor });
+      const result = await this.appServer.request('thread/list', {
+        limit: THREAD_PAGE_LIMIT,
+        cursor,
+        ...(archived ? { archived: true } : {}),
+      });
       const rows = Array.isArray(result?.data) ? result.data : [];
       out.push(...rows);
       cursor = typeof result?.nextCursor === 'string' ? result.nextCursor : null;
@@ -492,9 +543,80 @@ class CodexBridge {
     return out;
   }
 
+  invalidateArchivedWorkspacePathCache(threadId, archived) {
+    if (archived === true) {
+      const cwd = this.cwdLookupCache.get(asString(threadId))?.cwd;
+      const key = workspacePathKey(cwd);
+      if (key) this.archivedWorkspacePathKeys.add(key);
+    }
+    this.archivedWorkspacePathGeneration++;
+    this.archivedWorkspacePathsLoadedAt = 0;
+    if (this.appServer.ready) void this.refreshArchivedWorkspacePathCache();
+  }
+
+  async refreshArchivedWorkspacePathCache(force = false) {
+    if (!this.appServer.ready) return;
+    if (this.archivedWorkspacePathRefresh) {
+      try { await this.archivedWorkspacePathRefresh; }
+      catch (error) { if (force) throw error; }
+      if (!force) return;
+    }
+    if (!force && Date.now() - this.archivedWorkspacePathsLoadedAt < ARCHIVED_WORKSPACE_CACHE_TTL_MS) return;
+
+    const generation = this.archivedWorkspacePathGeneration;
+    const refresh = (async () => {
+      try {
+        const archivedThreads = (await this.listAllThreads({ archived: true })).map(normalizeThread);
+        const now = Date.now();
+        const missingDirectory = archivedThreads.filter((thread) => {
+          if (thread.cwd) {
+            this.cwdLookupCache.set(thread.id, { cwd: thread.cwd, checkedAt: now });
+            return false;
+          }
+          const cached = this.cwdLookupCache.get(thread.id);
+          if (cached?.cwd) { thread.cwd = cached.cwd; return false; }
+          return true;
+        });
+        await Promise.all(missingDirectory.slice(0, 24).map(async (thread) => {
+          try {
+            const read = await this.appServer.request('thread/read', { threadId: thread.id, includeTurns: false }, 2_000);
+            if (read?.thread?.id === thread.id) {
+              thread.cwd = asString(read.thread.cwd);
+              this.cwdLookupCache.set(thread.id, { cwd: thread.cwd, checkedAt: now });
+            }
+          } catch { /* 归档索引仅用于隐藏空工作区，失败时保留现有显示 */ }
+        }));
+
+        if (generation !== this.archivedWorkspacePathGeneration) {
+          if (force) throw new Error('归档状态已变化，请重新刷新工作区。');
+          return;
+        }
+        this.archivedWorkspacePathKeys = new Set(archivedThreads
+          .map((thread) => workspacePathKey(thread.cwd))
+          .filter(Boolean));
+        this.archivedWorkspacePathsLoadedAt = Date.now();
+      } catch (error) {
+        if (force) throw error;
+        if (generation === this.archivedWorkspacePathGeneration)
+          this.archivedWorkspacePathsLoadedAt = Date.now();
+      }
+    })();
+    this.archivedWorkspacePathRefresh = refresh;
+    try {
+      await refresh;
+    } finally {
+      if (this.archivedWorkspacePathRefresh === refresh) this.archivedWorkspacePathRefresh = null;
+      if (!force && this.archivedWorkspacePathsLoadedAt === 0 && this.appServer.ready)
+        void this.refreshArchivedWorkspacePathCache();
+    }
+  }
+
   async workspaceTree() {
+    const projects = await this.listProjects();
     const threads = (await this.listThreads()).sort((a, b) => b.updatedAt - a.updatedAt);
     const now = Date.now();
+    // A successful tree response must include archive validation, not a stale background result.
+    if (projects === null) await this.refreshArchivedWorkspacePathCache(true);
     const missingDirectory = threads.filter((thread) => {
       if (thread.cwd) { this.cwdLookupCache.set(thread.id, { cwd: thread.cwd, checkedAt: now }); return false; }
       const cached = this.cwdLookupCache.get(thread.id);
@@ -512,22 +634,200 @@ class CodexBridge {
         }
       } catch { this.cwdLookupCache.set(thread.id, { cwd: '', checkedAt: now }); }
     }));
-    const byPath = new Map();
+    const codexState = loadCodexWorkspaceState(this.codexStatePath);
+    const hiddenPaths = new Set([...this.explicitWorkspaces.values()]
+      .filter((item) => item.hidden === true)
+      .map((item) => workspacePathKey(item.path))
+      .filter(Boolean));
+    const activeWorkspacePathKeys = threads
+      .map((thread) => workspacePathKey(thread.cwd))
+      .filter(Boolean);
+    const isArchivedOnlyWorkspace = (rootKey) => {
+      if (activeWorkspacePathKeys.some((cwdKey) => isPathWithin(rootKey, cwdKey))) return false;
+      return [...this.archivedWorkspacePathKeys].some((cwdKey) => isPathWithin(rootKey, cwdKey));
+    };
+    const workspacesByPath = new Map();
+    const addWorkspace = (item, source) => {
+      const key = workspacePathKey(item.path);
+      if (!key || hiddenPaths.has(key) || (source !== 'project' && isArchivedOnlyWorkspace(key))) return '';
+      const current = workspacesByPath.get(key);
+      if (!current) {
+        workspacesByPath.set(key, {
+          path: item.path,
+          createdAt: Number(item.createdAt) || 0,
+          title: item.title || codexState.labels.get(key),
+          source,
+        });
+      } else {
+        if (source === 'explicit') {
+          current.path = item.path;
+          current.createdAt = Number(item.createdAt) || current.createdAt;
+          current.title = item.title || current.title || codexState.labels.get(key);
+          current.source = 'explicit';
+        } else if (!current.title) {
+          current.title = item.title || codexState.labels.get(key);
+        }
+      }
+      return key;
+    };
+    // The shared server's project catalog is authoritative; cached mobile titles
+    // and legacy Desktop roots must not overwrite a rename made on Desktop.
+    for (const project of projects || []) {
+      for (const root of project.roots || []) {
+        hiddenPaths.delete(workspacePathKey(root.path));
+        addWorkspace({ path: root.path, title: project.name, createdAt: project.createdAt * 1000 }, 'project');
+      }
+    }
+    // Codex keeps saved roots after their conversations are archived. Hide roots backed only by archived history;
+    // Empty workspaces with no archived history remain available for new mobile sessions.
+    for (const root of projects === null ? codexState.roots : []) {
+      const key = workspacePathKey(root);
+      if (key && !isArchivedOnlyWorkspace(key)) addWorkspace({ path: root }, 'desktop');
+    }
+
+    const deepestRegisteredWorkspace = (cwdKey) => {
+      let match = '';
+      for (const [key, item] of workspacesByPath) {
+        if (item.source === 'session' || key.length <= match.length) continue;
+        if (isPathWithin(key, cwdKey)) match = key;
+      }
+      return match;
+    };
+    // A conversation's working directory is not a registered project.
+    // Older Desktop threads have null projectId even inside a registered project;
+    // they may match an existing project root, but must never create a new root.
+    const projectRoots = new Map((projects || []).map(project => [project.id,
+      (project.roots || []).map(root => workspacePathKey(root.path)).filter(key => workspacesByPath.has(key))]));
+
+    const sessionsByPath = new Map();
+    const earliestSessionCreatedAt = new Map();
     const ungroupedSessions = [];
-    for (const item of this.explicitWorkspaces.values()) byPath.set(item.path, { createdAt: item.createdAt, sessions: [] });
     for (const thread of threads) {
       const cwd = thread.cwd || '';
-      if (!cwd) {
+      const cwdKey = workspacePathKey(cwd);
+      if (!cwdKey || hiddenPaths.has(cwdKey)) {
         ungroupedSessions.push({ sessionId: thread.id, title: thread.title, state: thread.state, updatedAt: thread.updatedAt });
         continue;
       }
-      if (!byPath.has(cwd)) byPath.set(cwd, { createdAt: thread.createdAt, sessions: [] });
-      byPath.get(cwd).sessions.push({ sessionId: thread.id, title: thread.title, state: thread.state, updatedAt: thread.updatedAt });
+      const roots = projectRoots.get(thread.projectId) || [];
+      const ownerKey = projects !== null && thread.projectId
+        ? roots.filter(key => isPathWithin(key, cwdKey)).sort((a, b) => b.length - a.length)[0] || ''
+        : deepestRegisteredWorkspace(cwdKey);
+      if (!ownerKey) {
+        ungroupedSessions.push({ sessionId: thread.id, title: thread.title, state: thread.state, updatedAt: thread.updatedAt });
+        continue;
+      }
+      const sessions = sessionsByPath.get(ownerKey) || [];
+      sessions.push({ sessionId: thread.id, title: thread.title, state: thread.state, updatedAt: thread.updatedAt });
+      sessionsByPath.set(ownerKey, sessions);
+      if (thread.createdAt > 0) {
+        const earliest = earliestSessionCreatedAt.get(ownerKey) || 0;
+        if (!earliest || thread.createdAt < earliest) earliestSessionCreatedAt.set(ownerKey, thread.createdAt);
+      }
     }
-    const items = [...byPath.entries()]
-      .map(([cwd, value]) => ({ workspace: workspaceFor(cwd, value.createdAt), sessions: value.sessions.sort((a, b) => b.updatedAt - a.updatedAt) }))
+    const workspaceIndex = new Map();
+    const items = [...workspacesByPath.entries()]
+      .map(([key, value]) => {
+        const sessions = (sessionsByPath.get(key) || []).sort((a, b) => b.updatedAt - a.updatedAt);
+        const createdAt = value.createdAt || earliestSessionCreatedAt.get(key) || now;
+        const workspace = workspaceFor(value.path, createdAt, value.title);
+        workspaceIndex.set(workspace.workspaceId, { ...value, title: workspace.title, createdAt });
+        return { workspace, sessions };
+      })
       .sort((a, b) => b.sessions[0]?.updatedAt - a.sessions[0]?.updatedAt || a.workspace.title.localeCompare(b.workspace.title));
+    this.workspaceIndex = workspaceIndex;
     return { items, ungroupedSessions };
+  }
+
+  async renameWorkspace(currentTitle, newTitle) {
+    if (!this.nativeControl?.renameWorkspace)
+      throw Object.assign(new Error('Codex 桌面工作区重命名不可用'), { code: 'native-control-unavailable' });
+    if (this.nativePromptInFlight)
+      throw Object.assign(new Error('Codex 正在执行另一项操作'), { code: 'native-control-busy' });
+    this.nativePromptInFlight = true;
+    try {
+      const result = await this.nativeControl.renameWorkspace(currentTitle, newTitle);
+      if (result?.accepted !== true)
+        throw Object.assign(new Error('电脑端未确认工作区重命名'), { code: 'native-workspace-rename-unconfirmed' });
+      return result;
+    } finally { this.nativePromptInFlight = false; }
+  }
+
+  async listProjects() {
+    if (!this.appServer.websocketUrl) return null;
+    const projects = [];
+    const cursors = new Set();
+    let cursor = null;
+    do {
+      let page;
+      try { page = await this.appServer.request('project/list', { cursor, limit: 100 }, 5_000); }
+      catch (error) { if (['-32601', 'rpc--32601'].includes(String(error?.code))) return null; throw error; }
+      if (!Array.isArray(page?.data)) throw Object.assign(new Error('Codex 项目列表不可用'), { code: 'codex-projects-unavailable' });
+      projects.push(...page.data);
+      cursor = page.nextCursor || null;
+      if (cursor && cursors.has(cursor)) throw Object.assign(new Error('Codex 项目分页无效'), { code: 'codex-projects-unavailable' });
+      if (cursor) cursors.add(cursor);
+    } while (cursor);
+    return projects;
+  }
+
+  requireProjectWrites() {
+    if (!this.appServer.websocketUrl || !this.enableSharedWrites)
+      throw Object.assign(new Error('请在电脑端启用 Codex 共享连接后管理工作区'), { code: 'codex-projects-unavailable' });
+  }
+
+  async projectForPath(cwd) {
+    const projects = await this.listProjects();
+    if (projects == null) throw Object.assign(new Error('当前 Codex 不支持项目管理，请更新 Codex'), { code: 'codex-projects-unavailable' });
+    const matches = projects.filter(project => project.roots?.some(root => workspacePathKey(root.path) === workspacePathKey(cwd)));
+    if (matches.length > 1) throw Object.assign(new Error('多个 Codex 项目使用同一目录，无法唯一定位'), { code: 'workspace-ambiguous' });
+    return matches[0] || null;
+  }
+
+  async readConfirmedProject(projectId, cwd, title) {
+    const { project } = await this.appServer.request('project/read', { projectId });
+    if (project?.id !== projectId || !project.roots?.some(root => workspacePathKey(root.path) === workspacePathKey(cwd))
+      || (title !== undefined && project.name !== title))
+      throw Object.assign(new Error('Codex 尚未确认工作区更改，请刷新后核对'), { code: 'workspace-write-unconfirmed' });
+    return project;
+  }
+
+  async createWorkspace(cwd) {
+    this.requireProjectWrites();
+    const key = workspacePathKey(cwd);
+    if (!this.workspaceCreateKeys.has(key)) this.workspaceCreateKeys.set(key, randomUUID());
+    const idempotencyKey = this.workspaceCreateKeys.get(key);
+    const existing = await this.projectForPath(cwd);
+    if (existing) {
+      const project = await this.readConfirmedProject(existing.id, cwd);
+      this.workspaceCreateKeys.delete(key);
+      return { project, created: false };
+    }
+    const name = path.basename(cwd) || cwd;
+    const { project } = await this.appServer.request('project/create', {
+      name, roots: [{ path: cwd }], idempotencyKey,
+    });
+    if (!project?.id) throw Object.assign(new Error('Codex 未确认新建工作区'), { code: 'workspace-write-unconfirmed' });
+    const confirmed = await this.readConfirmedProject(project.id, cwd, name);
+    this.workspaceCreateKeys.delete(key);
+    return { project: confirmed, created: true };
+  }
+
+  async renameProject(cwd, name) {
+    this.requireProjectWrites();
+    const project = await this.projectForPath(cwd);
+    if (!project) throw Object.assign(new Error('该目录尚未加入 Codex 项目，请先添加工作区'), { code: 'workspace-not-found' });
+    if (project.name !== name) await this.appServer.request('project/update', { projectId: project.id, name });
+    return this.readConfirmedProject(project.id, cwd, name);
+  }
+
+  async deleteProject(cwd) {
+    this.requireProjectWrites();
+    const project = await this.projectForPath(cwd);
+    if (!project) return;
+    if (project.roots.length !== 1) throw Object.assign(new Error('此 Codex 项目含多个目录，请在电脑端管理'), { code: 'workspace-ambiguous' });
+    await this.appServer.request('project/delete', { projectId: project.id });
+    if (await this.projectForPath(cwd)) throw Object.assign(new Error('Codex 尚未确认移除工作区'), { code: 'workspace-write-unconfirmed' });
   }
 
   async listModels() {
@@ -565,16 +865,26 @@ class CodexBridge {
     if (!cwd) throw Object.assign(new Error('请先选择电脑上的工作区目录'), { code: 'workspace-required' });
     const profile = await this.requireProfile(asString(body?.profileId));
     const model = modelOptions(body?.model);
+    const project = this.appServer.websocketUrl ? await this.projectForPath(cwd) : null;
+    if (this.appServer.websocketUrl && !project)
+      throw Object.assign(new Error('工作区已移除，请刷新后选择现有工作区'), { code: 'workspace-not-found' });
     const result = await this.appServer.request('thread/start', {
       cwd,
-      serviceName: 'batona',
+      ...(project ? { projectId: project.id } : {}),
+      historyMode: 'legacy',
       sandbox: profile.sandbox,
       approvalPolicy: profile.approvalPolicy,
       ...model,
     });
     const thread = normalizeThread(result?.thread || {});
+    if (!thread.id) throw Object.assign(new Error('Codex 未返回新会话标识'), { code: 'session-create-unconfirmed' });
     if (thread.id) this.bridgeOwnedThreads.add(thread.id);
     this.threadOptions.set(thread.id, { profile, ...model });
+    // Explicit naming materializes the empty thread; otherwise Desktop cannot resume it yet.
+    await this.appServer.request('thread/name/set', { threadId: thread.id, name: asString(body?.title) || '新会话' });
+    const confirmed = await this.appServer.request('thread/read', { threadId: thread.id, includeTurns: true });
+    if (confirmed?.thread?.id !== thread.id) throw Object.assign(new Error('Codex 尚未确认新会话可恢复'), { code: 'session-create-unconfirmed' });
+    Object.assign(thread, normalizeThread(confirmed.thread));
     this.broadcast({ type: 'thread-status', thread });
     return thread;
   }
@@ -868,6 +1178,9 @@ class CodexBridge {
 
   onNotification(msg) {
     const threadId = asString(msg?.params?.threadId) || asString(msg?.params?.turn?.threadId);
+    if (msg?.method === 'thread/archived' || msg?.method === 'thread/unarchived') {
+      this.invalidateArchivedWorkspacePathCache(threadId, msg.method === 'thread/archived');
+    }
     if (msg?.method === 'thread/settings/updated' && threadId) {
       const settings = publicThreadSettings(msg?.params?.threadSettings);
       this.threadSettings.set(threadId, settings);
@@ -958,6 +1271,7 @@ function normalizeThread(value) {
     id: asString(value?.id),
     title: redactText(asString(value?.name) || asString(value?.preview) || '未命名会话'),
     cwd: asString(value?.cwd),
+    projectId: Object.prototype.hasOwnProperty.call(value || {}, 'projectId') ? value.projectId : undefined,
     createdAt: toEpochMs(value?.createdAt),
     updatedAt: toEpochMs(value?.updatedAt || value?.recencyAt || value?.createdAt),
     state: stateFromStatus(status),
@@ -974,8 +1288,74 @@ function stateFromStatus(status) {
   return 'done';
 }
 
-function workspaceFor(cwd, createdAt) {
-  return { workspaceId: workspaceId(cwd), path: cwd, title: path.basename(cwd) || cwd, sessionIds: [], createdAt: new Date(createdAt || Date.now()).toISOString(), updatedAt: new Date().toISOString() };
+function workspaceFor(cwd, createdAt, title) {
+  return { workspaceId: workspaceId(cwd), path: cwd, title: title || path.basename(cwd) || cwd, sessionIds: [], createdAt: new Date(createdAt || Date.now()).toISOString(), updatedAt: new Date().toISOString() };
+}
+function workspacePathKey(value) {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  const absolutePath = path.resolve(value.trim());
+  return process.platform === 'win32' ? absolutePath.toLowerCase() : absolutePath;
+}
+function isPathWithin(rootKey, candidateKey) {
+  const prefix = rootKey.endsWith(path.sep) ? rootKey : rootKey + path.sep;
+  return candidateKey === rootKey || candidateKey.startsWith(prefix);
+}
+function localPathFromCodexState(value) {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  const storedPath = value.trim();
+  if (!storedPath.startsWith('file:')) return storedPath;
+  try { return fileURLToPath(new URL(storedPath)); } catch { return ''; }
+}
+function loadCodexWorkspaceState(filePath) {
+  const empty = { roots: [], labels: new Map() };
+  if (!filePath) return empty;
+  try {
+    const state = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const rawRoots = state?.['electron-saved-workspace-roots'];
+    const rootRows = Array.isArray(rawRoots) ? rawRoots
+      : Object.keys(rawRoots && typeof rawRoots === 'object' ? rawRoots : {});
+    const roots = new Map();
+    for (const row of rootRows) {
+      const storedPath = typeof row === 'string' ? row
+        : asString(row?.path) || asString(row?.root) || asString(row?.workspaceRoot) || asString(row?.cwd) || asString(row?.uri);
+      const workspacePath = localPathFromCodexState(storedPath);
+      const key = workspacePathKey(workspacePath);
+      if (key && !roots.has(key)) roots.set(key, workspacePath);
+    }
+
+    const rawLabels = state?.['electron-workspace-root-labels'];
+    const labelRows = Array.isArray(rawLabels) ? rawLabels
+      : Object.entries(rawLabels && typeof rawLabels === 'object' ? rawLabels : {});
+    const labels = new Map();
+    for (const row of labelRows) {
+      const storedPath = Array.isArray(row) ? row[0] : asString(row?.path) || asString(row?.root) || row?.[0];
+      const title = Array.isArray(row) ? row[1] : asString(row?.title) || asString(row?.label) || row?.[1];
+      if (typeof title !== 'string' || !title.trim()) continue;
+      const workspacePath = localPathFromCodexState(storedPath);
+      const key = workspacePathKey(workspacePath);
+      if (key) labels.set(key, title.trim());
+    }
+
+    // Current Codex Desktop stores project display names alongside project roots.
+    // Prefer these names over legacy per-root labels so native UI controls can be matched exactly.
+    const rawProjects = state?.['local-projects'];
+    const projectRows = Array.isArray(rawProjects) ? rawProjects
+      : Object.values(rawProjects && typeof rawProjects === 'object' ? rawProjects : {});
+    for (const project of projectRows) {
+      const title = asString(project?.name).trim();
+      if (!title) continue;
+      const projectRoots = Array.isArray(project?.rootPaths) ? project.rootPaths
+        : typeof project?.rootPaths === 'string' ? [project.rootPaths] : [];
+      for (const row of projectRoots) {
+        const storedPath = typeof row === 'string' ? row
+          : asString(row?.path) || asString(row?.root) || asString(row?.workspaceRoot) || asString(row?.cwd) || asString(row?.uri);
+        const workspacePath = localPathFromCodexState(storedPath);
+        const key = workspacePathKey(workspacePath);
+        if (key) labels.set(key, title);
+      }
+    }
+    return { roots: [...roots.values()], labels };
+  } catch { return empty; }
 }
 function workspaceId(cwd) { return `cwd:${Buffer.from(cwd, 'utf8').toString('base64url')}`; }
 function decodeWorkspaceId(id) {
@@ -1177,7 +1557,17 @@ function readJson(req) {
 function writeJson(res, status, value) { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); }
 function loadWorkspaceStore(file) {
   if (!file) return new Map();
-  try { const rows = JSON.parse(fs.readFileSync(file, 'utf8')); return new Map(Array.isArray(rows) ? rows.filter((r) => typeof r?.path === 'string').map((r) => [r.path, { path: r.path, createdAt: Number(r.createdAt) || Date.now() }]) : []); } catch { return new Map(); }
+  try { const rows = JSON.parse(fs.readFileSync(file, 'utf8')); return new Map(Array.isArray(rows) ? rows.filter((r) => typeof r?.path === 'string').map((r) => [r.path, { path: r.path, createdAt: Number(r.createdAt) || Date.now(), ...(typeof r.title === 'string' && r.title ? { title: r.title } : {}), ...(r.hidden === true ? { hidden: true } : {}) }]) : []); } catch { return new Map(); }
+}
+function findWorkspaceStoreEntry(entries, workspacePath) {
+  const key = workspacePathKey(workspacePath);
+  for (const [storedPath, entry] of entries) if (workspacePathKey(storedPath) === key) return entry;
+  return undefined;
+}
+function setWorkspaceStoreEntry(entries, entry) {
+  const key = workspacePathKey(entry.path);
+  for (const storedPath of entries.keys()) if (workspacePathKey(storedPath) === key) entries.delete(storedPath);
+  entries.set(entry.path, entry);
 }
 function saveWorkspaceStore(file, entries) { if (!file) return; try { fs.writeFileSync(file, JSON.stringify([...entries.values()], null, 2), 'utf8'); } catch {} }
 
