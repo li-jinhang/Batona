@@ -1,7 +1,7 @@
 {
   "id": "./",
-  "name": "DSH Link · 手机工作台",
-  "short_name": "DSH Link",
+  "name": "Batona · 手机工作台",
+  "short_name": "Batona",
   "description": "在 iPhone 上查看并继续电脑中的 DSH 与 Codex 会话。",
   "lang": "zh-CN",
   "start_url": "./",

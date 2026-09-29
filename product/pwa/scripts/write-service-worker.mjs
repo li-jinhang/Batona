@@ -95,10 +95,10 @@ self.addEventListener('push', event => {
   let category;
   try { category = event.data?.json()?.category; } catch { return; }
   const copy = {
-    approval: ['Batona Link', '电脑上的操作正在等待你的批准。'],
-    question: ['Batona Link', '电脑上的任务有一个问题需要你回答。'],
-    completed: ['Batona Link', '电脑上的一轮任务已完成。'],
-    failed: ['Batona Link', '电脑上的任务遇到问题，请打开查看。'],
+    approval: ['Batona', '电脑上的操作正在等待你的批准。'],
+    question: ['Batona', '电脑上的任务有一个问题需要你回答。'],
+    completed: ['Batona', '电脑上的一轮任务已完成。'],
+    failed: ['Batona', '电脑上的任务遇到问题，请打开查看。'],
   }[category];
   if (!copy) return;
   event.waitUntil(self.registration.showNotification(copy[0], { body: copy[1], icon: new URL('icons/icon-192.png', BASE_URL).href, badge: new URL('icons/icon-192.png', BASE_URL).href, tag: 'batona-' + category, data: { url: BASE_URL } }));

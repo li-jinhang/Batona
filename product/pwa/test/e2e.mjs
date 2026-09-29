@@ -332,7 +332,7 @@ try {
     const items = await self.registration.getNotifications();
     return items.map(item => ({ title: item.title, body: item.body, data: item.data }));
   });
-  assert.equal(notification[0]?.title, 'Batona Link');
+  assert.equal(notification[0]?.title, 'Batona');
   assert.match(notification[0]?.body ?? '', /等待你的批准/);
   assert.equal(JSON.stringify(notification).includes('DO-NOT-PUSH'), false);
   const refreshCount = await page.evaluate(() => window.__sentFrames.filter(frame => frame.method === 'session.list').length);

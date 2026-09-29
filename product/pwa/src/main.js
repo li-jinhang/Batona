@@ -281,7 +281,7 @@ async function requestPair() {
     await credentialStore.write(state.credentials);
     state.notice = '';
     render();
-    const request = await api('pair-request', { code, deviceSecret, name: 'iPhone · DSH Link' }, '');
+    const request = await api('pair-request', { code, deviceSecret, name: 'iPhone · Batona' }, '');
     beginPairPoll(request.requestId, request.proof);
   } catch (error) {
     state.notice = error.message;
@@ -573,7 +573,7 @@ async function openPendingSession(rpcId) {
 
 async function enableNotifications() {
   if (!state.credentials?.token || !state.online) return;
-  if (state.ios && !state.standalone) { showToast('请先从主屏幕打开 DSH Link，再开启通知。'); return; }
+  if (state.ios && !state.standalone) { showToast('请先从主屏幕打开 Batona，再开启通知。'); return; }
   if (!('Notification' in window) || !('serviceWorker' in navigator)) { showToast('此浏览器不支持系统通知。'); return; }
   if (!state.push.configured || !state.push.publicKey) { showToast('服务器暂未配置 Web Push；你仍可在应用内查看任务状态。'); return; }
   try {
@@ -581,7 +581,7 @@ async function enableNotifications() {
     if (permission !== 'granted') {
       state.push.denied = permission === 'denied';
       state.push.subscribed = false;
-      state.notice = permission === 'denied' ? '通知权限已关闭。可在 iPhone“设置 → 通知”中检查 DSH Link；会话功能仍可正常使用。' : '尚未允许通知。你可以稍后从这里再次尝试。';
+      state.notice = permission === 'denied' ? '通知权限已关闭。可在 iPhone“设置 → 通知”中检查 Batona；会话功能仍可正常使用。' : '尚未允许通知。你可以稍后从这里再次尝试。';
       state.noticeKind = 'info';
       render();
       return;
@@ -707,12 +707,12 @@ function renderInstall() {
     <div class="pair-layout">
       <article class="paper-card pair-card">
         <p class="micro">SAFARI · ADD TO HOME SCREEN</p>
-        <ol class="install-steps"><li>在 iPhone 的 Safari 中打开本页。</li><li>点 Safari 工具栏中的“分享”按钮。</li><li>选择“添加到主屏幕”，确认添加 DSH Link。</li><li>从主屏幕图标打开应用，然后扫描或输入电脑配对码。</li></ol>
+        <ol class="install-steps"><li>在 iPhone 的 Safari 中打开本页。</li><li>点 Safari 工具栏中的“分享”按钮。</li><li>选择“添加到主屏幕”，确认添加 Batona。</li><li>从主屏幕图标打开应用，然后扫描或输入电脑配对码。</li></ol>
         <p class="notice">请勿先在 Safari 标签页中配对。首次完整体验要求 iOS 16.4 或更新版本；系统通知仅在已安装的主屏幕 PWA 中提供。</p>
         ${state.notice ? alertHtml() : ''}
         <button class="button secondary wide" type="button" data-action="check-installed">我已添加，重新检查</button>
       </article>
-      <aside class="install-aside"><p class="micro">NO APP STORE REQUIRED</p><h2>像应用一样打开</h2><p>DSH Link 是安装在主屏幕上的网页应用。界面与版本化资源会缓存到手机；离线时只显示应用外壳，不保存会话内容，也不会排队发送请求。</p></aside>
+      <aside class="install-aside"><p class="micro">NO APP STORE REQUIRED</p><h2>像应用一样打开</h2><p>Batona 是安装在主屏幕上的网页应用。界面与版本化资源会缓存到手机；离线时只显示应用外壳，不保存会话内容，也不会排队发送请求。</p></aside>
     </div>`;
 }
 
@@ -747,7 +747,7 @@ function renderOffline() {
   return `<section class="offline-shell"><div class="paper-card">
     <div class="offline-mark" aria-hidden="true">⌁</div><p class="eyebrow spaced-small">OFFLINE APP SHELL</p>
     <h1>${navigator.onLine ? '电脑暂时不可达。' : '现在处于离线状态。'}</h1>
-    <p>DSH Link 只缓存应用界面。工作区、会话和历史内容需要联网读取；离线时不会展示旧内容或排队提交操作。</p>
+    <p>Batona 只缓存应用界面。工作区、会话和历史内容需要联网读取；离线时不会展示旧内容或排队提交操作。</p>
     ${localAuth ? '<p class="notice">手机授权仍保存在此主屏幕应用中。网络恢复后会重新连接；如果浏览器网站数据被清除，请在电脑端解除旧手机绑定后重新配对。</p>' : '<p class="notice">联网后使用电脑端配对码申请手机授权。</p>'}
     <button class="button secondary" type="button" data-action="retry-connect" ${!navigator.onLine ? 'disabled' : ''}>重新连接</button>
   </div></section>`;
@@ -892,7 +892,7 @@ app.addEventListener('click', async event => {
   const button = event.target.closest('[data-action]');
   if (!button) return;
   const action = button.dataset.action;
-  if (action === 'check-installed') { state.standalone = isStandalone(); if (!state.standalone) { showToast('请从主屏幕图标打开 DSH Link。'); return; } state.view = state.credentials?.token ? 'connecting' : 'pair'; render(); if (state.credentials?.token) void boot(); return; }
+  if (action === 'check-installed') { state.standalone = isStandalone(); if (!state.standalone) { showToast('请从主屏幕图标打开 Batona。'); return; } state.view = state.credentials?.token ? 'connecting' : 'pair'; render(); if (state.credentials?.token) void boot(); return; }
   if (action === 'scan-qr') { void startScanner(); return; }
   if (action === 'backend') { await switchBackend(button.dataset.backend); return; }
   if (action === 'new-session') { await createSession(); return; }
